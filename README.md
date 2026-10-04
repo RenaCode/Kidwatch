@@ -8,6 +8,25 @@ i eksportem CSV oraz opcjonalnie czujnik telewizora (ADB) i czujka UniFi.
 
 Pełna instrukcja wdrożenia na klastrze: [`docs/uruchomienie-od-zera.md`](docs/uruchomienie-od-zera.md).
 
+**W skrócie**
+
+- **Źródło danych:** logi zapytań DNS z [NextDNS](https://nextdns.io) (strumień
+  na żywo) — bez aplikacji na iPadzie, bez MDM, bez jailbreaka.
+- **Powiadomienia:** start i koniec sesji, nowe aplikacje, noc, podsumowanie
+  dnia i tygodnia — przez ntfy, Home Assistant albo bramkę WhatsApp/e-mail.
+- **Panel WWW:** historia, oś dnia wszystkich ekranów, trendy, eksport CSV,
+  czas gry z NextDNS, logowanie z 2FA.
+- **Opcjonalnie:** telewizor z Androidem (ADB) i ruch z kontrolera UniFi.
+- **Stack:** Python 3.12 (asyncio, httpx, SQLite), React + Vite, Docker,
+  Helm chart dla k3s/Argo CD.
+
+> **In English:** kidwatch sends phone notifications about kids' iPad activity
+> (session start/end, new apps, night use, daily and weekly reports), inferred
+> from NextDNS query logs — no app on the device. It includes a web dashboard
+> with 2FA, optional Android TV (ADB) and UniFi sensors, and a self-monitoring
+> watchdog. Minutes are a lower bound, not real screen time. The docs are in
+> Polish; the config is in `config.example.yaml`.
+
 Dostajesz cztery rodzaje wiadomości:
 
 | | kiedy | przykład |
