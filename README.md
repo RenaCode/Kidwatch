@@ -573,10 +573,13 @@ restart zbędny. To jedyny wiarygodny sposób na dobre pokrycie gier.
 
 ## Wdrożenie
 
-### k3s + ArgoCD (tak jak Trader i Dietetyk)
+### k3s + ArgoCD (jak inne aplikacje w tym klastrze)
 
-Chart Helm w `charts/kidwatch`. Aplikacja ArgoCD siedzi w
-`renacode-infra/argocd-apps.yaml` razem z pozostałymi — ArgoCD obserwuje
+Chart Helm w `charts/kidwatch`. Aplikacja ArgoCD siedzi w prywatnym repo
+infrastruktury (`renacode-infra/argocd-apps.yaml`) razem z pozostałymi.
+Wdrożenie bez tej infrastruktury (własny obraz, ntfy zamiast bramki, własna
+domena) opisuje [`docs/uruchomienie-od-zera.md`](docs/uruchomienie-od-zera.md),
+sekcja „Bez infrastruktury RenaCode". Tutaj ArgoCD obserwuje
 `charts/kidwatch/values.yaml`, a CI podbija w nim tag obrazu po każdym pushu na
 `main`. Nie ma tu żadnego SSH ani `kubectl apply`.
 
@@ -588,7 +591,7 @@ są w [`docs/uruchomienie-od-zera.md`](docs/uruchomienie-od-zera.md) (krok 7):
 | `kidwatch-secrets` | `NEXTDNS_API_KEY`, `BRAMKA_KLUCZ`, `BRAMKA_KLUCZ_ADMIN`, `PANEL_TOTP_KEY`, opcjonalnie `UNIFI_API_KEY` | tak |
 | `kidwatch-config` | prawdziwy `config.yaml` (wgrywa `tools/wgraj_konfiguracje.sh`) | tak |
 | `kidwatch-adb` | `adbkey`, `adbkey.pub` zaakceptowane przez telewizor | przy czujniku TV |
-| `kidwatch-pairing` | rekordy parowania `<UDID>.plist` | nie (odczyt iPadów w klastrze wyłączony) |
+| `kidwatch-pairing` | rekordy parowania `<UDID>.plist` | nie (montowany tylko przy `deviceRead.enabled: true`; w klastrze wyłączony) |
 
 Rekord parowania zawiera **klucz prywatny hosta** — kto go ma, jest dla iPada
 zaufanym komputerem. `.gitignore` blokuje `*.plist`, żeby nie trafił do repo.
@@ -599,7 +602,8 @@ Cztery rzeczy warte wiedzy:
   jednego pisarza; dwa pody rozjechałyby stan sesji i zdublowały pushe. Z tego
   samego powodu **odczyt z iPadów jedzie w tym samym procesie co DNS**, nie
   w osobnym kontenerze.
-- **`prune: false`** w aplikacji ArgoCD, inaczej niż przy Dietetyku i Traderze.
+- **`prune: false`** w aplikacji ArgoCD, inaczej niż przy innych aplikacjach
+  w tym klastrze.
   PVC z bazą ma `helm.sh/resource-policy: keep`; automatyczne kasowanie mogłoby
   usunąć wolumen razem ze stanem, a wtedy serwis wyśle wszystkie pushe od nowa.
 - **`Synced` nie znaczy „proces czyta nową konfigurację".** Pod ma adnotację
@@ -625,9 +629,13 @@ tunelem WireGuard VPS ↔ dom (`docs/uruchomienie-od-zera.md`, krok 4).
 
 ```bash
 cp config.example.yaml config.yaml
-printf 'NEXTDNS_API_KEY=...\n' > .env     # .env jest w .gitignore
+printf 'NEXTDNS_API_KEY=...\nNTFY_TOPIC=...\n' > .env     # .env jest w .gitignore
 docker compose up -d --build
 ```
+
+Baza (`kidwatch.db`, `panel-auth.db`) ląduje na wolumenie `kidwatch-data`
+w `/data` — `docker-compose.yml` ustawia `KIDWATCH_STORE_PATH`, które
+nadpisuje `store.path` z konfiguracji.
 
 ---
 

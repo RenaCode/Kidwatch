@@ -172,7 +172,7 @@ def test_aplikacja_dziala_jako_nie_root_z_tylko_czytelnym_korzeniem():
     assert app["securityContext"]["allowPrivilegeEscalation"] is False
     mounts = {m["mountPath"] for m in app["volumeMounts"]}
     # Korzen tylko do czytania wymaga zapisywalnego /tmp na tetno.
-    assert {"/tmp", "/data", "/pairing"} <= mounts
+    assert {"/tmp", "/data"} <= mounts
 
 
 @pytestmark_helm
@@ -225,15 +225,18 @@ def test_chart_NIE_ma_bramki_na_Traefiku_tylko_przekierowanie_na_HTTPS():
     usunieta decyzja wlasciciela, takze jako wylacznik awaryjny."""
     docs = rendered()
     middlewares = [d for d in docs if d["kind"] == "Middleware"]
-    # Dozwolone tylko przekierowania: na HTTPS i z aliasow na glowny adres.
-    # Zadnego basicAuth/forwardAuth ani innej bramki.
+    # Dozwolone tylko przekierowania (na HTTPS i z aliasow na glowny adres)
+    # i limity polaczen (K-8). Zadnego basicAuth/forwardAuth ani innej bramki.
     assert sorted(m["metadata"]["name"] for m in middlewares) == [
-        "kidwatch-alias-redirect", "kidwatch-redirect-https"]
+        "kidwatch-alias-redirect", "kidwatch-redirect-https", "kidwatch-tempo",
+        "kidwatch-w-toku"]
     for m in middlewares:
-        assert set(m["spec"]) <= {"redirectScheme", "redirectRegex"}, m["spec"]
+        assert set(m["spec"]) <= {"redirectScheme", "redirectRegex", "inFlightReq",
+                                  "rateLimit"}, m["spec"]
     https = next(d for d in docs if d["kind"] == "Ingress" and d["metadata"]["name"] == "kidwatch")
     ann = https["metadata"].get("annotations") or {}
-    assert "traefik.ingress.kubernetes.io/router.middlewares" not in ann
+    assert ann["traefik.ingress.kubernetes.io/router.middlewares"] == (
+        "default-kidwatch-w-toku@kubernetescrd,default-kidwatch-tempo@kubernetescrd")
     assert https["spec"]["tls"]
     values = yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))
     assert "basicAuth" not in values["ingress"]
@@ -508,3 +511,47 @@ def test_alias_przekierowuje_301_na_glowny_adres_ze_sciezka():
             for a in aliasy} == {"web", "websecure"}
     for a in aliasy:
         assert [x["host"] for x in a["spec"]["rules"]] == ["kidswatch.renacode.com"]
+
+
+# ============================================= przeglad 04.10: K-7, K-8, K-12
+def _volumes(docs):
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    spec = dep["spec"]["template"]["spec"]
+    mounts = {m["name"] for c in spec["containers"] for m in c.get("volumeMounts", [])}
+    return {v["name"]: v for v in spec["volumes"]}, mounts
+
+
+@pytestmark_helm
+def test_rekordy_parowania_montowane_tylko_przy_odczycie_ipadow():
+    """Rekord parowania to klucz prywatny hosta zaufanego przez iPada. Przy
+    wylaczonym odczycie iPadow nie ma go w podzie z publicznym panelem."""
+    volumes, mounts = _volumes(rendered())
+    assert "pairing" not in volumes and "pairing" not in mounts
+    volumes, mounts = _volumes(rendered("deviceRead.enabled=true"))
+    assert "pairing" in mounts
+    assert volumes["pairing"]["secret"]["defaultMode"] == 0o440
+
+
+@pytestmark_helm
+def test_limity_polaczen_panelu_per_adres():
+    docs = rendered()
+    mw = {d["metadata"]["name"]: d["spec"] for d in docs if d["kind"] == "Middleware"}
+    assert mw["kidwatch-w-toku"]["inFlightReq"]["amount"] == 20
+    assert mw["kidwatch-w-toku"]["inFlightReq"]["sourceCriterion"] == {"ipStrategy": {"depth": 0}}
+    rl = mw["kidwatch-tempo"]["rateLimit"]
+    assert (rl["average"], rl["burst"]) == (30, 60)
+    assert rl["sourceCriterion"] == {"ipStrategy": {"depth": 0}}
+    # Wylacznik: bez limitow nie ma ani middleware, ani annotacji.
+    docs = rendered("ingress.limity.enabled=false")
+    assert not [d for d in docs if d["kind"] == "Middleware"
+                and {"inFlightReq", "rateLimit"} & set(d["spec"])]
+    https = next(d for d in docs if d["kind"] == "Ingress" and d["metadata"]["name"] == "kidwatch")
+    assert "traefik.ingress.kubernetes.io/router.middlewares" not in (
+        https["metadata"].get("annotations") or {})
+
+
+def test_timeout_bramki_dluzszy_niz_najgorszy_czas_bramki():
+    from kidwatch.config import BramkaConfig  # noqa: PLC0415
+
+    # sendText 15 s + zapasowy mail 15 s + status 3 s (K-12).
+    assert BramkaConfig().timeout_seconds == 40.0

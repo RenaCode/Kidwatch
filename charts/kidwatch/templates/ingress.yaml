@@ -35,6 +35,41 @@ spec:
                 name: {{ include "kidwatch.fullname" . }}
                 port:
                   name: http
+{{- with .Values.ingress.limity }}
+{{- if .enabled }}
+---
+# Limity per adres klienta (values: ingress.limity). Traefik widzi prawdziwy
+# adres (externalTrafficPolicy: Local), a ipStrategy bez glebokosci bierze
+# adres polaczenia, nie podrabialny X-Forwarded-For.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "kidwatch.fullname" $ }}-w-toku
+  labels:
+    {{- include "kidwatch.labels" $ | nindent 4 }}
+spec:
+  inFlightReq:
+    amount: {{ .wToku }}
+    sourceCriterion:
+      ipStrategy:
+        depth: 0
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "kidwatch.fullname" $ }}-tempo
+  labels:
+    {{- include "kidwatch.labels" $ | nindent 4 }}
+spec:
+  rateLimit:
+    average: {{ .naSekunde }}
+    burst: {{ .zapas }}
+    period: 1s
+    sourceCriterion:
+      ipStrategy:
+        depth: 0
+{{- end }}
+{{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -45,6 +80,9 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: {{ .Values.ingress.clusterIssuer }}
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    {{- if .Values.ingress.limity.enabled }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Release.Namespace }}-{{ include "kidwatch.fullname" . }}-w-toku@kubernetescrd,{{ .Release.Namespace }}-{{ include "kidwatch.fullname" . }}-tempo@kubernetescrd
+    {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   tls:

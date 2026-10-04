@@ -117,6 +117,50 @@ def test_polacz_i_rozlacz_bota_wymaga_potwierdzenia(served):
     assert call(port, "POST", "/api/profile/whatsapp/logout", {"confirm": HASLO}, h)[0] == 200
 
 
+def test_qr_bota_tylko_po_swiezym_potwierdzeniu(served):
+    """Przegląd 04.10, K-1: WAHA wchodzi w SCAN_QR_CODE sama (po każdym
+    rozłączeniu), więc QR na samą sesję pozwalał przejętej sesji podpiąć
+    obcy numer jako nadawcę. QR tylko po świeżym reauth tej sesji."""
+    _, _, port, h, calls = served
+    cookie = {"Cookie": h["Cookie"]}
+    # Sesja WAHA czeka na skan, ale ta sesja panelu niczego nie potwierdzała.
+    calls_before = len(calls)
+    status, data = call(port, "GET", "/api/profile/whatsapp/qr", headers=cookie)
+    assert status == 403 and "Potwierdź" in data["error"]
+    assert not [c for c in calls[calls_before:] if c[1] == "/v1/whatsapp/qr"]
+    assert call(port, "POST", "/api/profile/whatsapp/start", {"confirm": HASLO}, h)[0] == 200
+    status, qr = call(port, "GET", "/api/profile/whatsapp/qr", headers=cookie)
+    assert status == 200 and qr["data"] == "iVBOR"
+    # Po wylogowaniu z panelu ta sama sesja nie przejdzie.
+    assert call(port, "POST", "/api/auth/logout", {}, h)[0] == 200
+    assert call(port, "GET", "/api/profile/whatsapp/qr", headers=cookie)[0] == 401
+
+
+def test_swiezosc_potwierdzenia_wygasa(tmp_path):
+    now = [1_000_000.0]
+    auth = PanelAuth(tmp_path / "a.db", clock=lambda: now[0])
+    auth.add_user("rodzic", HASLO)
+    session = auth.login("rodzic", HASLO, ip="192.0.2.1").session
+    with pytest.raises(AuthError) as e:
+        auth.require_fresh_reauth(session)
+    assert e.value.status == 403
+    with pytest.raises(AuthError):
+        auth.reauth(session, "zle-haslo-zle-haslo")
+    with pytest.raises(AuthError):
+        auth.require_fresh_reauth(session)   # nieudane potwierdzenie sie nie liczy
+    auth.reauth(session, HASLO)
+    now[0] += 300
+    auth.require_fresh_reauth(session)
+    now[0] += 1
+    with pytest.raises(AuthError) as e:
+        auth.require_fresh_reauth(session)
+    assert e.value.status == 403
+    auth.reauth(session, HASLO)
+    auth.logout(session)
+    with pytest.raises(AuthError):
+        auth.require_fresh_reauth(session)
+
+
 # ======================================================================= panel
 def call(port, method, path, body=None, headers=None):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)

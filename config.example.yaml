@@ -239,6 +239,8 @@ device_read:
 
 # ----------------------------------------------------------------- przechowalnia
 store:
+  # Wzgledem katalogu z tym plikiem. Zmienna KIDWATCH_STORE_PATH nadpisuje
+  # te sciezke (docker-compose.yml ustawia /data/kidwatch.db, czyli wolumen).
   path: "kidwatch.db"
   retention_days: 30    # zdarzenia starsze sa kasowane; 0 = nie kasuj nigdy
   rollup_retention_days: 0   # agregaty dzienne (trendy, CSV); 0 = bez limitu

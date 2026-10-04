@@ -1169,7 +1169,7 @@ def make_handler(
             log.info("panel: %s -> %s", session.login, path)
             self._json(200, result)
 
-        def _profile_get(self, path: str) -> None:
+        def _profile_get(self, path: str, session: Session) -> None:
             if path == "/api/profile/notify":
                 if bramka is None:
                     self._json(200, {"available": False})
@@ -1179,6 +1179,9 @@ def make_handler(
                 except BramkaError as exc:
                     self._json(200, {"available": True, "error": exc.message})
             elif path == "/api/profile/whatsapp/qr":
+                # QR podpina NADAWCE powiadomien, wiec jak /start i /logout
+                # wymaga potwierdzenia tozsamosci - tu swiezego (K-1).
+                auth.require_fresh_reauth(session)
                 try:
                     self._json(200, self._bramka().qr())
                 except BramkaError as exc:
@@ -1232,7 +1235,7 @@ def make_handler(
                 return
             if path.startswith("/api/profile/"):
                 try:
-                    self._profile_get(path)
+                    self._profile_get(path, session)
                 except AuthError as exc:
                     self._json(exc.status, {"error": exc.message})
                 return

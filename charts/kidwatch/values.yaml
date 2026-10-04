@@ -78,6 +78,13 @@ secretName: kidwatch-secrets
 #     --from-file=$HOME/.pymobiledevice3/<UDID_1>.plist \
 #     --from-file=$HOME/.pymobiledevice3/<UDID_2>.plist
 pairingSecret: kidwatch-pairing
+# Odczyt iPadow (`device_read` w config.yaml). Wylaczony, bo iOS przyjmuje
+# lockdown tylko z sieci lokalnej (patrz Tailscale nizej). Dopiero `true`
+# montuje rekordy parowania w /pairing: zawieraja klucz prywatny hosta
+# zaufanego przez iPada i nie powinny lezec w podzie z publicznym panelem
+# bez potrzeby (przeglad 04.10, K-7).
+deviceRead:
+  enabled: false
 
 # Klucz ADB telewizora (czujnik TV, src/kidwatch/sources/tv.py), montowany w /adb.
 # Ten sam klucz, ktory telewizor zaakceptowal na ekranie ("Zawsze zezwalaj"):
@@ -114,6 +121,18 @@ ingress:
   aliasy:
     - kidswatch.renacode.com
   aliasyTlsSecret: kidwatch-aliasy-tls-cert
+  # Limity Traefika na routerze panelu, per adres klienta (K-8). Panel to
+  # watek procesu, ktory wysyla powiadomienia i prowadzi czujke: bez gornej
+  # granicy polaczen wolne zadania mogly wyczerpac pamiec calego poda.
+  # Rodzic klikajacy w panelu robi kilka zadan na sekunde, wiec zapas jest
+  # duzy. Wycofanie: `limity.enabled: false`.
+  limity:
+    enabled: true
+    # Ile zadan z jednego adresu moze byc w toku naraz.
+    wToku: 20
+    # Zadan na sekunde z jednego adresu: srednio i chwilowy zapas.
+    naSekunde: 30
+    zapas: 60
   # Bez BasicAuth na Traefiku: panel ma WLASNE logowanie, haslo + opcjonalny
   # TOTP (src/kidwatch/panel_auth.py). Konto zakladasz w podzie:
   #   kubectl -n default exec deploy/kidwatch -c kidwatch -- python -m kidwatch user-add <login>

@@ -1,0 +1,16 @@
+# Przeglad 04.10 (K-5, K-13): piny akcji po SHA i zaleznosci podbija Dependabot,
+# PR-em, raz w tygodniu. Plik dziala po wlaczeniu Dependabota w ustawieniach repo.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly

@@ -375,7 +375,10 @@ class BramkaConfig(_Base):
     url: str = "http://bramka.bramka.svc.cluster.local"
     #: Podpis w temacie maila: "[kidwatch] ...".
     zrodlo: str = "kidwatch"
-    timeout_seconds: float = 20.0
+    #: Dluzej niz najgorszy czas odpowiedzi bramki: sendText WAHA do 15 s,
+    #: potem zapasowy mail do 15 s, plus do 3 s na status. Krotszy timeout
+    #: konczyl sie ponowieniem z outboxa, choc mail juz wyszedl (K-12).
+    timeout_seconds: float = 40.0
 
     def key(self) -> str:
         """Klucz WYSYLKOWY kidwatcha (po stronie bramki: BRAMKA_KLUCZ_KIDWATCH).
@@ -645,10 +648,12 @@ class PanelConfig(_Base):
     #: glownej, czyli w klastrze na tym samym wolumenie /data — inaczej restart
     #: poda kasowalby konta i wylogowywal wszystkich.
     auth_db: str = ""
-    #: Jak dlugo trwa sesja. Tydzien, nie 12 h jak w Traderze: panel zmienia
-    #: najwyzej czas gry (zadanie w kolejce, CSRF), a ogladany jest glownie
-    #: z telefonu, gdzie codzienne logowanie skonczyloby sie haslem
-    #: zapamietanym w notatkach.
+    #: Jak dlugo trwa sesja. Tydzien, nie 12 h jak w Traderze: ogladany jest
+    #: glownie z telefonu, gdzie codzienne logowanie skonczyloby sie haslem
+    #: zapamietanym w notatkach. Sama sesja (z CSRF) zmienia czas gry i pauze
+    #: TV. Zmiany o szerszym zasiegu wymagaja ponownego potwierdzenia haslem
+    #: albo kodem 2FA: haslo, 2FA, odbiorcy i nadawca WhatsAppa oraz QR bota
+    #: (ten po swiezym potwierdzeniu, panel_auth.REAUTH_FRESH_SECONDS).
     session_hours: int = Field(default=168, ge=1, le=24 * 90)
     #: Atrybut Secure ciasteczek. W klastrze ruch idzie przez Traefika z TLS.
     #: Wylacz tylko lokalnie, gdy panel jest pod http:// innym niz localhost.
@@ -811,6 +816,12 @@ class Config(_Base):
             )
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         cfg = cls.model_validate(data)
+        # KIDWATCH_STORE_PATH nadpisuje store.path: docker compose kieruje baze
+        # na wolumen /data bez osobnego config.yaml (K-2). Obok niej laduje
+        # panel-auth.db (panel_auth_path).
+        override = os.environ.get("KIDWATCH_STORE_PATH", "").strip()
+        if override:
+            cfg.store.path = override
         # Sciezki relatywne liczymy wzgledem katalogu z config.yaml, nie cwd —
         # inaczej serwis uruchomiony z innego katalogu cicho tworzy druga baze.
         base = p.parent

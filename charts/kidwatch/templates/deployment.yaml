@@ -111,9 +111,11 @@ spec:
               mountPath: /app/app_map.yaml
               subPath: app_map.yaml
               readOnly: true
+            {{- if .Values.deviceRead.enabled }}
             - name: pairing
               mountPath: /pairing
               readOnly: true
+            {{- end }}
             - name: adb
               mountPath: /adb
               readOnly: true
@@ -184,10 +186,15 @@ spec:
         - name: config
           configMap:
             name: {{ include "kidwatch.fullname" . }}-config
+        {{- if .Values.deviceRead.enabled }}
+        # Rekordy parowania iPadow (klucz prywatny hosta), tylko przy odczycie
+        # iPadow. 0440 jak klucz ADB nizej.
         - name: pairing
           secret:
             secretName: {{ .Values.pairingSecret }}
             optional: true
+            defaultMode: 0440
+        {{- end }}
         # Klucz ADB telewizora. optional: bez Sekretu pod wstaje, a czujnik TV
         # wylacza sie z bledem w logu. 0440 + fsGroup: klucz prywatny czyta
         # tylko grupa procesu, nie "wszyscy".

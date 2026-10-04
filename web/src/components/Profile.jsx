@@ -220,6 +220,11 @@ function Recipients({ state, onSaved, busy, setBusy }) {
 function WhatsApp() {
   const [state, setState] = useState(null);
   const [qr, setQr] = useState(null);
+  // QR wymaga swiezego potwierdzenia haslem (serwer: 403 po 5 min albo bez
+  // "Polacz") - wtedy zamiast cichej przerwy mowimy rodzicowi, co zrobic.
+  const [qrNeedsConfirm, setQrNeedsConfirm] = useState(false);
+  // Po "Polacz" pobieramy QR od razu, nie dopiero przy nastepnym odswiezeniu.
+  const [qrKick, setQrKick] = useState(0);
   const [sessionConfirm, setSessionConfirm] = useState('');
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -241,19 +246,25 @@ function WhatsApp() {
   // az sesja przejdzie na WORKING (telefon zeskanowal kod).
   const waiting = state?.status === 'SCAN_QR_CODE' || state?.status === 'STARTING';
   useEffect(() => {
-    if (!waiting) { setQr(null); return undefined; }
+    if (!waiting) { setQr(null); setQrNeedsConfirm(false); return undefined; }
     let alive = true;
     const tick = async () => {
       const s = await load();
       if (!alive || !s) return;
       if (s.status === 'SCAN_QR_CODE') {
-        try { const q = await get('/api/profile/whatsapp/qr'); if (alive) setQr(q); } catch { /* za chwile */ }
+        try {
+          const q = await get('/api/profile/whatsapp/qr');
+          if (alive) { setQr(q); setQrNeedsConfirm(false); }
+        } catch (e) {
+          if (alive && e.status === 403) { setQr(null); setQrNeedsConfirm(true); }
+          /* inne bledy: za chwile kolejna proba */
+        }
       }
     };
     tick();
     const id = setInterval(tick, QR_REFRESH_MS);
     return () => { alive = false; clearInterval(id); };
-  }, [waiting, load]);
+  }, [waiting, load, qrKick]);
 
   const act = async (path, body, okText) => {
     setBusy(true); setMsg(null);
@@ -310,6 +321,12 @@ function WhatsApp() {
         </div>
       </div>
 
+      {qrNeedsConfirm && !qr && (
+        <div className="notice" style={{ marginBottom: 16 }}>
+          Kliknij „Połącz WhatsApp” i potwierdź hasłem albo kodem 2FA — wtedy pojawi się kod QR.
+        </div>
+      )}
+
       {qr && (
         <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap', marginBottom: 16 }}>
           <img src={`data:${qr.mimetype};base64,${qr.data}`} alt="Kod QR WhatsApp"
@@ -330,7 +347,7 @@ function WhatsApp() {
         {state.status !== 'WORKING' && (
           <button className="btn-ghost" disabled={busy || !sessionConfirm}
                   onClick={() => act('/api/profile/whatsapp/start', { confirm: sessionConfirm }, 'Sesja uruchomiona — zeskanuj kod QR.')
-                    .then((ok) => ok && setSessionConfirm(''))}>
+                    .then((ok) => { if (ok) { setSessionConfirm(''); setQrKick((k) => k + 1); } })}>
             Połącz WhatsApp
           </button>
         )}

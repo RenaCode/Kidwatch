@@ -18,17 +18,19 @@ env:
   # w charts/kidwatch/values.yaml (image.repository).
   IMAGE_NAME: renacode/kidwatch
 
+# Domyslnie tylko odczyt (przeglad 04.10, K-5): job `testy` biegnie tez dla
+# PR-ow i uruchamia ich kod. Zapis dostaja tylko joby, ktore go potrzebuja.
+# Akcje przypiete po SHA (komentarz = wersja); piny podbija Dependabot.
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
   testy:
     name: Testy i lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           enable-cache: true
       # --frozen: buduj DOKLADNIE to, co w uv.lock. Bez tego CI moglby przejsc
@@ -36,9 +38,21 @@ jobs:
       - run: uv sync --frozen
       - run: uv run ruff check .
       - run: uv run pytest -q
+      # Front: testy i build juz w PR, a nie dopiero w `docker build` na main.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm test
+        working-directory: web
+      - run: npm run build
+        working-directory: web
       # Chart musi sie renderowac, zanim obraz pojdzie na produkcje. Zly szablon
       # wychodzi inaczej dopiero w ArgoCD, jako nieudany sync bez jasnej przyczyny.
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
       - run: helm lint charts/kidwatch
       - run: helm template kidwatch charts/kidwatch > /dev/null
 
@@ -47,19 +61,22 @@ jobs:
     needs: testy
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     outputs:
       sha_short: ${{ steps.vars.outputs.sha_short }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - id: vars
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           push: true
@@ -76,14 +93,40 @@ jobs:
     name: Podbicie tagu w values.yaml
     needs: obraz
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Jeden podbijacz naraz (K-6). Bez tego tag starszego przebiegu, ktory
+    # skonczyl sie pozniej, nadpisywal tag nowszego i Argo cofalo wdrozenie.
+    concurrency:
+      group: kidwatch-tag
+      cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: main
+          # Pelna historia: ponizej porownujemy commity po skroconym SHA z tagu.
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
       - name: Podmien tag obrazu
         run: |
           set -euo pipefail
           SHA="sha-${{ needs.obraz.outputs.sha_short }}"
+          # Checkout to BIEZACY main, nie github.sha. Podbijamy tylko wtedy,
+          # gdy nasz commit nadal jest na main i nie ma tam juz tagu nowszego
+          # commita - inaczej starszy przebieg cofnalby wdrozenie.
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" HEAD; then
+            echo "commit $GITHUB_SHA nie jest na main, pomijam"
+            exit 0
+          fi
+          CUR=$(sed -n -E '/^image:/,/^[[:space:]]*pullPolicy:/ s|^[[:space:]]*tag: "sha-([0-9a-f]+)"$|\1|p' \
+            charts/kidwatch/values.yaml)
+          if [ -n "$CUR" ] && CUR_FULL=$(git rev-parse --verify -q "$CUR^{commit}"); then
+            if [ "$CUR_FULL" != "$GITHUB_SHA" ] \
+               && git merge-base --is-ancestor "$GITHUB_SHA" "$CUR_FULL"; then
+              echo "w values.yaml jest juz tag nowszego commita (sha-$CUR), pomijam"
+              exit 0
+            fi
+          fi
           # Sed ograniczony do bloku `image:` w sekcji glownej, zeby nie ruszyc
           # przypadkiem tagu Tailscale — ten jest pinowany swiadomie i podbicie
           # go razem z obrazem aplikacji zmienialoby zachowanie sieci poda.

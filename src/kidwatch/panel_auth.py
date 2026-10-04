@@ -88,6 +88,10 @@ MIN_PASSWORD_LEN = 12
 
 #: Bilet miedzy haslem a kodem — jak w Traderze.
 MFA_TICKET_SECONDS = 5 * 60
+#: Jak dlugo po udanym `reauth` sesja moze pobierac QR bota WhatsApp
+#: (przeglad 04.10, K-1). Skan to przeplyw interaktywny: rodzic klika
+#: "Polacz", podaje haslo i w ciagu minuty skanuje kod.
+REAUTH_FRESH_SECONDS = 5 * 60
 #: Ile bledych kodow wytrzymuje JEDEN bilet. Nizej niz MAX_FAILED celowo, jak
 #: w Traderze: bilet to jedno podejscie, nie budzet prob na konto.
 MAX_FAILED_PER_TICKET = 3
@@ -387,6 +391,11 @@ class PanelAuth:
         self.box = box
         self.session_seconds = session_seconds
         self.clock = clock
+        # token_hash -> czas ostatniego udanego reauth. W pamieci celowo: po
+        # restarcie poda rodzic potwierdza tozsamosc jeszcze raz, a QR i tak
+        # wygasa po kilkudziesieciu sekundach.
+        self._reauth_at: dict[str, float] = {}
+        self._reauth_lock = threading.Lock()
         new = not Path(self.path).exists()
         with self._conn() as conn:
             conn.executescript(SCHEMA)
@@ -747,6 +756,26 @@ class PanelAuth:
                 self._count_failure(conn, row["user_id"], now)
                 log.warning("panel: nieudane potwierdzenie tozsamosci dla %r", row["login"])
                 raise AuthError(401, "Nieprawidłowe hasło albo kod")
+        with self._reauth_lock:
+            self._reauth_at[session.token_hash] = now
+
+    def require_fresh_reauth(
+        self, session: Session, max_age_s: float = REAUTH_FRESH_SECONDS
+    ) -> None:
+        """Odmowa (403), jesli ta sesja nie potwierdzila tozsamosci w ciagu
+        `max_age_s` sekund. Dla QR bota WhatsApp (K-1): WAHA wchodzi w stan
+        skanu sama, po kazdym rozlaczeniu, a sama przejeta sesja nie moze
+        wtedy podpiac obcego numeru jako nadawcy powiadomien. 403, nie 401 -
+        sesja jest wazna, front nie ma wracac do ekranu logowania."""
+        now = self.clock()
+        with self._reauth_lock:
+            for key in [k for k, t in self._reauth_at.items() if now - t > max_age_s]:
+                del self._reauth_at[key]
+            fresh = session.token_hash in self._reauth_at
+        if not fresh:
+            raise AuthError(
+                403, "Potwierdź tożsamość ponownie (hasło albo kod), żeby pobrać kod QR"
+            )
 
     def change_password(self, session: Session, old: str, new: str) -> int:
         """Zmiana hasla z panelu. Wymaga STAREGO hasla (przejeta sesja nie
@@ -997,6 +1026,8 @@ class PanelAuth:
         }
 
     def logout(self, session: Session) -> None:
+        with self._reauth_lock:
+            self._reauth_at.pop(session.token_hash, None)
         with self._conn() as conn:
             conn.execute("DELETE FROM sessions WHERE token_hash = ?", (session.token_hash,))
 

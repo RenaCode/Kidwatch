@@ -11,7 +11,7 @@ cyklicznie. Wyjscie: lista `Notification`. Wysylka to nie jego sprawa.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 
@@ -28,11 +28,16 @@ log = logging.getLogger(__name__)
 #: Powiadomienia, ktorych limit godzinowy NIE dlawi. Zdlawienie informacji
 #: "iPad wlaczyl sie o 2 w nocy" albo "kidwatch oslepl" zniweczylo by sens
 #: calego serwisu. Start sesji jest z natury ograniczony przez idle_minutes,
-#: wiec nie moze sam z siebie zrobic lawiny.
+#: wiec nie moze sam z siebie zrobic lawiny. Koniec sesji tak samo: jeden na
+#: jeden start, a rodzic, ktory dostal "start", ma dostac i "koniec" (K-9).
 NEVER_THROTTLED = frozenset({
-    NotifyKind.SESSION_START, NotifyKind.WATCHDOG, NotifyKind.DAILY, NotifyKind.THROTTLED,
-    NotifyKind.NIGHT, NotifyKind.WEEKLY, NotifyKind.GAME, NotifyKind.TV_PAUSE,
+    NotifyKind.SESSION_START, NotifyKind.SESSION_END, NotifyKind.WATCHDOG, NotifyKind.DAILY,
+    NotifyKind.THROTTLED, NotifyKind.NIGHT, NotifyKind.WEEKLY, NotifyKind.GAME,
+    NotifyKind.TV_PAUSE,
 })
+
+#: Dopisek w tytule podsumowania wyslanego dzien pozniej (K-10).
+LATE_SUFFIX = " (z opóźnieniem)"
 
 #: Obecnosc z UniFi starsza niz to nie trafia do pusha — kontroler w restarcie
 #: nie moze "trzymac dziecka w domu". Ten sam prog co w panelu.
@@ -763,13 +768,37 @@ class Engine:
     def _maybe_daily_summary(self, now: datetime) -> list[Notification]:
         local = now.astimezone(self.cfg.tz)
         target = self.cfg.engine.daily_summary_time
+        out = self._late_daily_summary(local.date() - timedelta(days=1), now)
         if local.time() < target:
-            return []
+            return out
         day = local.date()
         if self.store.get_meta(f"daily_sent:{day.isoformat()}"):
-            return []
+            return out
         self.store.set_meta(f"daily_sent:{day.isoformat()}", to_iso(now))
-        return self._emit(self.build_summary(day, now, cut=target))
+        return out + self._emit(self.build_summary(day, now, cut=target))
+
+    def _late_daily_summary(self, day: date, now: datetime) -> list[Notification]:
+        """Podsumowanie za `day`, jesli pod lezal w porze wysylki (K-10).
+
+        Tylko JEDEN dzien wstecz: po dluzszym przestoju zalegle podsumowania
+        jedno po drugim to szum, a nie informacja. Bez sesji, o ktorych poszedl
+        push, nie wysylamy nic - "brak aktywnosci" z opoznieniem nikomu nie
+        pomaga. Ten sam klucz dedupu co zwykle podsumowanie, wiec duplikatu
+        nie bedzie."""
+        key = f"daily_sent:{day.isoformat()}"
+        if self.store.get_meta(key) or self._in_quiet_hours(now):
+            # W cichych godzinach czekamy do rana: pod, ktory wstal o 00:10,
+            # nie budzi rodzica wczorajszym podsumowaniem.
+            return []
+        target = self.cfg.engine.daily_summary_time
+        start = datetime.combine(day - timedelta(days=1), target, tzinfo=self.cfg.tz)
+        end = datetime.combine(day, target, tzinfo=self.cfg.tz)
+        if not any(int(r["start_notified"]) for r in self.store.sessions_between(start, end)):
+            return []
+        self.store.set_meta(key, to_iso(now))
+        note = self.build_summary(day, now, cut=target)
+        log.warning("podsumowanie dnia %s wysylane z opoznieniem", day.isoformat())
+        return self._emit(replace(note, title=note.title + LATE_SUFFIX))
 
     def summary_for(self, day: date, now: datetime) -> list[Notification]:
         """Podsumowanie doby lokalnej `day` do wysylki (dedup i log limitu)."""
@@ -953,17 +982,39 @@ class Engine:
             return []
         local = now.astimezone(self.cfg.tz)
         if local.weekday() != wr.weekday or local.time() < wr.time:
+            # Dzien po dniu raportu: nadrobienie, jesli pod lezal w porze
+            # wysylki (K-10). Tylko ten jeden dzien, jak przy podsumowaniu dnia.
+            yesterday = local.date() - timedelta(days=1)
+            if yesterday.weekday() == wr.weekday and not self._in_quiet_hours(now):
+                return self._weekly_for(yesterday, now, late=True)
             return []
-        monday = report_week(local.date())
+        return self._weekly_for(local.date(), now, late=False)
+
+    def _weekly_for(self, report_day: date, now: datetime, *, late: bool) -> list[Notification]:
+        wr = self.cfg.engine.weekly_report
+        monday = report_week(report_day)
         key = f"weekly_sent:{week_label(monday)}"
         if self.store.get_meta(key):
             return []
-        self.store.set_meta(key, to_iso(now))
         # W niedziele raport obejmuje biezacy tydzien, wiec konczy sie na
         # godzinie wysylki, a zaczyna na tej samej godzinie poprzedniej
         # niedzieli — inaczej niedzielny wieczor nie trafial do zadnego raportu.
-        cut = wr.time if local.weekday() == 6 else None
-        return self._emit(self.build_weekly(monday, now, cut=cut))
+        cut = wr.time if report_day.weekday() == 6 else None
+        note = self.build_weekly(monday, now, cut=cut)
+        if late:
+            tz = self.cfg.tz
+            if cut is None:
+                start = datetime.combine(monday, datetime.min.time(), tzinfo=tz)
+                end = start + timedelta(days=7)
+            else:
+                start = datetime.combine(monday - timedelta(days=1), cut, tzinfo=tz)
+                end = datetime.combine(monday + timedelta(days=6), cut, tzinfo=tz)
+            if not self._week_sessions(start, end):
+                return []
+            note = replace(note, title=note.title + LATE_SUFFIX)
+            log.warning("raport tygodnia %s wysylany z opoznieniem", week_label(monday))
+        self.store.set_meta(key, to_iso(now))
+        return self._emit(note)
 
     def _week_sessions(self, start: datetime, end: datetime) -> dict[str, list]:
         """{urzadzenie: [sesje]} z tygodnia — tylko te, o ktorych poszedl push
@@ -1149,6 +1200,7 @@ class Engine:
             name = dev.display_name
             last = self.store.get_meta(f"alive:{name}")
             if last is None:
+                out.extend(self._never_alive(name, now))
                 continue
             silence = now - from_iso(last)
             if silence < timedelta(minutes=wd.device_silence_minutes):
@@ -1171,6 +1223,38 @@ class Engine:
                 )
             )
         return out
+
+    def _never_alive(self, name: str, now: datetime) -> list[Notification]:
+        """Urzadzenie z konfiguracji, ktore NIGDY nie wyslalo DNS (K-11):
+        literowka w `source_ids` albo profil DNS, ktory nie zadzialal. Cisze
+        liczymy od pierwszego tiku, w ktorym je widzimy (jak `dev-since`
+        w scheduler.py). Alarm najwyzej raz na dobe lokalna."""
+        wd = self.cfg.watchdog
+        since_raw = self.store.get_meta(f"alive-since:{name}")
+        if since_raw is None:
+            self.store.set_meta(f"alive-since:{name}", to_iso(now))
+            return []
+        silence = now - from_iso(since_raw)
+        if silence < timedelta(minutes=wd.device_silence_minutes):
+            return []
+        if wd.device_silence_ignore_quiet_hours and self._in_quiet_hours(now):
+            return []
+        day = now.astimezone(self.cfg.tz).date()
+        return self._emit(
+            Notification(
+                kind=NotifyKind.WATCHDOG,
+                title=f"{name} nie pojawil sie w DNS",
+                text=(
+                    f"{name} od uruchomienia nie pojawil sie ani razu w DNS "
+                    f"({fmt_duration(silence)}).\nSprawdz `source_ids` w konfiguracji "
+                    f"i profil DNS na urzadzeniu."
+                ),
+                dedup_key=f"never-alive:{name}:{day.isoformat()}",
+                ts=now,
+                priority=4,
+                tags=("rotating_light",),
+            )
+        )
 
     def _watchdog_alert(self, key: str, now: datetime, title: str, text: str) -> list[Notification]:
         """Alarm z rosnacym odstepem powtorzen.
@@ -1291,7 +1375,11 @@ class Engine:
             and note.kind not in NEVER_THROTTLED
             and self._over_limit(note.device, note.ts)
         ):
-            self.store.push_throttled(note.device, note.app or note.text, note.ts)
+            # Nazwa aplikacji albo tytul - nie cala tresc: zbiorczy push ma
+            # wyliczyc, co pominieto, a nie wkleic wielolinijkowe sekcje (K-9).
+            self.store.push_throttled(
+                note.device, note.app or note.title or note.kind.value, note.ts
+            )
             return []
 
         self.store.log_notification(note.device, note.ts, note.kind.value)

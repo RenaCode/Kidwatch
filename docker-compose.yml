@@ -5,9 +5,15 @@ services:
     restart: unless-stopped
     environment:
       KIDWATCH_CONFIG: /config/config.yaml
+      # Baza na wolumenie: katalog z config.yaml jest tylko do odczytu, a
+      # sciezka wzgledna wskazalaby wlasnie tam.
+      KIDWATCH_STORE_PATH: /data/kidwatch.db
       # Sekrety z pliku .env obok tego compose (NIE commituj go).
       NEXTDNS_API_KEY: ${NEXTDNS_API_KEY:-}
       ADGUARD_PASSWORD: ${ADGUARD_PASSWORD:-}
+      # config.example.yaml ma wlaczone ntfy z pustym topic - bez tej zmiennej
+      # walidacja konfiguracji zatrzymuje start.
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
       NTFY_TOKEN: ${NTFY_TOKEN:-}
       HA_WEBHOOK_ID: ${HA_WEBHOOK_ID:-}
       # Klucz szyfrujacy sekrety TOTP panelu WWW: openssl rand -base64 32

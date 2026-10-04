@@ -34,6 +34,30 @@ Tailscale **nie jest potrzebny** (sprawdzone 2026-10-02, wyjaśnienie w kroku 4)
 
 Kolejność kroków ma znaczenie: konfiguracja (krok 6) potrzebuje danych z kroków 1–5.
 
+### Bez infrastruktury RenaCode
+
+Instrukcja niżej opisuje klaster, na którym kidwatch działa u autora. Trzy
+elementy pochodzą z prywatnych zasobów i u Ciebie ich nie będzie:
+
+- **Obraz.** `ghcr.io/renacode/kidwatch` jest prywatny. Zbuduj własny
+  (`docker build -t <rejestr>/kidwatch:<tag> .` i push do swojego rejestru),
+  a w chartcie ustaw `image.repository` i `image.tag`. Jeśli rejestr jest
+  publiczny albo obraz leży lokalnie na węźle, ustaw `imagePullSecrets: []`
+  i pomiń sekret `ghcr-pull`.
+- **Powiadomienia.** Bramka (`notifiers.bramka`) to osobna usługa z prywatnego
+  repo infrastruktury. U siebie ustaw w `config.yaml`
+  `notifiers.bramka.enabled: false` i `notifiers.ntfy.enabled: true`, a temat
+  ntfy podaj zmienną `NTFY_TOPIC` w Sekrecie `kidwatch-secrets` zamiast
+  `BRAMKA_KLUCZ` i `BRAMKA_KLUCZ_ADMIN`. Zakładka WhatsApp w profilu panelu
+  pokaże wtedy, że bramka nie jest skonfigurowana. To jest oczekiwane.
+- **Wdrożenie i adresy.** Aplikację Argo CD (krok 8) zakładasz we własnym
+  repo albo ręcznie. Wszystko, co niżej wskazuje na `renacode-infra`, zastępujesz
+  własną aplikacją Argo CD albo `helm install`. Nadpisz `ingress.host`
+  i `ingress.aliasy` (albo ustaw `aliasy: []`), a `ingress.clusterIssuer`
+  dopasuj do swojego cert-managera. Limity Traefika (`ingress.limity`)
+  wymagają CRD `traefik.io/v1alpha1`. Bez Traefika ustaw
+  `ingress.limity.enabled: false` i `ingress.className` swojego kontrolera.
+
 ---
 
 ## 1. NextDNS: profil i klucz API
