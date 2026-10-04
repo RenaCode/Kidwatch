@@ -14,3 +14,12 @@ updates:
     directory: /web
     schedule:
       interval: weekly
+    # Jeden PR na tydzien zamiast osobnych: react/react-dom i vite/plugin-react
+    # musza isc razem, inaczej kazdy PR z osobna pada w CI na konflikcie wersji.
+    groups:
+      web:
+        patterns: ["*"]
+    # Skoki glownych wersji (react 19, vite 8) wymagaja zmian w kodzie - recznie.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
