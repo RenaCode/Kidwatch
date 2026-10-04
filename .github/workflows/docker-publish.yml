@@ -1,0 +1,116 @@
+name: Testy, obraz i podbicie tagu
+
+# Przy kazdym pushu na main: testy -> obraz do ghcr.io -> podbicie tagu w
+# charts/kidwatch/values.yaml. ArgoCD na VPS obserwuje ten plik i sam
+# synchronizuje wdrozenie, wiec nie ma tu zadnego SSH ani `kubectl apply`.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+env:
+  REGISTRY: ghcr.io
+  # Na sztywno, malymi literami: `repository_owner` to "RenaCode", a nazwa
+  # repozytorium obrazu w rejestrze MUSI byc malymi literami - buildx odrzucal
+  # tag i obraz nie powstawal od pierwszego przebiegu. Ta sama nazwa stoi
+  # w charts/kidwatch/values.yaml (image.repository).
+  IMAGE_NAME: renacode/kidwatch
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  testy:
+    name: Testy i lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # --frozen: buduj DOKLADNIE to, co w uv.lock. Bez tego CI moglby przejsc
+      # na innych wersjach niz obraz, a rozjazd wyszedlby dopiero na produkcji.
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run pytest -q
+      # Chart musi sie renderowac, zanim obraz pojdzie na produkcje. Zly szablon
+      # wychodzi inaczej dopiero w ArgoCD, jako nieudany sync bez jasnej przyczyny.
+      - uses: azure/setup-helm@v4
+      - run: helm lint charts/kidwatch
+      - run: helm template kidwatch charts/kidwatch > /dev/null
+
+  obraz:
+    name: Obraz do ghcr.io
+    needs: testy
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      sha_short: ${{ steps.vars.outputs.sha_short }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # Klaster to k3s na VPS-ie — jeden ksztalt platformy wystarczy, a
+          # budowanie arm64 przez QEMU wydluzalo by przebieg bez potrzeby.
+          platforms: linux/amd64
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  tag:
+    name: Podbicie tagu w values.yaml
+    needs: obraz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Podmien tag obrazu
+        run: |
+          set -euo pipefail
+          SHA="sha-${{ needs.obraz.outputs.sha_short }}"
+          # Sed ograniczony do bloku `image:` w sekcji glownej, zeby nie ruszyc
+          # przypadkiem tagu Tailscale — ten jest pinowany swiadomie i podbicie
+          # go razem z obrazem aplikacji zmienialoby zachowanie sieci poda.
+          sed -i -E "/^image:/,/^[[:space:]]*pullPolicy:/ { s|^([[:space:]]*)tag: \".*\"$|\1tag: \"$SHA\"| }" \
+            charts/kidwatch/values.yaml
+          grep -q "tag: \"$SHA\"" charts/kidwatch/values.yaml \
+            || { echo "::error::sed nie podmienil tagu obrazu"; exit 1; }
+          # Tag Tailscale MUSI zostac nietkniety.
+          grep -q 'tag: "v1\.' charts/kidwatch/values.yaml \
+            || { echo "::error::sed zniszczyl tag Tailscale"; exit 1; }
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add charts/kidwatch/values.yaml
+          if git diff --cached --quiet; then
+            echo "tag juz aktualny, nic do zrobienia"
+            exit 0
+          fi
+          # [skip ci] jest tu KONIECZNE: bez tego commit z podbiciem tagu
+          # uruchamialby ten workflow od nowa, w petli.
+          git commit -m "chore: obraz sha-${{ needs.obraz.outputs.sha_short }} [skip ci]"
+          # Dwa przebiegi blisko siebie powoduja "rejected (fetch first)".
+          # Ponawiamy z rebase, zamiast wywalac caly przebieg.
+          for attempt in 1 2 3; do
+            if git push; then exit 0; fi
+            echo "push odrzucony (proba $attempt) — rebase i ponowienie"
+            git pull --rebase --autostash
+          done
+          echo "::error::nie udalo sie wypchnac podbicia tagu"
+          exit 1

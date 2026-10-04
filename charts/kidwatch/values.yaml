@@ -1,0 +1,159 @@
+# JEDEN pod, JEDEN proces. SQLite ma jednego pisarza, wiec dwie replikacje albo
+# RollingUpdate rozjechalyby stan sesji i zdublowaly powiadomienia. To warunek
+# poprawnosci, nie ostroznosc.
+replicaCount: 1
+
+# Ile starych ReplicaSetow trzymac po rolloucie. Domyslne k8s to 10, co przy
+# deployu z kazdego pusha uzbieralo 115 pustych RS w ~2.5 miesiaca.
+revisionHistoryLimit: 3
+
+# Obrazy w ghcr.io/renacode sa PRYWATNE: bez poswiadczen kubelet dostaje HTTP 401
+# i pod stoi w ImagePullBackOff. Sekret zaklada sie raz na przestrzen nazw:
+#   kubectl create secret docker-registry ghcr-pull \
+#     --docker-server=ghcr.io --docker-username=<user> --docker-password=<pat>
+imagePullSecrets:
+  - name: ghcr-pull
+
+image:
+  repository: ghcr.io/renacode/kidwatch
+  tag: "sha-fceaee0"
+  pullPolicy: IfNotPresent
+
+resources:
+  limits:
+    # Bez limitu CPU swiadomie: throttling opoznia tiki, a wtedy czujka
+    # zglaszalaby cisze, ktorej nie ma.
+    memory: 384Mi
+  requests:
+    cpu: 20m
+    memory: 128Mi
+
+persistence:
+  # Baza SQLite: otwarte sesje, klucze wyslanych powiadomien i kursor strumienia.
+  # Bez tego kazdy restart gubi sesje i dubluje pushe.
+  size: 1Gi
+  storageClass: ""
+  accessMode: ReadWriteOnce
+
+# ------------------------------------------------------- TAILSCALE (nieuzywany)
+# Pozostalosc po probie odczytu iPadow przez tailnet. NIE jest potrzebny do
+# niczego, co dziala: DNS, TV i UniFi chodza bez niego, a Tailscale zostal
+# usuniety z infrastruktury. Sprawdzone 2026-10-02 na sprzecie: iOS zrywa
+# polaczenie z lockdown (port 62078) od kazdego spoza sieci lokalnej iPada —
+# przez Tailscale i przez tunel WireGuard tak samo (ConnectionReset). Odczyt
+# iPadow wymaga agenta w domowym LAN. Kontener zostaje jako opcja.
+tailscale:
+  enabled: false
+  image:
+    # Pinowana wersja, nie `stable`: ruchomy tag zmienia zachowanie sieci poda
+    # przy przypadkowym restarcie, a to najgorsze miejsce na taka niespodzianke.
+    repository: tailscale/tailscale
+    tag: "v1.102.5"
+    pullPolicy: IfNotPresent
+  # Klucz autoryzacyjny z konsoli Tailscale (Settings -> Keys -> Auth keys).
+  # Zalecany: reusable, ephemeral=false, tag np. tag:kidwatch.
+  #   kubectl -n default create secret generic kidwatch-tailscale \
+  #     --from-literal=TS_AUTHKEY=tskey-auth-...
+  authKeySecret: kidwatch-tailscale
+  authKeySecretKey: TS_AUTHKEY
+  hostname: kidwatch
+  resources:
+    limits:
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+# ---------------------------------------------------------------- SEKRETY
+# Klucze API i tokeny. Zakladasz recznie, ArgoCD tego nie synchronizuje:
+#   kubectl -n default create secret generic kidwatch-secrets \
+#     --from-literal=NEXTDNS_API_KEY=... --from-literal=NTFY_TOKEN=...
+# Opcjonalne klucze w tym samym Sekrecie: PANEL_TOTP_KEY (2FA panelu),
+# UNIFI_API_KEY (czujka UniFi; bez niego czujka sie nie uruchamia).
+secretName: kidwatch-secrets
+
+# Rekordy parowania <UDID>.plist, wygenerowane JEDNORAZOWO na Macu po kablu.
+# Sa przenosne miedzy maszynami — sprawdzone: skopiowane na Linuksa dzialaja.
+#   kubectl -n default create secret generic kidwatch-pairing \
+#     --from-file=$HOME/.pymobiledevice3/<UDID_1>.plist \
+#     --from-file=$HOME/.pymobiledevice3/<UDID_2>.plist
+pairingSecret: kidwatch-pairing
+
+# Klucz ADB telewizora (czujnik TV, src/kidwatch/sources/tv.py), montowany w /adb.
+# Ten sam klucz, ktory telewizor zaakceptowal na ekranie ("Zawsze zezwalaj"):
+#   kubectl -n default create secret generic kidwatch-adb \
+#     --from-file=adbkey=$HOME/.android/adbkey --from-file=adbkey.pub=$HOME/.android/adbkey.pub
+adbSecret: kidwatch-adb
+
+# PRAWDZIWA konfiguracja (config.yaml) z Sekretu, nie z repo. Repo jest
+# publiczne, a konfiguracja zawiera ID profilu NextDNS, UDID-y iPadow, adresy
+# sieci domowej i imiona dzieci. files/config.yaml to tylko wzorzec bez tych danych.
+# Wgranie i restart poda: tools/wgraj_konfiguracje.sh
+# Puste = config.yaml z files/config.yaml (tylko do testow i lokalnych prob).
+configSecret: kidwatch-config
+
+timezone: Europe/Warsaw
+
+# ------------------------------------------------------------------ PANEL WWW
+# Historia powiadomien i sesji pod https://kidwatch.renacode.com. Serwer chodzi
+# w procesie `run` (watek, odczyt bazy tylko do odczytu), wiec nie ma osobnego
+# poda ani obrazu. Port musi sie zgadzac z `panel.port` w files/config.yaml.
+panel:
+  enabled: true
+  port: 8080
+
+ingress:
+  enabled: true
+  className: traefik
+  host: kidwatch.renacode.com
+  tlsSecret: kidwatch-tls-cert
+  clusterIssuer: letsencrypt-prod
+  # Dodatkowe adresy panelu: stale przekierowanie 301 na `host` (ze sciezka).
+  # Przekierowanie, a nie drugi adres tej samej aplikacji: ciasteczko sesji
+  # i ochrona CSRF sa zwiazane z jedna domena.
+  aliasy:
+    - kidswatch.renacode.com
+  aliasyTlsSecret: kidwatch-aliasy-tls-cert
+  # Bez BasicAuth na Traefiku: panel ma WLASNE logowanie, haslo + opcjonalny
+  # TOTP (src/kidwatch/panel_auth.py). Konto zakladasz w podzie:
+  #   kubectl -n default exec deploy/kidwatch -c kidwatch -- python -m kidwatch user-add <login>
+  # Klucz szyfrujacy sekrety TOTP (PANEL_TOTP_KEY) idzie z `secretName` wyzej.
+
+# ------------------------------------------------------------ NETWORKPOLICY
+# Kto moze otworzyc polaczenie do poda kidwatch (templates/networkpolicy.yaml).
+# Jedynym zrodlem ruchu przychodzacego jest Traefik z kube-system - proxuje
+# z WLASNEGO adresu poda, wiec wskazujemy jego pod, nie wezel. Wpuszczony jest
+# wylacznie port panelu (`panel.port`); przy `panel.enabled: false` pod nie
+# przyjmuje niczego. Zmierzone na klastrze 2026-10-03: zaden inny pod nie laczy
+# sie z kidwatchem. Polaczenia WYCHODZACE (bramka, NextDNS, ntfy, tunel do
+# domu) nie sa ograniczane - polityka jest typu Ingress.
+#
+# Sondy kubeleta i `kubectl port-forward` dzialaja bez reguly: kube-router
+# w k3s przepuszcza ruch z adresu wezla przed lancuchem polityk.
+#
+# Szybkie wycofanie: `enabled: false`.
+networkPolicy:
+  enabled: true
+  traefik:
+    namespace: kube-system
+    podLabels:
+      app.kubernetes.io/name: traefik
+  # EGRESS (2026-10-03): pod NIE dochodzi do sieci domowej za tunelem
+  # WireGuard poza dokladnie tymi celami, ktorych uzywa (TV przez ADB, UniFi).
+  # Reszta ruchu wychodzacego bez zmian: DNS, pody klastra, internet, API
+  # klastra. Reguly: `kidwatch.regulyEgress` w _helpers.tpl.
+  #
+  # ADRESY SA PUSTE CELOWO - repo jest publiczne. Prawdziwe zakresy domowe
+  # i adresy TV/UDM wstrzykuje wdrozenie (Argo CD `helm.valuesObject`
+  # w prywatnym repo infrastruktury). Przy pustej `siecDomowa` polityka
+  # niczego nie wycina (0.0.0.0/0 bez wyjatkow).
+  #
+  # Szybkie wycofanie samego egress: `egress.enabled: false`.
+  egress:
+    enabled: true
+    # Zakresy niedostepne dla poda (np. LAN domowy i siec tunelu), CIDR.
+    siecDomowa: []
+    # Jedyne cele w tych zakresach, do ktorych pod ma dostep:
+    #   - { cidr: <IP TV>/32, port: 5555 }   # ADB telewizora (`tv.host`)
+    #   - { cidr: <IP UDM>/32, port: 443 }   # UniFi (`unifi.url`)
+    wDomu: []

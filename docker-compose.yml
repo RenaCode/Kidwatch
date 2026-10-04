@@ -1,0 +1,32 @@
+services:
+  kidwatch:
+    build: .
+    image: kidwatch:local
+    restart: unless-stopped
+    environment:
+      KIDWATCH_CONFIG: /config/config.yaml
+      # Sekrety z pliku .env obok tego compose (NIE commituj go).
+      NEXTDNS_API_KEY: ${NEXTDNS_API_KEY:-}
+      ADGUARD_PASSWORD: ${ADGUARD_PASSWORD:-}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
+      HA_WEBHOOK_ID: ${HA_WEBHOOK_ID:-}
+      # Klucz szyfrujacy sekrety TOTP panelu WWW: openssl rand -base64 32
+      PANEL_TOTP_KEY: ${PANEL_TOTP_KEY:-}
+      # Klucz API kontrolera UniFi (czujka "profil DNS usuniety"), opcjonalny.
+      UNIFI_API_KEY: ${UNIFI_API_KEY:-}
+      TZ: Europe/Warsaw
+    volumes:
+      # Konfiguracja tylko do czytania — serwis nie ma powodu jej zmieniac.
+      - ./config.yaml:/config/config.yaml:ro
+      # app_map.yaml osobno i zapisywalnie z zewnatrz: przeladowuje sie na goraco,
+      # wiec mozesz edytowac mape domen bez restartu kontenera.
+      - ./app_map.yaml:/app/app_map.yaml:ro
+      - kidwatch-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  kidwatch-data:

@@ -1,0 +1,358 @@
+# Mapowanie domen na aplikacje. Plik jest przeladowywany na goraco (po mtime),
+# wiec mozesz go edytowac bez restartu serwisu.
+#
+# Reguly dopasowania:
+#   * "example.com"   dopasuje example.com oraz dowolna poddomene (a.b.example.com)
+#   * "*.example.com" to samo znaczenie, zapis dozwolony dla czytelnosci
+#   * "=example.com"  dopasuje TYLKO dokladnie example.com, bez poddomen
+#   * przy kilku trafieniach wygrywa NAJDLUZSZY (najbardziej szczegolowy) wzorzec,
+#     wiec kolejnosc w pliku nie ma znaczenia
+#   * przy IDENTYCZNYM wzorcu w dwoch sekcjach wygrywa ta ostrozniejsza:
+#     noise > shared > apps. Lepiej przeoczyc aplikacje niz budzic pushem
+#     spiacy iPad
+#
+# Trzy sekcje, trzy rozne zachowania:
+#   noise  — nie otwiera sesji, NIE przedluza jej
+#   shared — nie otwiera sesji, ALE przedluza otwarta (i tylko gdy rozpoznane
+#            zdarzenie bylo nie dawniej niz idle_minutes)
+#   apps   — otwiera sesje i nadaje jej nazwe aplikacji
+
+# ---------------------------------------------------------------------- SZUM
+# iPad odpytuje te domeny non stop, takze z wygaszonym ekranem i w uspieniu.
+# Szum NIE liczy sie jako aktywnosc i nie budzi sesji. Sluzy natomiast jako
+# dowod, ze potok danych zyje (patrz watchdog w config.yaml).
+noise:
+  # --- infrastruktura Apple
+  - apple.com
+  - icloud.com
+  - icloud-content.com
+  - me.com
+  - mzstatic.com
+  - apple-dns.net
+  - cdn-apple.com
+  - aaplimg.com
+  - apple-cloudkit.com
+  - apzones.com
+  - itunes.com
+  # Apple ma WLASNY gTLD `.apple` i realnie go uzywa, m.in.
+  # token.safebrowsing.apple. Bez tego wpisu takie zapytania sa "nieznane"
+  # i otwieraja widmowe sesje w srodku nocy.
+  - apple
+  # Akamai: technicznie wspolny CDN, ale na iPadzie zdominowany przez uslugi
+  # Apple. Bez tego w szumie spiacy iPad otwieralby sesje w kolko.
+  - akadns.net
+  - akamaiedge.net
+  - akamaitechnologies.com
+  # --- czas, certyfikaty, wykrywanie portali logowania
+  - ntp.org
+  - digicert.com
+  - sectigo.com
+  - letsencrypt.org
+  # Sprawdzanie certyfikatow (OCSP/CRL) idzie tez przez nazwy w cudzych strefach,
+  # np. eip-terr-eu.cdp1.digicert.com.akahost.net — 2026-10-02 to jedno zapytanie
+  # otworzylo sesje na lezacym iPadzie.
+  - akahost.net
+  - lencr.org
+  - pki.goog
+  - globalsign.com
+  - entrust.net
+  - usertrust.com
+  - comodoca.com
+  # --- telemetria, crash reporting, atrybucja reklamowa
+  - crashlytics.com
+  - app-measurement.com
+  - google-analytics.com
+  - googletagmanager.com
+  - sentry.io
+  - bugsnag.com
+  - amplitude.com
+  - segment.io
+  - segment.com
+  - mixpanel.com
+  - flurry.com
+  - onesignal.com
+  - braze.com
+  - firebaseinstallations.googleapis.com
+  - firebaseremoteconfig.googleapis.com
+  - device-provisioning.googleapis.com
+  # Firebase/Google Analytics dla aplikacji (domena "app-measurement" Google).
+  # Zgloszone 2026-10-02 jako "Przegladarka / inne" przy kazdej grze.
+  - app-analytics-services.com
+  - ipify.org
+
+# --------------------------------------------------------- RUCH WSPOLDZIELONY
+# Domeny, ktore obsluguja JEDNOCZESNIE ruch uslug w tle i realne uzytkowanie.
+# Zaliczenie ich do szumu gubi cala sesje grania (gra gadajaca tylko z
+# CloudFrontem bylaby niewidzialna); zaliczenie do aplikacji otwiera widmowe
+# sesje przy spiacym iPadzie. Dlatego PRZEDLUZAJA sesje, ale jej nie otwieraja.
+#
+# UWAGA na to, czego tu NIE MA: *.akamaiedge.net i *.akadns.net zostaly w szumie,
+# mimo ze gry tez z nich korzystaja. Na iPadzie dominuje tam ruch Apple w tle,
+# a przedluzanie nim sesji trzymaloby ja otwarta bez konca.
+shared:
+  # --- ogolne CDN-y, po ktorych jedzie polowa App Store
+  - cloudfront.net
+  - amazonaws.com
+  - fastly.net
+  - fastlylb.net
+  - gcdn.co
+  - gcore.lu
+  # --- SDK reklamowe: odpalaja sie, gdy apka jest NA WIERZCHU, wiec sa dowodem
+  #     uzytkowania — ale nie mowia, ktorej aplikacji
+  - unity3d.com
+  - applovin.com
+  - ironsrc.com
+  - supersonicads.com
+  - inmobi.com
+  - vungle.com
+  - chartboost.com
+  - tapjoy.com
+  - adcolony.com
+  - doubleclick.net
+  - googlesyndication.com
+  - googleadservices.com
+  # --- atrybucja instalacji: odpala sie przy starcie aplikacji
+  - adjust.com
+  - appsflyer.com
+  - branch.io
+  # --- akamai.net (np. a1556.dscapi9.akamai.net): CDN uslug Apple i gier.
+  #     2026-10-02 otworzyl sesje "iPad aktywny — akamai.net" zanim dziecko
+  #     cokolwiek wlaczylo; jako wspoldzielony przedluza, ale nie otwiera.
+  - akamai.net
+  # --- kolejne sieci reklamowe widziane w grach (2026-10-02)
+  - inner-active.mobi
+  - fyber.com
+  - liftoff-creatives.io
+  - liftoff.io
+  - anzu.io
+  - anzuinfra.com
+  # --- SDK Facebooka (Audience Network, logowanie) w grach
+  - facebook.com
+  - fbcdn.net
+  # --- kolejne sieci reklamowe i SDK z Happy Color (2026-10-02)
+  - app-ads-services.com
+  - mobilefuse.com
+  - safedk.com
+  - adjust.io
+  - presage.io
+  - mtgglobals.com
+  - smaato.net
+  - amazon-adsystem.com
+  - xutils.io
+  - aliyuncs.com
+  - anzu-us.com
+  # --- okna zgod RODO w grach (Didomi) i biblioteki ladowane przez WebView
+  - privacy-center.org
+  - jquery.com
+  # --- Helpshift za Cloudflare (pomoc w grach); sam cloudflare.net to CDN
+  - cloudflare.net
+  # --- zaplecze Google. Uzywa go wiekszosc aplikacji (logowanie, API, obrazki),
+  #     wiec samo w sobie nie mowi, czy to przegladarka. Zgloszone 2026-10-02 jako
+  #     "Przegladarka / inne: google.com" przy starcie YouTube. YouTube i YouTube
+  #     Kids maja dokladniejsze wpisy nizej (youtubei.googleapis.com), ktore
+  #     wygrywaja jako dluzszy sufiks.
+  - google.com
+  - googleapis.com
+  - googleusercontent.com
+  - gstatic.com
+  # --- zaplecze gier i wsparcia
+  - firebaseio.com
+  - firebasedatabase.app
+  - helpshift.com
+
+# ------------------------------------------------------------------ APLIKACJE
+apps:
+  "YouTube Kids":
+    - youtubekids.com
+
+  "YouTube":
+    - youtube.com
+    - youtu.be
+    - googlevideo.com
+    - ytimg.com
+    - ggpht.com
+    - youtubei.googleapis.com
+    - youtube-nocookie.com
+
+  "Roblox":
+    - roblox.com
+    - rbxcdn.com
+    - robloxlabs.com
+
+  "Minecraft":
+    - minecraft.net
+    - minecraftservices.com
+    - mojang.com
+    - playfabapi.com
+
+  "TikTok":
+    - tiktok.com
+    - tiktokv.com
+    - tiktokcdn.com
+    - byteoversea.com
+    - ibytedtos.com
+    - musical.ly
+
+  "CapCut":
+    - capcut.com
+
+  "Netflix":
+    - netflix.com
+    - nflxvideo.net
+    - nflximg.net
+    - nflxext.com
+    - nflxso.net
+
+  "Disney+":
+    - disneyplus.com
+    - disney-plus.net
+    - bamgrid.com
+    - dssott.com
+    - disneystreaming.com
+
+  "HBO Max":
+    - max.com
+    - hbomax.com
+    - hbo.com
+
+  "Spotify":
+    - spotify.com
+    - scdn.co
+    - spotifycdn.com
+
+  "Brawl Stars / Supercell":
+    - supercell.com
+    - supercellgames.com
+    - brawlstarsgame.com
+    - clashofclans.com
+    - clashroyaleapp.com
+
+  "Fortnite / Epic":
+    - epicgames.com
+    - unrealengine.com
+    - fortnite.com
+    - easyanticheat.net
+
+  "Among Us":
+    - innersloth.com
+
+  "Steam":
+    - steampowered.com
+    - steamcommunity.com
+    - steamstatic.com
+
+  "Twitch":
+    - twitch.tv
+    - ttvnw.net
+    - jtvnw.net
+
+  "Discord":
+    - discord.com
+    - discordapp.com
+    - discordapp.net
+    - discord.gg
+    - discord.media
+
+  "WhatsApp":
+    - whatsapp.com
+    - whatsapp.net
+
+  # facebook.com/fbcdn.net NIE: SDK Facebooka (reklamy, logowanie) siedzi w
+  # wiekszosci darmowych gier. 2026-10-02 Happy Color zostal zgloszony jako
+  # "Messenger" przez ep2.facebook.com. Sam facebook.com jest w `shared`.
+  "Messenger":
+    - messenger.com
+    - "=edge-chat.facebook.com"
+    - "=edge-chat.messenger.com"
+
+  "Happy Color":
+    - happycolorapp.com
+    - x-flow.app
+
+  "Instagram":
+    - instagram.com
+    - cdninstagram.com
+
+  "Snapchat":
+    - snapchat.com
+    - sc-cdn.net
+    - snap.com
+
+  "Telegram":
+    - telegram.org
+    - telegram.me
+    - t.me
+
+  "Duolingo":
+    - duolingo.com
+
+  # --- GRY. Kazda domena sprawdzona zapytaniem DNS do 1.1.1.1 (2026-09-27),
+  #     ale istnienie domeny nie dowodzi, ze dana gra jej uzywa. Zweryfikuj
+  #     na wlasnych logach:  kidwatch domains --unknown-only
+  "Asphalt / Gameloft":
+    - gameloft.com
+    - gameloft.net
+
+  "Subway Surfers":
+    - sybogames.com
+
+  "Candy Crush / King":
+    - king.com
+    - midasplayer.com
+
+  "Pokemon GO":
+    - nianticlabs.com
+    - pokemongolive.com
+
+  "Genshin / HoYoverse":
+    - mihoyo.com
+    - hoyoverse.com
+    - yuanshen.com
+
+  "Angry Birds":
+    - rovio.com
+
+  "Talking Tom":
+    - outfit7.com
+
+  "Toca Boca":
+    - tocaboca.com
+
+  "Gacha (Lunime)":
+    - lunime.com
+
+  "EA":
+    - ea.com
+    - easports.com
+
+  "Scopely":
+    - scopely.com
+
+  "PUBG Mobile":
+    - pubgmobile.com
+    - igamecj.com
+
+  "Garena / Free Fire":
+    - garena.com
+
+  # --- polskie serwisy, ktore dzieci realnie odwiedzaja
+  "CDA":
+    - cda.pl
+
+  "Player.pl":
+    - player.pl
+    - tvn.pl
+
+  "TVP VOD":
+    - tvp.pl
+    - tvp.info
+
+  "Polsat Box Go":
+    - polsatboxgo.pl
+    - redefine.pl
+
+  "Szkola / Google":
+    - classroom.google.com
+    - docs.google.com
+    - drive.google.com
+    - meet.google.com

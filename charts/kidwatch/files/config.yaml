@@ -1,0 +1,245 @@
+# WZORZEC konfiguracji klastra — BEZ danych osobowych, bo repo bedzie publiczne.
+#
+# Prawdziwa konfiguracja (ID profilu NextDNS, UDID-y, adresy w sieci domowej, imiona)
+# jedzie z Sekretu `kidwatch-config` (values.yaml: configSecret). Lokalnie trzymasz
+# ja w `config.cluster.yaml` w korzeniu repo (jest w .gitignore) i wgrywasz:
+#   tools/wgraj_konfiguracje.sh
+#
+# Ten plik sluzy jako punkt wyjscia do skopiowania i jako material dla testow.
+# Konfiguracja dla klastra. Sekretow tu NIE MA — ida z Sekretu kidwatch-secrets
+# przez envFrom: NEXTDNS_API_KEY, NTFY_TOKEN, ADGUARD_PASSWORD, HA_WEBHOOK_ID.
+timezone: Europe/Warsaw
+app_map_path: /app/app_map.yaml
+
+# ---------------------------------------------------------------- zrodlo DNS
+# Warstwa dzialajaca ZAWSZE: iPad dzwoni na zewnatrz do resolvera, wiec nic nie
+# musi sie do niego dobijac. Obejmuje kazda siec, takze komorkowa.
+source:
+  kind: nextdns
+  nextdns:
+    profile_id: "ZMIEN_MNIE"
+    raw: false
+
+# ------------------------------------------------------------------ urzadzenia
+# `udid` + `host` wlaczaja odczyt WPROST z iPada. Identyfikacja wylacznie po
+# UDID — nazwy zwodza: te same iPady zglaszaly sie przez usbmux jako
+# "Jan Kowalski's iPad" i "iPad (2)".
+#
+# `host` MUSI byc adresem IPv4 iPada w domowym LAN (rezerwacja DHCP) — nie
+# adresem IPv6. iOS przyjmuje lockdown tylko z sieci lokalnej (przez VPN:
+# ConnectionReset), wiec w klastrze odczyt jest wylaczony (device_read nizej),
+# a pola zostaja dla przyszlego agenta w domowym LAN.
+#
+# Dlaczego nie IPv6: sprawdzone na dwoch iPadach, przez polaczenie IPv6 lista
+# PROCESOW dziala, ale lista APLIKACJI i STAN EKRANU padaja na
+# ConnectionTerminatedError. Ten sam iPad po IPv4 oddaje wszystkie trzy odczyty.
+# Bonjour zglasza iPady wlasnie po IPv6 (fd00:...), wiec latwo sie na tym
+# przejechac. Konfiguracja odrzuca IPv6 jawnym bledem.
+devices:
+  - display_name: "iPad (Dziecko 1)"
+    child: "Dziecko 1"
+    source_ids: ["iPad-Dziecko1"]
+    udid: "ZMIEN-UDID-1"
+    host: "192.168.0.81"
+    # MAC w domowym Wi-Fi (czujka UniFi). Placeholder — prawdziwy tylko
+    # w Sekrecie kidwatch-config. iOS: adres PRYWATNY z Ustawien Wi-Fi.
+    unifi_mac: "02:00:00:00:00:01"
+    # Przyklad. Sluzy TYLKO jako awaryjna lista, gdy
+    # zywy odczyt inwentarza nie zadziala — wtedy i tak da sie nazwac proces.
+    known_apps:
+      com.gameloft.asphalt9: "Asphalt"
+      com.gameloft.asphalt8: "Asphalt 8"
+      com.disney.disneyplus: "Disney+"
+      com.fingersoft.legohillclimbadventures: "LEGO Hill Climb Adventures"
+      com.storytoys.duploworld.free.ios: "DUPLO WORLD"
+      net.speedymind.academy: "Logika i Matematyka"
+      com.netflix.Netflix: "Netflix"
+      com.google.ios.youtube: "YouTube"
+
+  - display_name: "iPad (Dziecko 2)"
+    child: "Dziecko 2"
+    source_ids: ["iPad-Dziecko2"]
+    udid: "ZMIEN-UDID-2"
+    host: "192.168.0.82"
+    unifi_mac: "02:00:00:00:00:02"
+    # Wlasny profil NextDNS tego dziecka — potrzebny, zeby "czas gry" w panelu
+    # nie blokowal gier obu dzieciom naraz. Puste = source.nextdns.profile_id.
+    # nextdns_profile: "ZMIEN_MNIE_2"
+    # Na tym iPadzie `installation_proxy` po sieci PADA (przyczyna nieustalona),
+    # a lista procesow dziala. Bez tej listy uruchomienia przychodzilyby bez
+    # nazw aplikacji. Odczytane po kablu 2026-09-27.
+    known_apps:
+      com.gameloft.asphalt9: "Asphalt"
+      com.gameloft.asphalt8: "Asphalt 8"
+      com.mojang.minecraftpe: "Minecraft"
+      com.disney.disneyplus: "Disney+"
+      com.netflix.Netflix: "Netflix"
+      com.google.ios.youtube: "YouTube"
+      com.cargame2021.simulator: "Car Simulator Multiplayer 2026"
+      com.coloring.color.number.ios: "Happy Color"
+      com.pixite.pigment: "Pigment"
+      com.parkelsoft.letrakid.cursive.free: "LetraKid Cursive"
+      com.belikebee.madreliterki: "Madre literki"
+      net.speedymind.academy: "Logika i Matematyka"
+      com.apple.store.Jolly: "Apple Store"
+      com.apple.mobilegarageband: "GarageBand"
+      com.apple.iMovie: "iMovie"
+      com.apple.Keynote: "Keynote"
+      com.apple.Numbers: "Numbers"
+      com.apple.Pages: "Pages"
+
+# --------------------------------------------------------- odczyt z urzadzen
+device_read:
+  # WYLACZONE w klastrze: iOS przyjmuje lockdown tylko z tej samej sieci lokalnej
+  # (sprawdzone 2026-10-02 — przez Tailscale i WireGuard: ConnectionReset).
+  # Odczyt iPadow wroci przez agenta w domowym LAN.
+  enabled: false
+  # Rekordy parowania z Sekretu kidwatch-pairing, wygenerowane JEDNORAZOWO na
+  # Macu po kablu. Sa przenosne — sprawdzone na Linuksie.
+  pair_record_dir: /pairing
+  poll_seconds: 60
+  timeout_seconds: 20
+  # Nazwy procesow bez zwiazku z nazwa aplikacji. Sprawdzone na zywo:
+  # Disney+ chodzi jako `Dominguez`, "Logika i Matematyka" jako `academy`
+  # (ta druga jest lapana heurystyka, alias niepotrzebny).
+  process_aliases:
+    Dominguez: com.disney.disneyplus
+
+engine:
+  idle_minutes: 10
+  app_cooldown_minutes: 15
+  session_start_merge_seconds: 20
+  # Potwierdzanie sesji: push startu dopiero, gdy w oknie confirm_minutes sa
+  # confirm_moments odrebne chwile aktywnosci (zapytania w odstepie > 10 s)
+  # rozpiete na >= 1 min, albo aktywnosc trwa >= 3 min. Odswiezenie w tle
+  # (pakiet zapytan w jednej sekundzie, OCSP, powiadomienie) zamyka sie po
+  # cichu i nie liczy sie nigdzie.
+  confirm_minutes: 5
+  confirm_moments: 3
+  shared_extend_minutes: 30
+  daily_summary_time: "20:30"
+  max_notifications_per_hour: 12
+  quiet_hours:
+    start: "21:30"
+    end: "07:00"
+    session_start_priority: 5
+  # Alarm nocnego uzywania: "🌙 <dziecko> uzywa iPada w nocy — 23:12, YouTube"
+  # (+ "w domu"/"poza domem" ze swiezego odczytu UniFi). Start sesji w nocy to
+  # JEDEN push w formie nocnej zamiast dopisku o cichych godzinach; sesja
+  # trwajaca w nocy dostaje przypomnienie co reminder_minutes.
+  # Bez start/end okno nocy = quiet_hours.
+  night:
+    enabled: true
+    # start: "21:30"
+    # end: "06:30"
+    reminder_minutes: 30
+  # Raport tygodnia (tydzien ISO pon-nd): minuty vs poprzedni tydzien, sesje,
+  # dni aktywne, top 5 aplikacji, najdluzsza sesja, uzycie nocne, TV.
+  weekly_report:
+    enabled: true
+    weekday: 6              # 0 = poniedzialek ... 6 = niedziela
+    time: "19:00"
+
+# ------------------------------------------------- czas gry (panel -> NextDNS)
+# Przyciski "Zablokuj gry / Odblokuj / +30 min" na karcie iPada. Przelacza
+# `active` ponizszych uslug i kategorii w kontroli rodzicielskiej NextDNS.
+# Blokady sa ustawieniem PROFILU — kazde dziecko potrzebuje wlasnego profilu
+# (devices[].nextdns_profile), inaczej blokada jednego dotyczy obu.
+# Klucz API ten sam co do logow (NEXTDNS_API_KEY).
+game_time:
+  enabled: false
+  # Id uslug NextDNS: 9gag amazon bereal blizzard chatgpt dailymotion discord
+  # disneyplus ebay facebook fortnite google-chat hbomax hulu imgur instagram
+  # leagueoflegends mastodon messenger minecraft netflix pinterest
+  # playstation-network primevideo reddit roblox signal skype snapchat spotify
+  # steam telegram tiktok tinder tumblr twitch twitter vimeo vk whatsapp
+  # xboxlive youtube zoom
+  services: [youtube, roblox, minecraft, fortnite, tiktok, twitch]
+  # Kategorie: dating gambling gaming piracy porn social-networks video-streaming
+  # (video-streaming blokuje tez Netflixa i Disney+).
+  categories: [gaming]
+  default_bonus_minutes: 30
+  max_bonus_minutes: 180
+  sync_minutes: 5           # co tyle odczyt stanu z NextDNS (zmiany reczne)
+  # Codzienna blokada; rano zdejmowana tylko blokada ustawiona przez harmonogram.
+  # block_schedule:
+  #   start: "20:00"
+  #   end: "07:00"
+
+watchdog:
+  enabled: true
+  stream_silence_minutes: 20
+  device_silence_minutes: 180
+  device_silence_ignore_quiet_hours: true
+  repeat_backoff_max_minutes: 480
+
+notifiers:
+  ntfy:
+    # Zastapiony bramka (nizej). Zostawiony wylaczony jako opcja zapasowa.
+    enabled: false
+    server: "https://ntfy.sh"
+    # Nazwa tematu na ntfy.sh JEST HASLEM — ntfy.sh nie ma kontroli dostepu, kto
+    # zna nazwe, czyta wszystkie powiadomienia o Twoich dzieciach i moze wysylac
+    # falszywe. Dlatego NIE trzymamy jej w repozytorium.
+    #
+    # Wartosc bierzemy ze zmiennej srodowiskowej NTFY_TOPIC (Sekret
+    # kidwatch-secrets). To pole zostaw puste.
+    topic: ""
+    default_priority: 3
+  homeassistant:
+    enabled: false
+  # Wspolna bramka RenaCode (renacode-infra: charts/bramka): WhatsApp, gdy numer
+  # jest podpiety, inaczej e-mail. Klucz z BRAMKA_KLUCZ (Sekret kidwatch-secrets).
+  bramka:
+    enabled: true
+    url: http://bramka.bramka.svc.cluster.local
+    zrodlo: kidwatch
+
+store:
+  # MUSI byc na wolumenie, inaczej kazdy restart poda gubi caly stan.
+  path: /data/kidwatch.db
+  retention_days: 30
+  # Historia powiadomien w panelu — rok, bo to jej caly sens.
+  notifications_retention_days: 365
+  # Agregaty dzienne (trendy, eksport CSV) przezywaja retention_days surowych
+  # danych. 0 = bez limitu (domyslnie) — to kilkaset bajtow na urzadzenie dziennie.
+  rollup_retention_days: 0
+
+# ---------------------------------------------------------------- telewizor
+# Google TV po ADB/TCP (src/kidwatch/sources/tv.py). Pod dochodzi do TV
+# tunelem WireGuard VPS->dom. Klucz ADB z Sekretu kidwatch-adb (/adb).
+tv:
+  enabled: false
+  name: "TV salon"
+  host: "192.168.0.10"          # placeholder — prawdziwy adres w Sekrecie
+  port: 5555
+  poll_seconds: 30
+  idle_minutes: 10              # koniec ogladania po tylu minutach bez odtwarzania
+  adb_key_dir: /adb
+  # Dokladny czas aplikacji z `dumpsys usagestats` (Android sam go liczy),
+  # odczyt co tyle minut; w panelu i raporcie obok szacunku z sesji. 0 = wyl.
+  usage_poll_minutes: 15
+
+# ------------------------------------------------------------- UniFi (UDM)
+# Obecnosc iPadow w domu i czujka "profil DNS usuniety". Klucz API
+# z UNIFI_API_KEY (kidwatch-secrets). Certyfikat UDM jest samopodpisany —
+# przypinamy jego odcisk SHA-256 (python -m kidwatch unifi --fingerprint).
+unifi:
+  enabled: false
+  url: "https://192.168.0.1"
+  site: default
+  cert_sha256: ""
+  poll_seconds: 60
+  window_minutes: 15
+  alarm_mb: 20                  # tyle MB w oknie przy zerze zapytan DNS = alarm
+
+# ----------------------------------------------------------------- panel WWW
+# Serwer w procesie `run`. 0.0.0.0, bo ruch przychodzi z Traefika przez
+# Service. Logowanie robi sam panel; konta i sesje leza w /data/panel-auth.db
+# (domyslnie obok store.path), zakladane przez `python -m kidwatch user-add`.
+# Port musi sie zgadzac z `panel.port` w values.yaml.
+panel:
+  enabled: true
+  host: 0.0.0.0
+  port: 8080
+  static_dir: /app/web

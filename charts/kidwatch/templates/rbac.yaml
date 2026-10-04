@@ -1,0 +1,48 @@
+{{- if .Values.tailscale.enabled }}
+{{/*
+Tailscale trzyma swoj stan (tozsamosc node'a, klucze) w Sekrecie kubernetesowym,
+zamiast na wolumenie. Bez tego pod po kazdym restarcie dolaczalby do tailnetu
+jako NOWE urzadzenie, zasmiecajac liste i zmieniajac adres — a adres jest tym,
+po czym siegamy iPadow.
+
+Dlatego kontener potrzebuje prawa do czytania i zapisu DOKLADNIE tego jednego
+Sekretu. Zadnych uprawnien szerzej.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "kidwatch.fullname" . }}
+  labels:
+    {{- include "kidwatch.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kidwatch.fullname" . }}-tailscale
+  labels:
+    {{- include "kidwatch.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["{{ include "kidwatch.fullname" . }}-tailscale-state"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    # `create` nie przyjmuje resourceNames — Kubernetes nie zna jeszcze nazwy
+    # obiektu w chwili autoryzacji. Sekret stanu powstaje przy pierwszym starcie.
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kidwatch.fullname" . }}-tailscale
+  labels:
+    {{- include "kidwatch.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kidwatch.fullname" . }}-tailscale
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kidwatch.fullname" . }}
+{{- end }}

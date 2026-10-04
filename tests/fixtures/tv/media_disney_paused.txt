@@ -1,0 +1,17 @@
+MEDIA SESSION SERVICE (dumpsys media_session)
+
+  Sessions Stack - have 1 sessions:
+    com.disney.disneyplus/DisneyMediaSession (userId=0)
+      ownerPid=3311, ownerUid=10102, userId=0
+      package=com.disney.disneyplus
+      launchIntent=null
+      mediaButtonReceiver=null
+      active=true
+      flags=3
+      rating type=0
+      controller=android.media.session.MediaSessionRecord$ControllerStub@5e6f7a8
+      state=PlaybackState {state=2, position=420000, buffered position=0, speed=0.0, updated=812345678, actions=567, custom actions=[], active item id=-1, error=null}
+      audioAttrs=AudioAttributes: usage=USAGE_MEDIA content=CONTENT_TYPE_MOVIE flags=0x800 tags= bundle=null
+      volumeType=1, controlType=2, max=100, current=40
+      metadata: size=5, description=Bluey, null, null
+      queueTitle=null, size=0

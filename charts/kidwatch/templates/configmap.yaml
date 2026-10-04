@@ -1,0 +1,22 @@
+{{/*
+config.yaml i app_map.yaml. Sekretow tu NIE MA — te ida z kidwatch-secrets
+przez envFrom.
+
+app_map.yaml jest wczytywany z tego samego ConfigMapu. Montujemy go przez
+subPath, a kubelet NIE odswieza takich plikow po zmianie ConfigMapy — dlatego
+zmiane mapy dowozi restart poda (checksum/app-map w deployment.yaml).
+Przeladowanie po mtime dziala lokalnie i po `kubectl cp`.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kidwatch.fullname" . }}-config
+  labels:
+    {{- include "kidwatch.labels" . | nindent 4 }}
+data:
+  {{- if not .Values.configSecret }}
+  config.yaml: |
+{{ .Files.Get "files/config.yaml" | indent 4 }}
+  {{- end }}
+  app_map.yaml: |
+{{ .Files.Get "files/app_map.yaml" | indent 4 }}

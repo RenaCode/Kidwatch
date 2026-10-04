@@ -1,0 +1,38 @@
+# Ukośnik z przodu zakotwicza wzorzec w KORZENIU repo. Bez niego wzorzec
+# 'config.yaml' ukrywa tez tests/fixtures/config.yaml, ktory jest potrzebny
+# do testu E2E — swiezy klon nie przeszedlby testow, a `git add` milczalby.
+/config.yaml
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+*.mobileconfig
+*.mobileconfig.json
+
+# Rekordy parowania z iPadami. Zawieraja KLUCZ PRYWATNY HOSTA (HostPrivateKey,
+# RootPrivateKey) — kto je ma, ten jest dla iPada zaufanym komputerem i czyta
+# z niego wszystko. Do klastra ida jako Secret, NIGDY przez repozytorium.
+*.plist
+pairing/
+.pymobiledevice3/
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Front panelu
+node_modules/
+# Globalny ~/.gitignore_global ignoruje package-lock.json, a obraz buduje sie
+# przez `npm ci`, ktore bez lockfile konczy sie bledem.
+!web/package-lock.json
+
+# Prawdziwa konfiguracja klastra (dane osobowe) i prywatna lista zadan —
+# repo bedzie publiczne. Konfiguracja jedzie do Sekretu kidwatch-config.
+/config.cluster.yaml
+/LISTA-ZADAN.md
+/profile/

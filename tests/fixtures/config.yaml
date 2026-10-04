@@ -1,0 +1,42 @@
+# Konfiguracja uzywana przez test E2E (odtwarzanie day.jsonl).
+# Celowo wskazuje na PRAWDZIWY app_map.yaml z korzenia repo, zeby test sprawdzal
+# takze mape domen, ktora faktycznie pojdzie na produkcje.
+timezone: Europe/Warsaw
+app_map_path: ../../app_map.yaml
+
+source:
+  kind: nextdns
+  nextdns:
+    profile_id: "fixture"
+
+devices:
+  - display_name: "iPad Kuby"
+    child: "Kuba"
+    source_ids: ["iPad-Kuby"]
+  - display_name: "iPad Zosi"
+    child: "Zosia"
+    source_ids: ["iPad-Zosi"]
+
+engine:
+  idle_minutes: 10
+  app_cooldown_minutes: 15
+  session_start_merge_seconds: 20
+  daily_summary_time: "20:30"
+  max_notifications_per_hour: 12
+  # Snapshot dnia zawiera pushe "Przegladarka / inne" — wlaczone jawnie.
+  notify_unknown: true
+  quiet_hours:
+    start: "21:30"
+    end: "07:00"
+    session_start_priority: 5
+
+watchdog:
+  enabled: false   # w odtwarzaniu czas skacze, czujka nie ma tu sensu
+
+notifiers:
+  ntfy:
+    enabled: false
+
+store:
+  path: ":memory:"
+  retention_days: 30

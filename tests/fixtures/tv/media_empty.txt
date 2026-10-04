@@ -1,0 +1,3 @@
+MEDIA SESSION SERVICE (dumpsys media_session)
+
+  Sessions Stack - have 0 sessions:

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: kidwatch
+description: Powiadomienia o aktywnosci iPadow dzieci — DNS + odczyt wprost z urzadzen
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

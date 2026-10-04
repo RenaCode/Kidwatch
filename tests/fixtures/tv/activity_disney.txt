@@ -1,0 +1,1 @@
+    mResumedActivity: ActivityRecord{4d2e1f0 u0 com.disney.disneyplus/com.bamtechmedia.dominguez.main.MainActivity t1301}

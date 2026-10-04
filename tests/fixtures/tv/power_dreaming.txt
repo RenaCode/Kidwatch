@@ -1,0 +1,2 @@
+  mWakefulness=Dreaming
+  mWakefulnessChanging=false

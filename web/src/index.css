@@ -1,0 +1,574 @@
+/* kidwatch - system wizualny RenaCode.
+   Tokeny, karty, zakladki i znaczniki przeniesione 1:1 z Trader-AI (a tam z
+   Dietetyk-AI), zeby panel wygladal jak reszta rodziny. Na koncu pliku tylko to,
+   czego tamte aplikacje nie mialy: os czasu sesji i filtry. */
+
+:root {
+  --bg-dark: #070913;
+  --bg-card: rgba(18, 22, 41, 0.7);
+  --bg-card-hover: rgba(26, 32, 58, 0.85);
+  --bg-inset: rgba(9, 12, 24, 0.6);
+  --border-glass: rgba(255, 255, 255, 0.07);
+  --border-glass-strong: rgba(255, 255, 255, 0.13);
+  --border-glass-glow: rgba(124, 58, 237, 0.3);
+
+  --color-primary: #7c3aed;      /* Fiolet AI - wspolny z Dietetykiem */
+  --color-secondary: #10b981;
+  --color-orange: #f59e0b;
+  --color-blue: #06b6d4;
+  --danger: #ef4444;
+  --danger-light: #f87171;
+  --success-light: #34d399;
+
+  /* Semantyka rynkowa: zielony = zysk, czerwony = strata. Celowo TE SAME odcienie
+     co success/danger - w aplikacji tradingowej nie moga byc dwa rozne "zielone". */
+  --profit: #34d399;
+  --loss: #f87171;
+  --neutral: #94a3b8;
+
+  --gradient-ai: linear-gradient(135deg, #7c3aed 0%, #c084fc 100%);
+  --gradient-dark: linear-gradient(180deg, #070913 0%, #0d1127 100%);
+  --gradient-profit: linear-gradient(180deg, rgba(52, 211, 153, 0.28) 0%, rgba(52, 211, 153, 0) 100%);
+
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+  --text-dim: #64748b;
+
+  --font-main: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
+
+  --shadow-glow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  --focus-ring: 0 0 0 3px rgba(124, 58, 237, 0.45);
+
+  --radius-lg: 18px;
+  --radius-md: 12px;
+  --radius-sm: 8px;
+  --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0;
+    -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+body {
+  background: var(--bg-dark);
+  background-image: var(--gradient-dark);
+  color: var(--text-main);
+  font-family: var(--font-main);
+  min-height: 100vh;
+  overflow-x: hidden;
+  position: relative;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+body::before, body::after {
+  content: ''; position: fixed; width: 320px; height: 320px; border-radius: 50%;
+  filter: blur(110px); z-index: -1; opacity: 0.14; pointer-events: none;
+}
+body::before { top: 6%; left: 8%; background: var(--color-primary); }
+body::after  { bottom: 10%; right: 8%; background: var(--color-blue); }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: rgba(124,58,237,0.3); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(124,58,237,0.5); }
+
+/* ------------------------------------------------------------------ uklad */
+.app-container { max-width: 1400px; margin: 0 auto; padding: 24px 20px 64px; }
+
+.app-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; margin-bottom: 22px;
+}
+.logo-container { display: flex; align-items: center; gap: 12px; }
+.logo-icon {
+  width: 42px; height: 42px; border-radius: var(--radius-md);
+  background: var(--gradient-ai); display: grid; place-items: center;
+  font-size: 1.3rem; box-shadow: 0 0 22px rgba(124,58,237,0.35);
+}
+.logo-text { font-family: var(--font-display); font-size: 1.35rem; font-weight: 700; letter-spacing: -0.02em; }
+.logo-badge {
+  font-size: 0.68rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border-glass-strong);
+  color: var(--text-muted);
+}
+.logo-badge.demo { color: var(--color-orange); border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.08); }
+.logo-badge.live { color: var(--danger-light); border-color: rgba(239,68,68,0.45); background: rgba(239,68,68,0.1); }
+
+/* Zakladki silnikow (CRYPTO / EQUITY) - najwyzszy poziom nawigacji. */
+.engine-tabs { display: flex; gap: 8px; background: var(--bg-inset);
+  padding: 5px; border-radius: 999px; border: 1px solid var(--border-glass); }
+.engine-tab {
+  border: none; background: transparent; color: var(--text-muted); cursor: pointer;
+  font-family: var(--font-main); font-size: 0.86rem; font-weight: 600;
+  padding: 9px 20px; border-radius: 999px; transition: var(--transition-smooth);
+  display: flex; align-items: center; gap: 8px;
+}
+.engine-tab:hover { color: var(--text-main); }
+.engine-tab.active { background: var(--gradient-ai); color: #fff; box-shadow: 0 4px 16px rgba(124,58,237,0.35); }
+.engine-tab .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: 0.85; }
+
+/* Nawigacja sekcji wewnatrz silnika. */
+.nav-tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 20px; }
+.nav-tab {
+  border: 1px solid transparent; background: transparent; color: var(--text-muted);
+  cursor: pointer; font-family: var(--font-main); font-size: 0.85rem; font-weight: 500;
+  padding: 8px 15px; border-radius: var(--radius-sm); white-space: nowrap;
+  transition: var(--transition-smooth);
+}
+.nav-tab:hover { color: var(--text-main); background: rgba(255,255,255,0.04); }
+.nav-tab.active { color: var(--text-main); background: var(--bg-card); border-color: var(--border-glass-glow); }
+
+/* ------------------------------------------------------------------ karty */
+.glass-card {
+  background: var(--bg-card);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-glow);
+  padding: 20px;
+}
+.glass-card.tight { padding: 16px; }
+
+.card-title {
+  font-family: var(--font-display); font-size: 0.95rem; font-weight: 600;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 14px;
+}
+.card-title .hint { font-family: var(--font-main); font-size: 0.74rem; font-weight: 400; color: var(--text-dim); }
+
+.grid { display: grid; gap: 16px; }
+.grid-2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.grid-3 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.grid-4 { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.span-2 { grid-column: span 2; }
+@media (max-width: 900px) { .span-2 { grid-column: span 1; } }
+
+/* ------------------------------------------------------------------ statystyki */
+.stat { display: flex; flex-direction: column; gap: 5px; }
+.stat-label { font-size: 0.74rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+.stat-value { font-family: var(--font-mono); font-size: 1.5rem; font-weight: 500; letter-spacing: -0.02em; }
+.stat-value.sm { font-size: 1.15rem; }
+.stat-sub { font-size: 0.78rem; color: var(--text-muted); }
+.profit { color: var(--profit); }
+.loss { color: var(--loss); }
+.dim { color: var(--text-dim); }
+.mono { font-family: var(--font-mono); }
+
+/* ------------------------------------------------------------------ znaczniki */
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 0.7rem; font-weight: 600; letter-spacing: 0.04em;
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border-glass-strong); color: var(--text-muted);
+  background: rgba(255,255,255,0.03); white-space: nowrap;
+}
+.badge.ok      { color: var(--success-light); border-color: rgba(52,211,153,0.35);  background: rgba(52,211,153,0.08); }
+.badge.warn    { color: var(--color-orange);  border-color: rgba(245,158,11,0.35);  background: rgba(245,158,11,0.08); }
+.badge.bad     { color: var(--danger-light);  border-color: rgba(239,68,68,0.35);   background: rgba(239,68,68,0.08); }
+.badge.info    { color: var(--color-blue);    border-color: rgba(6,182,212,0.35);   background: rgba(6,182,212,0.08); }
+.badge.ai      { color: #c084fc;              border-color: rgba(124,58,237,0.4);   background: rgba(124,58,237,0.12); }
+
+/* ------------------------------------------------------------------ paski */
+.bar-track { height: 7px; border-radius: 999px; background: rgba(255,255,255,0.07); overflow: hidden; }
+.bar-fill  { height: 100%; border-radius: 999px; transition: width 0.5s cubic-bezier(0.4,0,0.2,1); }
+
+/* ------------------------------------------------------------------ listy */
+.row-list { display: flex; flex-direction: column; gap: 8px; max-height: 460px; overflow-y: auto; padding-right: 4px; }
+.row-item {
+  background: var(--bg-inset); border: 1px solid var(--border-glass);
+  border-radius: var(--radius-md); padding: 12px 14px;
+  transition: var(--transition-smooth); cursor: default;
+}
+.row-item.clickable { cursor: pointer; }
+.row-item.clickable:hover { background: var(--bg-card-hover); border-color: var(--border-glass-glow); }
+.row-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.row-title { font-size: 0.9rem; font-weight: 600; }
+.row-meta { font-size: 0.75rem; color: var(--text-dim); display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.row-body { font-size: 0.82rem; color: var(--text-muted); line-height: 1.55; margin-top: 8px; }
+
+a.src-link { color: var(--color-blue); text-decoration: none; font-size: 0.78rem; }
+a.src-link:hover { text-decoration: underline; }
+
+/* ------------------------------------------------------------------ tabela */
+.table { width: 100%; border-collapse: collapse; font-size: 0.83rem; }
+.table th {
+  text-align: left; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-dim); font-weight: 600; padding: 8px 10px;
+  border-bottom: 1px solid var(--border-glass);
+}
+.table td { padding: 9px 10px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.table tr:last-child td { border-bottom: none; }
+.table-scroll { overflow-x: auto; }
+
+/* ------------------------------------------------------------------ stany */
+.empty { text-align: center; padding: 34px 16px; color: var(--text-dim); font-size: 0.86rem; }
+.loading-pulse { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: 0.45; } 50% { opacity: 1; } }
+
+.notice {
+  border-radius: var(--radius-md); padding: 12px 14px; font-size: 0.82rem; line-height: 1.55;
+  border: 1px solid rgba(245,158,11,0.3); background: rgba(245,158,11,0.07); color: #fcd34d;
+}
+.notice.info { border-color: rgba(6,182,212,0.3); background: rgba(6,182,212,0.07); color: #67e8f9; }
+
+.chart-wrap { width: 100%; }
+.chart-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.74rem; color: var(--text-muted); margin-top: 8px; }
+.chart-legend .key { display: inline-flex; align-items: center; gap: 6px; }
+.chart-legend .swatch { width: 10px; height: 3px; border-radius: 2px; }
+
+.app-footer { text-align: center; margin-top: 40px; font-size: 0.78rem; color: var(--text-dim); }
+.app-footer a { color: var(--text-muted); text-decoration: none; }
+.app-footer a:hover { text-decoration: underline; }
+
+/* ------------------------------------------------------------------ logowanie */
+.login-shell {
+  min-height: 100vh;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 18px; padding: 24px;
+}
+
+.login-card {
+  width: 100%; max-width: 400px;
+  padding: 32px 30px 26px;
+  /* Mocniejsza obwodka niz zwykla karta - to jedyny element na ekranie,
+     wiec ma byc oczywistym punktem skupienia. */
+  border-color: var(--border-glass-strong);
+  box-shadow: var(--shadow-glow), 0 0 60px -20px rgba(124, 58, 237, 0.4);
+}
+
+.login-brand { display: flex; align-items: center; gap: 13px; margin-bottom: 26px; }
+.login-sub { font-size: 0.76rem; color: var(--text-dim); margin-top: 2px; }
+
+.field { display: block; margin-bottom: 16px; }
+.field-label {
+  display: block; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--text-muted); margin-bottom: 7px;
+}
+
+.input-field {
+  width: 100%;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-md);
+  color: var(--text-main);
+  font-family: var(--font-main); font-size: 0.95rem;
+  padding: 12px 14px;
+  transition: var(--transition-smooth);
+}
+.input-field:hover { border-color: var(--border-glass-strong); }
+.input-field:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--focus-ring);
+}
+
+/* Kod jednorazowy czyta sie znak po znaku - monospace i rozstrzelenie
+   zmniejszaja szanse pomylki przy przepisywaniu z telefonu. */
+.code-input {
+  font-family: var(--font-mono);
+  font-size: 1.35rem; letter-spacing: 0.34em; text-align: center;
+  padding: 13px 14px;
+}
+
+.btn-primary {
+  width: 100%;
+  border: none; border-radius: var(--radius-md);
+  background: var(--gradient-ai); color: #fff;
+  font-family: var(--font-main); font-size: 0.92rem; font-weight: 600;
+  padding: 13px 18px; margin-top: 6px;
+  cursor: pointer; transition: var(--transition-smooth);
+  box-shadow: 0 4px 18px -4px rgba(124, 58, 237, 0.5);
+}
+.btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 7px 22px -4px rgba(124,58,237,0.6); }
+.btn-primary:active:not(:disabled) { transform: translateY(0); }
+.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+
+.btn-link {
+  width: 100%; margin-top: 10px;
+  background: none; border: none; color: var(--text-muted);
+  font-family: var(--font-main); font-size: 0.82rem; cursor: pointer;
+  padding: 8px; border-radius: var(--radius-sm);
+}
+.btn-link:hover { color: var(--text-main); background: rgba(255,255,255,0.04); }
+
+.form-error {
+  border-radius: var(--radius-md); padding: 11px 13px; margin-bottom: 14px;
+  font-size: 0.82rem; line-height: 1.5;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.09);
+  color: var(--danger-light);
+}
+
+.login-foot {
+  margin-top: 22px; padding-top: 16px;
+  border-top: 1px solid var(--border-glass);
+  font-size: 0.75rem; color: var(--text-dim); text-align: center;
+}
+.login-legal { font-size: 0.76rem; color: var(--text-dim); }
+.login-legal a { color: var(--text-muted); text-decoration: none; }
+.login-legal a:hover { text-decoration: underline; }
+
+/* ------------------------------------------------------------------ pasek konta */
+.user-menu { display: flex; align-items: center; gap: 10px; }
+.user-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 0.8rem; color: var(--text-muted);
+  background: var(--bg-inset); border: 1px solid var(--border-glass);
+  border-radius: 999px; padding: 7px 14px;
+}
+.user-chip .avatar {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--gradient-ai); color: #fff;
+  display: grid; place-items: center; font-size: 0.7rem; font-weight: 700;
+}
+.btn-ghost {
+  background: transparent; border: 1px solid var(--border-glass);
+  color: var(--text-muted); border-radius: var(--radius-sm);
+  font-family: var(--font-main); font-size: 0.8rem; padding: 8px 14px;
+  cursor: pointer; transition: var(--transition-smooth);
+}
+.btn-ghost:hover { color: var(--text-main); border-color: var(--border-glass-strong); background: rgba(255,255,255,0.04); }
+
+/* Uklad dwukolumnowy ekranu logowania. Lewa kolumna to kontekst systemu,
+   nie marketing - na waskim ekranie znika, bo liczy sie sam formularz. */
+.login-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 400px;
+  gap: 64px; align-items: center;
+  width: 100%; max-width: 980px;
+}
+@media (max-width: 900px) {
+  .login-layout { grid-template-columns: minmax(0, 400px); justify-content: center; gap: 0; }
+  .login-aside { display: none; }
+}
+
+.login-aside .login-brand { margin-bottom: 22px; }
+
+.login-lede {
+  font-size: 0.95rem; line-height: 1.65; color: var(--text-muted);
+  margin-bottom: 26px; max-width: 46ch;
+}
+
+.login-points { list-style: none; display: flex; flex-direction: column; gap: 16px; }
+.login-points li {
+  position: relative; padding-left: 20px;
+  font-size: 0.82rem; line-height: 1.55; color: var(--text-dim);
+}
+.login-points li::before {
+  content: ''; position: absolute; left: 0; top: 7px;
+  width: 7px; height: 7px; border-radius: 2px;
+  background: var(--gradient-ai);
+}
+.login-points strong {
+  display: block; color: var(--text-main); font-size: 0.87rem;
+  font-weight: 600; margin-bottom: 3px;
+}
+
+.login-card-head { margin-bottom: 24px; }
+.login-card-head h1 {
+  font-family: var(--font-display); font-size: 1.32rem; font-weight: 600;
+  letter-spacing: -0.02em; margin-bottom: 5px;
+}
+.login-card-head p { font-size: 0.82rem; color: var(--text-dim); line-height: 1.5; }
+
+.login-foot { display: flex; align-items: center; gap: 9px; justify-content: center; flex-wrap: wrap; }
+
+/* Listy przewijalne ucinaly tresc w polowie wiersza bez zadnego sygnalu, ze jest
+   jej wiecej. Maska wygasza dolna krawedz - czytelnie mowi "przewin", a nie
+   wyglada na blad renderowania. */
+.row-list {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent 100%);
+          mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent 100%);
+}
+/* Gdy lista miesci sie w calosci, maska jest zbedna - klasa dokladana przez JS
+   nie jest tu potrzebna, bo krotka lista i tak nie dochodzi do dolnej krawedzi. */
+.row-list.no-fade { -webkit-mask-image: none; mask-image: none; }
+
+/* <select> nie dziedziczy stylu input-field w Safari/Chrome bez tego. */
+select.input-field {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
+                    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position: calc(100% - 18px) calc(50% + 2px), calc(100% - 13px) calc(50% + 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 38px;
+}
+select.input-field option { background: var(--bg-dark); color: var(--text-main); }
+
+/* ------------------------------------------------------------------ dzwonek */
+.bell-wrap { position: relative; }
+
+.bell-btn {
+  position: relative;
+  background: var(--bg-inset); border: 1px solid var(--border-glass);
+  border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 1rem; line-height: 1; padding: 9px 12px;
+  transition: var(--transition-smooth);
+}
+.bell-btn:hover { border-color: var(--border-glass-strong); background: var(--bg-card-hover); }
+
+.bell-badge {
+  position: absolute; top: -6px; right: -6px;
+  min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 999px; background: var(--color-primary); color: #fff;
+  font-size: 0.65rem; font-weight: 700; line-height: 18px; text-align: center;
+  border: 2px solid var(--bg-dark);
+}
+/* Alert krytyczny musi rzucac sie w oczy mocniej niz zwykly licznik. */
+.bell-badge.critical { background: var(--danger); animation: bell-pulse 2s ease-in-out infinite; }
+/* Licznik NIEZNANY - odczyt nie doszedl. Musi wygladac inaczej i od zera,
+   i od alarmu: brak plakietki klamalby "nie ma powiadomien", a czerwien
+   mowilaby o zdarzeniu, o ktorym nic nie wiemy. */
+.bell-badge.nieznany { background: var(--color-orange); }
+@keyframes bell-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
+  50%      { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+}
+
+.bell-panel {
+  position: absolute; top: calc(100% + 10px); right: 0; z-index: 60;
+  width: min(420px, calc(100vw - 32px));
+  padding: 16px;
+  border-color: var(--border-glass-strong);
+}
+@media (max-width: 520px) {
+  .bell-panel { position: fixed; left: 16px; right: 16px; width: auto; }
+}
+
+/* ------------------------------------------------------------------ przelaczniki */
+.switch { position: relative; display: inline-block; width: 40px; height: 22px; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch .slider {
+  position: absolute; cursor: pointer; inset: 0;
+  background: rgba(255,255,255,0.12); border-radius: 999px;
+  transition: var(--transition-smooth);
+}
+.switch .slider::before {
+  content: ''; position: absolute; height: 16px; width: 16px; left: 3px; top: 3px;
+  background: var(--text-muted); border-radius: 50%; transition: var(--transition-smooth);
+}
+.switch input:checked + .slider { background: var(--color-primary); }
+.switch input:checked + .slider::before { transform: translateX(18px); background: #fff; }
+.switch input:focus-visible + .slider { box-shadow: var(--focus-ring); }
+
+.chip {
+  background: transparent; border: 1px solid var(--border-glass);
+  color: var(--text-dim); border-radius: 999px;
+  font-family: var(--font-main); font-size: 0.72rem; padding: 5px 12px;
+  cursor: pointer; transition: var(--transition-smooth);
+}
+.chip:hover { border-color: var(--border-glass-strong); color: var(--text-muted); }
+.chip.on {
+  background: rgba(124,58,237,0.16); border-color: rgba(124,58,237,0.45); color: #c084fc;
+}
+
+
+/* ------------------------------------------------------------------ kidwatch */
+.filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+.filters .input-field { width: auto; padding: 9px 12px; font-size: 0.85rem; }
+.filters select.input-field { padding-right: 38px; }
+.kind-icon { font-size: 1.05rem; width: 26px; text-align: center; flex: none; }
+.note-row { display: flex; gap: 12px; align-items: flex-start; }
+.note-main { flex: 1; min-width: 0; }
+.note-text { white-space: pre-line; }
+.device-card .stat-value { font-size: 1.25rem; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success-light);
+  box-shadow: 0 0 0 0 rgba(52,211,153,0.6); animation: live 2s ease-in-out infinite; display: inline-block; }
+@keyframes live { 0%,100% { box-shadow: 0 0 0 0 rgba(52,211,153,0.55); } 50% { box-shadow: 0 0 0 6px rgba(52,211,153,0); } }
+.timeline { position: relative; height: 26px; border-radius: var(--radius-sm);
+  background: var(--bg-inset); border: 1px solid var(--border-glass); overflow: hidden; }
+.timeline .seg { position: absolute; top: 4px; bottom: 4px; border-radius: 4px; background: var(--gradient-ai); min-width: 3px; }
+.timeline .seg.open { background: linear-gradient(135deg, #10b981 0%, #34d399 100%); }
+.timeline-hours { display: flex; justify-content: space-between; font-size: 0.66rem; color: var(--text-dim); margin-top: 4px; font-family: var(--font-mono); }
+.app-bar { display: grid; grid-template-columns: minmax(0, 1fr) 60px; gap: 10px; align-items: center; font-size: 0.82rem; }
+.app-bar + .app-bar { margin-top: 8px; }
+.btn-more { width: 100%; margin-top: 12px; }
+/* Na telefonie (390 px) kolumny 340/240 px nie mieszcza sie z marginesami i
+   karty wychodzily poza ekran. min(..., 100%) pozwala im sie zwezic. */
+.grid-2 { grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); }
+.grid-3 { grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); }
+.app-container { overflow-x: hidden; }
+@media (max-width: 520px) { .app-container { padding: 16px 16px 48px; } }
+/* Wszystkie ekrany: pas na urzadzenie. Telewizor przy wybranym dziecku jest
+   WSPOLNY - wyszarzony, zeby nie czytal sie jak czas dziecka. */
+.lane { display: grid; grid-template-columns: 150px minmax(0, 1fr) 70px; gap: 10px; align-items: center; font-size: 0.82rem; }
+.lane + .lane { margin-top: 8px; }
+.lane .lane-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lane.shared { opacity: 0.55; }
+.timeline .seg.tv { background: linear-gradient(135deg, #64748b 0%, #94a3b8 100%); }
+/* Pauza monitoringu TV: kreskowanie, nie kolor sesji - to brak pomiaru. */
+.timeline .seg.paused {
+  background: repeating-linear-gradient(45deg, rgba(245,158,11,0.28) 0 5px, transparent 5px 10px);
+  border: 1px dashed rgba(245,158,11,0.45);
+}
+
+/* ------------------------------------------------------------------ pauza TV */
+.tv-pause-banner {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between;
+  margin-bottom: 16px;
+}
+.tv-pause-error { width: 100%; color: var(--danger-light); }
+.tv-pause-form {
+  display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--border-glass); border-radius: var(--radius-md);
+  padding: 10px 12px; margin: 0; font-size: 0.82rem;
+}
+.tv-pause-form legend { padding: 0 4px; font-size: 0.78rem; }
+.tv-pause-option { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tv-pause-option .input-field { width: auto; padding: 7px 10px; font-size: 0.85rem; color-scheme: dark; }
+.lane-hours { display: grid; grid-template-columns: 150px minmax(0, 1fr) 70px; gap: 10px; }
+.delta-up { color: var(--color-orange); }
+.delta-down { color: var(--success-light); }
+@media (max-width: 520px) {
+  .lane, .lane-hours { grid-template-columns: 88px minmax(0, 1fr) 54px; }
+}
+
+/* ---------------------------------------------------- naglowek kompaktowy
+   Jeden rzad na kazdej szerokosci: logo, przewijane pigulki dzieci, avatar
+   konta z menu. Wczesniej na telefonie chip konta, "Ustawienia 2FA"
+   i "Wyloguj" zawijaly sie w trzy rzedy. */
+.app-header.compact { flex-wrap: nowrap; gap: 12px; }
+.app-header.compact .logo-container { flex: none; }
+.child-tabs { flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none;
+  -webkit-overflow-scrolling: touch; margin: 0 auto; max-width: max-content; }
+.child-tabs::-webkit-scrollbar { display: none; }
+.child-tabs .engine-tab { flex: none; white-space: nowrap; }
+.account { position: relative; flex: none; }
+.account-btn { position: relative; width: 40px; height: 40px; border-radius: 50%; cursor: pointer;
+  border: 1px solid var(--border-glass); background: var(--bg-inset); display: grid; place-items: center; padding: 0; }
+.account-btn .avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--gradient-ai); color: #fff;
+  display: grid; place-items: center; font-size: 0.82rem; font-weight: 700; }
+.account-dot { position: absolute; right: 1px; bottom: 1px; width: 10px; height: 10px; border-radius: 50%;
+  border: 2px solid var(--bg-card, #111); }
+.account-dot.ok { background: var(--success-light); }
+.account-dot.warn { background: var(--color-orange); }
+.account-menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 50; min-width: 200px;
+  background: var(--bg-card); border: 1px solid var(--border-glass-strong); border-radius: var(--radius-md);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.45); padding: 6px; display: flex; flex-direction: column; }
+.account-head { display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 8px 10px 10px; border-bottom: 1px solid var(--border-glass); margin-bottom: 4px; font-size: 0.84rem; }
+.account-menu button[role="menuitem"] { text-align: left; background: transparent; border: none; cursor: pointer;
+  color: var(--text-main); font-family: var(--font-main); font-size: 0.86rem; padding: 10px; border-radius: var(--radius-sm); }
+.account-menu button[role="menuitem"]:hover { background: rgba(255,255,255,0.05); }
+@media (max-width: 520px) {
+  .hide-narrow { display: none; }
+  .app-header.compact .logo-icon { width: 36px; height: 36px; font-size: 1.1rem; }
+  .child-tabs .engine-tab { padding: 7px 13px; font-size: 0.82rem; }
+}
+
+/* ------------------------------------------------ tresc powiadomien */
+.note-sections { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
+.note-section-head { font-size: 0.84rem; color: var(--text-main); }
+.note-section-head .dim { font-weight: 400; }
+.note-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 0.8rem; color: var(--text-muted); }
+.note-list li::before { content: "•"; color: var(--text-dim); margin-right: 6px; }
+.mini-bar { display: grid; grid-template-columns: minmax(0, 1fr) 90px 52px; gap: 8px; align-items: center; font-size: 0.8rem; }
+.mini-bar .bar-track { height: 5px; }
+.mini-bar .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-sub { font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 4px; }

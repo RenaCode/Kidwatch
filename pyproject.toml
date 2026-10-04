@@ -1,0 +1,63 @@
+[project]
+name = "kidwatch"
+version = "0.1.0"
+description = "Powiadomienia push o aktywnosci iPadow dzieci na podstawie logow DNS"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    # Odczyt stanu iPada przez lockdown. Uzywamy TYLKO toru create_using_tcp —
+    # czysty Python, bez usbmuxd i bez Bonjour, wiec dziala na Linuksie w
+    # kontenerze i przez overlay VPN z dowolnej sieci.
+    "pymobiledevice3>=11.19",
+    # Hasla do panelu WWW (Argon2id). Ta sama biblioteka co w Trader-AI —
+    # hashlib.scrypt jest w stdlib, ale OWASP stawia Argon2id na pierwszym
+    # miejscu, a dwa rozne schematy w dwoch aplikacjach to dwa audyty.
+    "argon2-cffi>=25.1",
+    # Opcjonalny drugi skladnik panelu — te same biblioteki co w Traderze:
+    # pyotp (TOTP), qrcode[pil] (kod QR liczony lokalnie, PNG; Pillow i tak
+    # jest w obrazie przez pymobiledevice3) i cryptography (AES-GCM na sekret
+    # TOTP w bazie). cryptography tez przychodzi posrednio, ale uzywamy jej
+    # wprost, wiec jest tu jawnie — inaczej zniknelaby z obrazu razem
+    # z pierwsza zmiana zaleznosci pymobiledevice3.
+    "pyotp>=2.10.0",
+    "qrcode[pil]>=8.2",
+    "cryptography>=46",
+    # Czujnik telewizora (Google TV): ADB po TCP, czysty Python — bez binarki
+    # `adb` w obrazie. Extra [async] daje AdbDeviceTcpAsync dla petli asyncio.
+    "adb-shell[async]>=0.4.4",
+]
+
+[project.scripts]
+kidwatch = "kidwatch.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kidwatch"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# Jawny zakres petli zdarzen dla fixtur — bez tego pytest-asyncio ostrzega, ze
+# domyslna wartosc sie zmieni, i test moglby zaczac sie zachowywac inaczej po
+# aktualizacji biblioteki.
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]

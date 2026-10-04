@@ -1,0 +1,118 @@
+{{- if and .Values.panel.enabled .Values.ingress.enabled -}}
+# Ten sam wzorzec co w Trader-AI: osobny router HTTP tylko z przekierowaniem
+# na HTTPS, a wlasciwy router na websecure. Zadnej bramki na Traefiku:
+# logowanie (haslo + opcjonalny TOTP) robi sam panel, src/kidwatch/panel_auth.py.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "kidwatch.fullname" . }}-redirect-https
+  labels:
+    {{- include "kidwatch.labels" . | nindent 4 }}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "kidwatch.fullname" . }}-http
+  labels:
+    {{- include "kidwatch.labels" . | nindent 4 }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Release.Namespace }}-{{ include "kidwatch.fullname" . }}-redirect-https@kubernetescrd
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "kidwatch.fullname" . }}
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "kidwatch.fullname" . }}
+  labels:
+    {{- include "kidwatch.labels" . | nindent 4 }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.clusterIssuer }}
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tlsSecret }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "kidwatch.fullname" . }}
+                port:
+                  name: http
+{{- with .Values.ingress.aliasy }}
+---
+# Aliasy: wszystko (http i https) idzie 301 na glowny adres, ze sciezka.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "kidwatch.fullname" $ }}-alias-redirect
+  labels:
+    {{- include "kidwatch.labels" $ | nindent 4 }}
+spec:
+  redirectRegex:
+    regex: "^https?://[^/]+/?(.*)"
+    replacement: "https://{{ $.Values.ingress.host }}/${1}"
+    permanent: true
+{{- range $wejscie := list "web" "websecure" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "kidwatch.fullname" $ }}-aliasy-{{ $wejscie }}
+  labels:
+    {{- include "kidwatch.labels" $ | nindent 4 }}
+  annotations:
+    {{- if eq $wejscie "websecure" }}
+    cert-manager.io/cluster-issuer: {{ $.Values.ingress.clusterIssuer }}
+    {{- end }}
+    traefik.ingress.kubernetes.io/router.entrypoints: {{ $wejscie }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ $.Release.Namespace }}-{{ include "kidwatch.fullname" $ }}-alias-redirect@kubernetescrd
+spec:
+  ingressClassName: {{ $.Values.ingress.className }}
+  {{- if eq $wejscie "websecure" }}
+  tls:
+    - hosts:
+        {{- range $.Values.ingress.aliasy }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ $.Values.ingress.aliasyTlsSecret }}
+  {{- end }}
+  rules:
+    {{- range $.Values.ingress.aliasy }}
+    - host: {{ . | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "kidwatch.fullname" $ }}
+                port:
+                  name: http
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

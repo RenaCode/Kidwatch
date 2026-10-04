@@ -1,0 +1,209 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kidwatch.fullname" . }}
+  labels:
+    {{- include "kidwatch.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit | default 3 }}
+  strategy:
+    # NIE RollingUpdate: przez chwile dzialalyby dwa pody na jednej bazie SQLite,
+    # co rozjezdza stan sesji i dubluje pushe.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "kidwatch.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kidwatch.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Zmiana config.yaml musi restartowac poda. Bez tego ArgoCD zsynchronizuje
+        # ConfigMap i zaraportuje Synced, a proces bedzie dalej chodzil na starej
+        # tresci.
+        # Przy configSecret suma liczy tylko wzorzec z repo — zmiana Sekretu
+        # wymaga restartu, ktory robi tools/wgraj_konfiguracje.sh.
+        checksum/config: {{ .Files.Get "files/config.yaml" | sha256sum }}
+        # app_map.yaml TEZ restartuje: jest montowany przez subPath, a kubelet
+        # nie odswieza plikow z subPath po zmianie ConfigMapy — przeladowanie
+        # na goraco w podzie nigdy by nowej mapy nie zobaczylo.
+        checksum/app-map: {{ .Files.Get "files/app_map.yaml" | sha256sum }}
+    spec:
+      {{- include "kidwatch.imagePullSecrets" . | nindent 6 }}
+      {{- if .Values.tailscale.enabled }}
+      serviceAccountName: {{ include "kidwatch.fullname" . }}
+      {{- else }}
+      # Bez Tailscale nic w podzie nie rozmawia z API klastra, a proces ma
+      # publiczny panel — token konta uslugi bylby tylko lupem.
+      automountServiceAccountToken: false
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kidwatch
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["run"]
+          {{- if .Values.panel.enabled }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.panel.port }}
+          # Panel to watek procesu `run`. Gotowosc mowi tylko, czy serwer WWW
+          # odpowiada — o zdrowiu petli glownej decyduje liveness (tetno).
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          {{- end }}
+          env:
+            - name: KIDWATCH_CONFIG
+              value: /config/config.yaml
+            - name: KIDWATCH_HEARTBEAT
+              value: /tmp/kidwatch-heartbeat
+            # Pliki tymczasowe SQLite (sortowanie, GROUP BY w CLI `domains`)
+            # na wolumenie danych, nie w /tmp: przekroczenie sizeLimit emptyDir
+            # eksmituje caly pod. Katalog zaklada Store przy starcie.
+            - name: SQLITE_TMPDIR
+              value: /data/tmp
+            - name: TZ
+              value: {{ .Values.timezone | quote }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.secretName }}
+                optional: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          livenessProbe:
+            # Czujka w silniku nie potrafi zglosic wlasnej smierci: alarm wysyla
+            # ten sam proces, ktory zawisl. Ta sonda to warstwa nizej.
+            exec:
+              command:
+                - python
+                - -c
+                - |
+                  import os, sys, time
+                  p = os.environ["KIDWATCH_HEARTBEAT"]
+                  ok = os.path.exists(p) and time.time() - os.path.getmtime(p) < 180
+                  sys.exit(0 if ok else 1)
+            initialDelaySeconds: 90
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: {{ if .Values.configSecret }}config-secret{{ else }}config{{ end }}
+              mountPath: /config/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            - name: config
+              mountPath: /app/app_map.yaml
+              subPath: app_map.yaml
+              readOnly: true
+            - name: pairing
+              mountPath: /pairing
+              readOnly: true
+            - name: adb
+              mountPath: /adb
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+
+        {{- if .Values.tailscale.enabled }}
+        - name: tailscale
+          image: "{{ .Values.tailscale.image.repository }}:{{ .Values.tailscale.image.tag }}"
+          imagePullPolicy: {{ .Values.tailscale.image.pullPolicy }}
+          env:
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.tailscale.authKeySecret }}
+                  key: {{ .Values.tailscale.authKeySecretKey }}
+            - name: TS_KUBE_SECRET
+              # Stan w Sekrecie, nie na wolumenie: inaczej pod po restarcie
+              # dolaczalby do tailnetu jako NOWE urzadzenie i zmienialby adres.
+              value: {{ include "kidwatch.fullname" . }}-tailscale-state
+            - name: TS_HOSTNAME
+              value: {{ .Values.tailscale.hostname | quote }}
+            - name: TS_USERSPACE
+              # Tryb jadrowy, nie userspace. W userspace Tailscale daje tylko
+              # proxy SOCKS5, a pymobiledevice3 otwiera surowe gniazda asyncio i
+              # nie umie przez nie przejsc. Tryb jadrowy tworzy interfejs
+              # tailscale0, wspolny dla calego poda.
+              value: "false"
+            - name: TS_EXTRA_ARGS
+              # --accept-dns=false jest KLUCZOWE: bez tego Tailscale przejmuje DNS
+              # poda i psuje rozwiazywanie nazw uslug kubernetesowych oraz
+              # api.nextdns.io. Ten sam blad na iPadzie zabija profil NextDNS.
+              #
+              # KONSEKWENCJA: skoro Tailscale nie zarzadza DNS-em poda, to nazwy
+              # MagicDNS (np. "ipad-dziecko1") NIE ROZWIAZA SIE — zapytanie poleci
+              # do CoreDNS i wroci NXDOMAIN. Dlatego w files/config.yaml pole
+              # `host` MUSI byc adresem tailnetu (100.x.y.z), nie nazwa.
+              value: "--accept-dns=false"
+          securityContext:
+            # Tryb jadrowy wymaga NET_ADMIN do utworzenia interfejsu tailscale0.
+            # Nie `privileged` — tylko ta jedna zdolnosc.
+            capabilities:
+              add: ["NET_ADMIN"]
+            runAsUser: 0
+            runAsGroup: 0
+            # KONIECZNE. Pod ma runAsNonRoot: true, a ten kontener musi byc
+            # rootem. Bez jawnego nadpisania kubelet odrzuca go przy tworzeniu
+            # ("container has runAsNonRoot and image will run as root") i sidecar
+            # wpada w trwaly CreateContainerConfigError — kontener aplikacji
+            # wstaje, ale bez tailnetu, wiec KAZDY odczyt z iPada pada i wyglada
+            # jak spiacy iPad.
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+          resources:
+            {{- toYaml .Values.tailscale.resources | nindent 12 }}
+          volumeMounts:
+            - name: tailscale-run
+              mountPath: /var/run/tailscale
+        {{- end }}
+      volumes:
+        {{- if .Values.configSecret }}
+        - name: config-secret
+          secret:
+            secretName: {{ .Values.configSecret }}
+        {{- end }}
+        - name: config
+          configMap:
+            name: {{ include "kidwatch.fullname" . }}-config
+        - name: pairing
+          secret:
+            secretName: {{ .Values.pairingSecret }}
+            optional: true
+        # Klucz ADB telewizora. optional: bez Sekretu pod wstaje, a czujnik TV
+        # wylacza sie z bledem w logu. 0440 + fsGroup: klucz prywatny czyta
+        # tylko grupa procesu, nie "wszyscy".
+        - name: adb
+          secret:
+            secretName: {{ .Values.adbSecret }}
+            optional: true
+            defaultMode: 0440
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "kidwatch.fullname" . }}-data
+        - name: tmp
+          # Korzen jest tylko do czytania, a tam ladzie plik tetna.
+          emptyDir:
+            sizeLimit: 16Mi
+        {{- if .Values.tailscale.enabled }}
+        - name: tailscale-run
+          emptyDir: {}
+        {{- end }}
