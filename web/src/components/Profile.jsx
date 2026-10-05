@@ -5,8 +5,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { get, post } from '../utils/api';
 import {
-  MAX_LABEL, MAX_RECIPIENTS, partialFailure, recipientsFromState, recipientsPayload,
-  sameRecipients, testSummary, validateRecipients,
+  MAX_LABEL, MAX_RECIPIENTS, SOURCES_ALL, SOURCES_FAMILY, getsEverything, newRecipient,
+  partialFailure, recipientsFromState, recipientsPayload, sameRecipients, sourcesKey,
+  sourcesLabel, testSummary, validateRecipients,
 } from '../utils/recipients';
 import TwoFactor from './TwoFactor';
 
@@ -78,6 +79,27 @@ function PasswordForm() {
   );
 }
 
+/* Co dostaje odbiorca (trasy w bramce). Dwa gotowe wybory; trasy ustawione
+   inaczej (API bramki) widac jako trzecia pozycje i zostaja bez zmian. */
+function SourcesSelect({ i, sources, apps, onChange }) {
+  if (!Array.isArray(sources)) {
+    return <span className="dim" title="Bramka bez tras wysyła wszystko do wszystkich">wszystko</span>;
+  }
+  const others = apps.filter((a) => a !== 'kidwatch');
+  const key = sourcesKey(sources);
+  const presets = [sourcesKey(SOURCES_ALL), sourcesKey(SOURCES_FAMILY)];
+  return (
+    <select className="input-field" aria-label={`Co dostaje odbiorca ${i + 1}`} value={key}
+            onChange={(e) => onChange(e.target.value.split(','))}>
+      <option value={sourcesKey(SOURCES_ALL)}>
+        Wszystko{others.length ? ` (kidwatch, ${others.join(', ')}, testy)` : ''}
+      </option>
+      <option value={sourcesKey(SOURCES_FAMILY)}>Tylko kidwatch (dzieci)</option>
+      {!presets.includes(key) && <option value={key}>Inne: {sourcesLabel(sources)}</option>}
+    </select>
+  );
+}
+
 /* Odbiorcy WhatsApp: cala lista edytowana lokalnie i zapisywana jednym
    POST. Lista jest wspolna dla wszystkich aplikacji RenaCode - serwer zada
    hasla albo kodu 2FA (sama sesja nie wystarcza). */
@@ -91,6 +113,8 @@ function Recipients({ state, onSaved, busy, setBusy }) {
   const dirty = !sameRecipients(draft, saved);
   const problem = validateRecipients(draft, max, maxLabel);
   const activeSaved = saved.filter((r) => r.active).length;
+  const testTargets = saved.filter((r) => r.active && getsEverything(r)).length;
+  const apps = Array.isArray(state.aplikacje) ? state.aplikacje : [];
 
   // Odswiezenie stanu (np. co 20 s przy QR) nie nadpisuje edycji w toku.
   const savedKey = JSON.stringify(recipientsPayload(saved));
@@ -147,7 +171,7 @@ function Recipients({ state, onSaved, busy, setBusy }) {
         <div className="table-scroll" style={{ marginBottom: 10 }}>
           <table className="table">
             <thead>
-              <tr><th>Numer (z kierunkowym)</th><th>Etykieta</th><th>Aktywny</th><th aria-label="Usuń" /></tr>
+              <tr><th>Numer (z kierunkowym)</th><th>Etykieta</th><th>Dostaje</th><th>Aktywny</th><th aria-label="Usuń" /></tr>
             </thead>
             <tbody>
               {draft.map((r, i) => (
@@ -161,6 +185,10 @@ function Recipients({ state, onSaved, busy, setBusy }) {
                     <input className="input-field" maxLength={maxLabel} placeholder="np. Mama"
                            aria-label={`Etykieta odbiorcy ${i + 1}`} value={r.label}
                            onChange={(e) => edit(i, { label: e.target.value })} />
+                  </td>
+                  <td>
+                    <SourcesSelect i={i} sources={r.sources} apps={apps}
+                                   onChange={(sources) => edit(i, { sources })} />
                   </td>
                   <td>
                     <label className="switch" title={r.active ? 'dostaje powiadomienia' : 'wyłączony'}>
@@ -179,19 +207,27 @@ function Recipients({ state, onSaved, busy, setBusy }) {
           </table>
         </div>
       )}
+      {draft.some((r) => Array.isArray(r.sources)) && (
+        <p className="dim" style={{ fontSize: '0.76rem', margin: '0 0 10px' }}>
+          „Wszystko” — kidwatch, alarmy techniczne czujki, trader, monitoring, wiadomość
+          próbna i każda nowa aplikacja. „Tylko kidwatch” — powiadomienia o dzieciach.
+          Alarm, którego nikt nie dostaje WhatsAppem, idzie e-mailem do właściciela bramki.
+        </p>
+      )}
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
         <button type="button" className="btn-ghost" disabled={busy || draft.length >= max}
-                onClick={() => setDraft((d) => [...d, { number: '', label: '', active: true }])}>
+                onClick={() => setDraft((d) => [...d, newRecipient(state)])}>
           + Dodaj odbiorcę
         </button>
         {dirty && (
           <button type="button" className="btn-link" disabled={busy}
                   onClick={() => { setDraft(saved); setMsg(null); }}>Cofnij zmiany</button>
         )}
-        <button type="button" className="btn-ghost" disabled={busy || dirty || activeSaved === 0}
-                title={dirty ? 'Najpierw zapisz listę' : undefined} onClick={sendTest}>
-          Wyślij test do aktywnych
+        <button type="button" className="btn-ghost" disabled={busy || dirty || testTargets === 0}
+                title={dirty ? 'Najpierw zapisz listę' : 'Test dostają tylko aktywni z „Wszystko”'}
+                onClick={sendTest}>
+          Wyślij test ({testTargets})
         </button>
       </div>
 

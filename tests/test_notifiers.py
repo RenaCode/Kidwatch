@@ -336,6 +336,23 @@ async def test_bramka_wysyla_temat_tresc_i_zrodlo_z_kluczem():
     await client.aclose()
 
 
+async def test_bramka_czujka_idzie_z_kategoria_a_zwykle_bez():
+    """Trasy w bramce: alarm techniczny (WATCHDOG) to "kidwatch:czujka", ktorej
+    rodzina z trasa "kidwatch" nie dostaje. Zwykle powiadomienia bez kategorii."""
+    from kidwatch.config import BramkaConfig
+    from kidwatch.notifiers.bramka import BramkaNotifier
+
+    n = BramkaNotifier(BramkaConfig(url="http://bramka.test/"), key="k1",
+                       client=httpx.AsyncClient())
+    ts = datetime.now(UTC)
+    assert n.payload(Notification(kind=NotifyKind.WATCHDOG, title="Cisza DNS", text="x",
+                                  dedup_key="w", ts=ts))["kategoria"] == "czujka"
+    for kind in set(NotifyKind) - {NotifyKind.WATCHDOG}:
+        body = n.payload(Notification(kind=kind, title="t", text="x", dedup_key="d", ts=ts))
+        assert "kategoria" not in body, kind
+    await n.aclose()
+
+
 def test_bramka_kazdy_rodzaj_ma_podpis_w_mailu():
     from kidwatch.notifiers.bramka import RODZAJE
 

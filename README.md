@@ -316,22 +316,31 @@ stan kanałów bramki, „Połącz WhatsApp” (QR z WAHA odświeżany co 20 s d
 `BRAMKA_KLUCZ_ADMIN` (wysyłka powiadomień idzie osobnym `BRAMKA_KLUCZ`);
 przeglądarka nie zna żadnego z nich.
 
-Odbiorcy (najwyżej 5): numer z kierunkowym, etykieta (≤ 40 znaków) i
-przełącznik „aktywny”; „+ Dodaj odbiorcę”, „Usuń”, „Cofnij zmiany”. Zmiany
+Odbiorcy (najwyżej 5): numer z kierunkowym, etykieta (≤ 40 znaków), kolumna
+**„Dostaje”** i przełącznik „aktywny”; „+ Dodaj odbiorcę”, „Usuń”, „Cofnij zmiany”. Zmiany
 są lokalne, dopóki nie klikniesz „Zapisz listę” — zapis **całej** listy wymaga
 hasła albo kodu 2FA (lista jest wspólna dla wszystkich aplikacji RenaCode,
 sama sesja nie wystarcza). Błędne potwierdzenie liczy się do blokady konta;
 błąd w liście (zły numer, powtórka) odpada wcześniej, z 400, bez sprawdzania
-hasła. „Wyślij test do aktywnych” wysyła próbę tylko WhatsAppem i pokazuje,
-do ilu doszła (np. „doszło do 1 z 2”, z zamaskowanym numerem tego, do kogo
+hasła. „Wyślij test (N)” wysyła próbę tylko WhatsAppem do aktywnych
+z „Wszystko” i pokazuje, do ilu doszła (np. „doszło do 1 z 2”, z zamaskowanym numerem tego, do kogo
 nie doszło).
 
-Bramka wysyła do wszystkich aktywnych naraz; gdy dojdzie do części, to
+**„Dostaje”** to trasy w bramce (`charts/bramka/README.md` w renacode-infra,
+„Trasy”): „Wszystko” — każda aplikacja RenaCode (kidwatch, trader,
+monitoring…), alarmy techniczne czujki kidwatch i wiadomość próbna;
+„Tylko kidwatch (dzieci)” — zwykłe powiadomienia kidwatch, **bez** alarmów
+czujki (kidwatch wysyła je z `kategoria: czujka`). Nowy wiersz ma domyślnie
+„Tylko kidwatch”. Alarm, którego nikt nie dostaje WhatsAppem, idzie e-mailem
+na adres właściciela bramki. Przy bramce sprzed tras kolumna pokazuje
+„wszystko”, a zapis nie wysyła pola tras.
+
+Bramka wysyła do wszystkich aktywnych z daną trasą naraz; gdy dojdzie do części, to
 sukces bez maila, a e-mail idzie dopiero, gdy nie doszło do nikogo. Numery
 widzi tylko zalogowany właściciel konta w Profilu; logi panelu i bramki mają
 wyłącznie trzy ostatnie cyfry (`...200`). Endpoint:
 `POST /api/profile/whatsapp/recipients`
-`{"recipients": [{"number", "label", "active"}], "confirm": "<hasło albo kod>"}`
+`{"recipients": [{"number", "label", "active", "sources"?: ["*"] | ["kidwatch"]}], "confirm": "<hasło albo kod>"}`
 (stary `POST /api/profile/whatsapp/recipient` z jednym numerem zostaje).
 Wymaga bramki z `POST /v1/whatsapp/odbiorcy` — przy starszej bramce Profil
 pokazuje jej jedynego odbiorcę, ale zapis listy kończy się błędem.

@@ -6,6 +6,25 @@
 export const MAX_RECIPIENTS = 5;
 export const MAX_LABEL = 40;
 
+/* Trasy odbiorcy w bramce (`zrodla`): "*" to wszystko - kidwatch, trader,
+   monitoring, wiadomosc probna i aplikacje dopisane pozniej; "kidwatch" to
+   tylko powiadomienia o dzieciach (bez alarmow technicznych czujki). */
+export const ALL = '*';
+export const SOURCES_ALL = [ALL];
+export const SOURCES_FAMILY = ['kidwatch'];
+
+export const sourcesKey = (s) => (Array.isArray(s) ? s.join(',') : '');
+
+/* Opis tras dla czlowieka. `null` = bramka sprzed tras (wysyla wszystko). */
+export function sourcesLabel(sources) {
+  if (!Array.isArray(sources) || sources.includes(ALL)) return 'wszystko';
+  if (sourcesKey(sources) === sourcesKey(SOURCES_FAMILY)) return 'tylko kidwatch (dzieci)';
+  return sources.join(', ');
+}
+
+/* Czy odbiorca dostaje wiadomosc probna i alarmy spoza kidwatch. */
+export const getsEverything = (r) => !Array.isArray(r.sources) || r.sources.includes(ALL);
+
 /* Jak bramka_admin.normalize_number: tylko cyfry ASCII, + i separatory;
    "00" na poczatku (bez +) to prefiks miedzynarodowy. */
 export const validNumberInput = (s) => /^\+?[0-9 ().-]+$/.test(String(s ?? '').trim());
@@ -23,9 +42,11 @@ export function recipientsFromState(state) {
       number: String(o.numer ?? ''),
       label: String(o.etykieta ?? ''),
       active: o.aktywny !== false,
+      // null: bramka sprzed tras - pole nie idzie w zapisie.
+      sources: Array.isArray(o.zrodla) ? o.zrodla.map(String) : null,
     }));
   }
-  return state?.odbiorca ? [{ number: state.odbiorca, label: '', active: true }] : [];
+  return state?.odbiorca ? [{ number: state.odbiorca, label: '', active: true, sources: null }] : [];
 }
 
 /* Pierwszy problem z lista albo null. Komunikat wskazuje pozycje, nie numer. */
@@ -43,9 +64,20 @@ export function validateRecipients(list, max = MAX_RECIPIENTS, maxLabel = MAX_LA
   return null;
 }
 
-/* Cialo POST /api/profile/whatsapp/recipients (bez `confirm`). */
+/* Nowy wiersz: waskie trasy (rodzina). Bramka sprzed tras ich nie zna. */
+export const newRecipient = (state) => ({
+  number: '', label: '', active: true,
+  sources: Array.isArray(state?.odbiorcy?.[0]?.zrodla) || Array.isArray(state?.zrodla_rodziny)
+    ? [...(state.zrodla_rodziny || SOURCES_FAMILY)] : null,
+});
+
+/* Cialo POST /api/profile/whatsapp/recipients (bez `confirm`). `sources`
+   tylko, gdy bramka zna trasy - bez pola bramka zostawia trasy numeru. */
 export const recipientsPayload = (list) =>
-  list.map((r) => ({ number: digits(r.number), label: r.label.trim(), active: !!r.active }));
+  list.map((r) => ({
+    number: digits(r.number), label: r.label.trim(), active: !!r.active,
+    ...(Array.isArray(r.sources) ? { sources: [...r.sources] } : {}),
+  }));
 
 export function sameRecipients(a, b) {
   return JSON.stringify(recipientsPayload(a)) === JSON.stringify(recipientsPayload(b));

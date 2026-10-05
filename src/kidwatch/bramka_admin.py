@@ -33,6 +33,11 @@ _NUMBER_INPUT = re.compile(r"\+?[0-9 ().-]+", re.ASCII)
 #: odrzuca wczesniej, z komunikatem po polsku, ale decyduje bramka.
 MAX_RECIPIENTS = 5
 MAX_LABEL = 40
+#: Trasy odbiorcy (kanaly.zrodla_z_wpisu w bramce): "*" = wszystko, inaczej
+#: nazwy aplikacji z opcjonalnym ":kategoria". Te same granice co w bramce.
+ALL_SOURCES = "*"
+MAX_SOURCES = 10
+_SOURCE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}(:[a-z0-9][a-z0-9-]{0,39})?", re.ASCII)
 
 
 class BramkaError(RuntimeError):
@@ -60,10 +65,26 @@ def mask(number: str) -> str:
     return f"...{number[-3:]}"
 
 
+def normalize_sources(raw: object, i: int) -> list[str]:
+    """["kidwatch"] / ["*"] -> lista bez powtorzen; "*" pochlania reszte."""
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"Odbiorca {i}: wybierz, co ma dostawać")
+    if len(raw) > MAX_SOURCES:
+        raise ValueError(f"Odbiorca {i}: najwyżej {MAX_SOURCES} źródeł")
+    result: list[str] = []
+    for s in raw:
+        if not isinstance(s, str) or not (s == ALL_SOURCES or _SOURCE.fullmatch(s)):
+            raise ValueError(f"Odbiorca {i}: nieznane źródło powiadomień")
+        if s not in result:
+            result.append(s)
+    return [ALL_SOURCES] if ALL_SOURCES in result else result
+
+
 def normalize_recipients(raw: object) -> list[dict]:
-    """Lista z przegladarki [{number, label, active}] -> lista dla bramki
-    [{numer, etykieta, aktywny}]. ValueError z komunikatem dla czlowieka -
-    pozycja na liscie, nigdy sam numer."""
+    """Lista z przegladarki [{number, label, active, sources?}] -> lista dla
+    bramki [{numer, etykieta, aktywny, zrodla?}]. Bez `sources` pole `zrodla`
+    nie idzie, a bramka zostawia trasy numeru bez zmian. ValueError
+    z komunikatem dla czlowieka - pozycja na liscie, nigdy sam numer."""
     if not isinstance(raw, list):
         raise ValueError("Lista odbiorców ma zły format")
     if len(raw) > MAX_RECIPIENTS:
@@ -87,7 +108,10 @@ def normalize_recipients(raw: object) -> list[dict]:
             raise ValueError(f"Odbiorca {i}: zła wartość „aktywny”")
         if any(r["numer"] == number for r in result):
             raise ValueError(f"Odbiorca {i}: ten numer jest już na liście")
-        result.append({"numer": number, "etykieta": label, "aktywny": active})
+        entry = {"numer": number, "etykieta": label, "aktywny": active}
+        if "sources" in item:
+            entry["zrodla"] = normalize_sources(item["sources"], i)
+        result.append(entry)
     return result
 
 

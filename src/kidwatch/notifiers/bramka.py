@@ -11,6 +11,11 @@ pole `zrodlo` w ciele zostaje dla zgodnosci ze starsza bramka.
 `priorytet`, `rodzaj` i `format` steruja tylko wygladem maila HTML (etykieta
 alarm / wazne / informacja, podpis w naglowku, listy i sekcje z tekstu).
 Starsza bramka ich nie czyta i wysyla jak dotad - pola sa zgodne wstecz.
+
+`kategoria` steruje TRASA w bramce: alarmy czujki ida jako "kidwatch:czujka",
+a odbiorca z trasa "kidwatch" (rodzina) dostaje tylko zwykle powiadomienia
+o dzieciach. Starsza bramka pole ignoruje - wtedy czujka idzie do wszystkich,
+jak dotad.
 """
 
 from __future__ import annotations
@@ -45,6 +50,12 @@ RODZAJE = {
     NotifyKind.GAME: "czas gry",
 }
 
+#: Rodzaje, ktore nie sa powiadomieniem o dzieciach, tylko alarmem
+#: technicznym (cisza DNS, odczyt iPada nie dziala, kolejka porzucila push).
+#: Bramka kieruje je tylko do odbiorcow z "*" - patrz charts/bramka/README.md,
+#: "Trasy".
+KATEGORIE = {NotifyKind.WATCHDOG: "czujka"}
+
 
 class BramkaNotifier:
     name = "bramka"
@@ -67,6 +78,7 @@ class BramkaNotifier:
         return self.cfg.url.rstrip("/") + "/v1/wyslij"
 
     def payload(self, note: Notification) -> dict:
+        extra = {"kategoria": KATEGORIE[note.kind]} if note.kind in KATEGORIE else {}
         return {
             "temat": note.title,
             "tresc": note.text,
@@ -76,6 +88,7 @@ class BramkaNotifier:
             "rodzaj": RODZAJE.get(note.kind, ""),
             # Tresc z formatting.py: punkty "•", naglowki sekcji w *gwiazdkach*.
             "format": "markdown-lite",
+            **extra,
         }
 
     async def send(self, note: Notification) -> bool:
