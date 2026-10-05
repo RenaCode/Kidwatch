@@ -1152,7 +1152,9 @@ def make_handler(
                         "panel: %s zapisal odbiorcow WhatsApp (%d, aktywni %d): %s",
                         session.login, len(recipients),
                         sum(r["aktywny"] for r in recipients),
-                        ", ".join(mask(r["numer"]) + ("" if r["aktywny"] else " (wyl.)")
+                        ", ".join(mask(r["numer"])
+                                  + (f" [{','.join(r['zrodla'])}]" if "zrodla" in r else "")
+                                  + ("" if r["aktywny"] else " (wyl.)")
                                   for r in recipients) or "-",
                     )
                 elif path == "/api/profile/test":

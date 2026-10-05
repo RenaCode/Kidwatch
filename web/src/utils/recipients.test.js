@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   partialFailure, recipientsFromState, recipientsPayload, sameRecipients, testSummary,
   validateRecipients,
-  digits,
+  digits, getsEverything, newRecipient, sourcesLabel,
 } from './recipients.js';
 
 const A = '48500100200';
@@ -14,9 +14,11 @@ test('stan z bramki -> wiersze edytora, takze ze starej bramki', () => {
   assert.deepEqual(
     recipientsFromState({ odbiorcy: [{ numer: A, etykieta: 'Ja', aktywny: true },
                                      { numer: B, etykieta: '', aktywny: false }] }),
-    [{ number: A, label: 'Ja', active: true }, { number: B, label: '', active: false }],
+    [{ number: A, label: 'Ja', active: true, sources: null },
+     { number: B, label: '', active: false, sources: null }],
   );
-  assert.deepEqual(recipientsFromState({ odbiorca: A }), [{ number: A, label: '', active: true }]);
+  assert.deepEqual(recipientsFromState({ odbiorca: A }),
+    [{ number: A, label: '', active: true, sources: null }]);
   assert.deepEqual(recipientsFromState({ odbiorcy: [], odbiorca: '' }), []);
   assert.deepEqual(recipientsFromState(null), []);
 });
@@ -59,4 +61,29 @@ test('numer: tylko cyfry ASCII, + i separatory; 00 to prefiks miedzynarodowy', (
     /^Odbiorca 1: tylko cyfry/);
   assert.match(validateRecipients([{ number: '+١٢٣٤٥٦٧٨٩٠١', label: '', active: true }]),
     /^Odbiorca 1: tylko cyfry/);
+});
+
+test('trasy: z bramki, do zapisu, opis i nowy wiersz', () => {
+  const stan = { odbiorcy: [{ numer: A, etykieta: 'Ja', aktywny: true, zrodla: ['*'] },
+                            { numer: B, etykieta: 'Rodzina', aktywny: true, zrodla: ['kidwatch'] }],
+                 zrodla_rodziny: ['kidwatch'] };
+  const lista = recipientsFromState(stan);
+  assert.deepEqual(lista.map((r) => r.sources), [['*'], ['kidwatch']]);
+  assert.deepEqual(recipientsPayload(lista).map((r) => r.sources), [['*'], ['kidwatch']]);
+  assert.equal(sourcesLabel(['*']), 'wszystko');
+  assert.equal(sourcesLabel(['kidwatch']), 'tylko kidwatch (dzieci)');
+  assert.equal(sourcesLabel(['kidwatch', 'trader']), 'kidwatch, trader');
+  assert.equal(sourcesLabel(null), 'wszystko');
+  assert.deepEqual(lista.map(getsEverything), [true, false]);
+  // Nowa osoba na liscie dostaje domyslnie tylko kidwatch.
+  assert.deepEqual(newRecipient(stan).sources, ['kidwatch']);
+  // Zmiana tras to zmiana listy.
+  assert.equal(sameRecipients(lista, [lista[0], { ...lista[1], sources: ['*'] }]), false);
+});
+
+test('bramka sprzed tras: pole sources nie idzie w zapisie', () => {
+  const lista = recipientsFromState({ odbiorcy: [{ numer: A, etykieta: '', aktywny: true }] });
+  assert.equal('sources' in recipientsPayload(lista)[0], false);
+  assert.equal(newRecipient({ odbiorcy: [{ numer: A }] }).sources, null);
+  assert.equal(getsEverything(lista[0]), true);
 });

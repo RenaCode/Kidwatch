@@ -376,6 +376,34 @@ def test_lista_odbiorcow_dla_bramki():
     assert normalize_recipients([]) == []
 
 
+def test_trasy_odbiorcow_dla_bramki():
+    """`sources` z panelu -> `zrodla` dla bramki; bez pola bramka zostawia
+    trasy numeru (stary panel nie poszerza nikomu tras)."""
+    assert normalize_recipients([
+        {"number": A, "label": "Ja", "active": True, "sources": ["*", "kidwatch"]},
+        {"number": B, "label": "Rodzina", "active": True, "sources": ["kidwatch", "kidwatch"]},
+        {"number": C, "active": True, "sources": ["kidwatch", "kidwatch:czujka"]},
+    ]) == [
+        {"numer": A, "etykieta": "Ja", "aktywny": True, "zrodla": ["*"]},
+        {"numer": B, "etykieta": "Rodzina", "aktywny": True, "zrodla": ["kidwatch"]},
+        {"numer": C, "etykieta": "", "aktywny": True, "zrodla": ["kidwatch", "kidwatch:czujka"]},
+    ]
+    assert "zrodla" not in normalize_recipients([{"number": A}])[0]
+
+
+@pytest.mark.parametrize("sources, fragment", [
+    ([], "co ma dostawać"),
+    ("*", "co ma dostawać"),
+    (["Trader"], "nieznane"),
+    ([1], "nieznane"),
+    ([f"a{i}" for i in range(11)], "najwyżej 10"),
+])
+def test_walidacja_tras(sources, fragment):
+    with pytest.raises(ValueError, match=fragment) as e:
+        normalize_recipients([{"number": A, "sources": sources}])
+    assert "Odbiorca 1" in str(e.value) and A not in str(e.value)
+
+
 @pytest.mark.parametrize("lista, fragment", [
     (None, "format"),
     ([{"number": f"4850010030{i}"} for i in range(6)], "Najwyżej 5"),
@@ -429,6 +457,14 @@ def test_zapis_listy_odbiorcow_wymaga_hasla(served, caplog):
     # Profil widzi liste z bramki (pelne numery - to wlasciciel konta).
     status, data = call(port, "GET", "/api/profile/notify", headers={"Cookie": h["Cookie"]})
     assert status == 200 and len(data["odbiorcy"]) == 3
+
+    # Trasy z Profilu ida do bramki jako `zrodla`, a log pokazuje, kto co dostaje.
+    z_trasami = [{**LISTA[0], "sources": ["*"]}, {**LISTA[1], "sources": ["kidwatch"]}]
+    with caplog.at_level("INFO", logger=panel_mod.log.name):
+        status, data = call(port, "POST", url, {"recipients": z_trasami, "confirm": HASLO}, h)
+    assert status == 200, data
+    assert [o["zrodla"] for o in calls[-1][2]["odbiorcy"]] == [["*"], ["kidwatch"]]
+    assert "...200 [*], ...300 [kidwatch]" in " ".join(r.getMessage() for r in caplog.records)
 
 
 def test_zapis_listy_odbiorcow_kodem_2FA(served):
