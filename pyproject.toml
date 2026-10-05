@@ -3,6 +3,7 @@ name = "kidwatch"
 version = "0.1.0"
 description = "Powiadomienia push o aktywnosci iPadow dzieci na podstawie logow DNS"
 requires-python = ">=3.12,<3.13"
+license = "MIT"
 dependencies = [
     "httpx>=0.27",
     "pydantic>=2.7",

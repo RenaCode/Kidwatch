@@ -778,3 +778,7 @@ Logi DNS pokazują, z czym łączy się urządzenie. To dane o dzieciach — trz
 je u siebie, na własnym profilu NextDNS i własnym serwerze ntfy, i nie dawaj
 dostępu nikomu, komu nie musisz. Warto, żeby dzieci wiedziały, że iPady mają
 filtr DNS; kidwatch nie jest narzędziem do ukrywania nadzoru.
+
+## Licencja
+
+MIT — patrz [LICENSE](LICENSE). *License: MIT.*
