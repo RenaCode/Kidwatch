@@ -1,507 +1,586 @@
 # kidwatch
 
-Powiadomienia na telefon o aktywności iPadów dzieci, na podstawie zapytań DNS.
-W klastrze idą przez bramkę RenaCode (WhatsApp, a bez podpiętego numeru e-mail),
-lokalnie przez ntfy albo Home Assistant. Do tego panel WWW z historią, wykresem
-użycia, widokiem „Wszystkie ekrany” (iPady i TV na jednej osi dnia), trendami
-i eksportem CSV oraz opcjonalnie czujnik telewizora (ADB) i czujka UniFi.
+Phone notifications about kids' iPad activity, inferred from DNS queries.
+In a cluster they go through the RenaCode notification gateway (WhatsApp, or
+e-mail when no number is linked); locally through ntfy or Home Assistant. On
+top of that: a web panel with history, a usage chart, an "all screens" view
+(iPads and TV on one daily timeline), trends and CSV export, NextDNS-based
+"game time" controls, and optional Android TV (ADB) and UniFi sensors.
 
-Pełna instrukcja wdrożenia na klastrze: [`docs/uruchomienie-od-zera.md`](docs/uruchomienie-od-zera.md).
+Full cluster deployment guide (in Polish):
+[`docs/uruchomienie-od-zera.md`](docs/uruchomienie-od-zera.md).
 
-**W skrócie**
+**At a glance**
 
-- **Źródło danych:** logi zapytań DNS z [NextDNS](https://nextdns.io) (strumień
-  na żywo) — bez aplikacji na iPadzie, bez MDM, bez jailbreaka.
-- **Powiadomienia:** start i koniec sesji, nowe aplikacje, noc, podsumowanie
-  dnia i tygodnia — przez ntfy, Home Assistant albo bramkę WhatsApp/e-mail.
-- **Panel WWW:** historia, oś dnia wszystkich ekranów, trendy, eksport CSV,
-  czas gry z NextDNS, logowanie z 2FA.
-- **Opcjonalnie:** telewizor z Androidem (ADB) i ruch z kontrolera UniFi.
-- **Stack:** Python 3.12 (asyncio, httpx, SQLite), React + Vite, Docker,
-  Helm chart dla k3s/Argo CD.
+- **Data source:** DNS query logs from [NextDNS](https://nextdns.io) (live
+  stream), or AdGuard Home's query log. No app on the iPad, no MDM, no
+  jailbreak.
+- **Notifications:** session start and end, new apps, night use, daily and
+  weekly summaries, game time, TV viewing — via ntfy, Home Assistant or the
+  WhatsApp/e-mail gateway.
+- **Web panel:** history, all-screens timeline, trends, CSV export, NextDNS
+  game-time controls, TV monitoring pause, password + optional TOTP 2FA login.
+- **Optional:** Android/Google TV (ADB) and UniFi controller traffic.
+- **Self-monitoring watchdog:** alerts when kidwatch stops seeing DNS traffic.
+- **Stack:** Python 3.12 (asyncio, httpx, pydantic, SQLite), React 18 + Vite,
+  Docker, Helm chart for k3s / Argo CD.
 
-> **In English:** kidwatch sends phone notifications about kids' iPad activity
-> (session start/end, new apps, night use, daily and weekly reports), inferred
-> from NextDNS query logs — no app on the device. It includes a web dashboard
-> with 2FA, optional Android TV (ADB) and UniFi sensors, and a self-monitoring
-> watchdog. Minutes are a lower bound, not real screen time. The docs are in
-> Polish; the config is in `config.example.yaml`.
+Code comments, notification texts and the panel UI are in Polish; strings
+quoted below are reproduced verbatim.
 
-Dostajesz cztery rodzaje wiadomości:
+Message types:
 
-| | kiedy | przykład |
+| | when | example |
 |---|---|---|
-| **Start sesji** | aktywność potwierdzona (3 odrębne chwile ruchu rozpięte na ≥1 min w 5 min albo ≥3 min ruchu; pakiet zapytań w jednej sekundzie to jedna chwila) po ≥10 min ciszy | `iPad Kuby aktywny` · `15:12 — Roblox` |
-| **Aplikacja** | nowa apka w trwającej sesji — każda raz na sesję (powrót do niej też nie pinguje) | `Kuba` · `YouTube` |
-| **Koniec sesji** | 10 min bez aktywności | `iPad Kuby — koniec` · `15:12–15:59, 47 min` |
-| **Podsumowanie dnia** | 20:30 | sesje od 20:30 poprzedniego dnia, czas i top aplikacje per dziecko |
-| **Telewizor** (opcjonalnie) | start i koniec oglądania | `TV salon: start — <tytuł> (YouTube)` |
-| **Noc** | sesja w oknie nocy (start albo trwanie) + przypomnienie co 30 min | `🌙 Kuba używa iPada w nocy` · `23:12, YouTube, w domu` |
-| **Raport tygodnia** | niedziela 19:00 | od poprzedniej niedzieli 19:00: minuty vs poprzedni tydzień, sesje, dni, top 5, najdłuższa sesja, noc, TV |
-| **Czas gry** (opcjonalnie) | zmiana z panelu, koniec bonusu, harmonogram | `🎮 Czas gry dla Kuba: +30 min (do 18:40)` |
+| **Session start** | activity confirmed (3 distinct moments of traffic spanning ≥1 min within 5 min, or ≥3 min of traffic; a burst of queries within 10 s is one moment) after ≥10 min of silence | `<device> aktywny` · `15:12 — Roblox` |
+| **App** | a new app during an ongoing session — each app once per session (switching back does not ping again) | `<child>` · `YouTube` |
+| **Session end** | 10 min without activity | `<device> — koniec` · `15:12–15:59, 47 min` |
+| **Daily summary** | 20:30 | sessions since 20:30 the previous day, time and top apps per child |
+| **TV** (optional) | viewing start and end | `TV salon: start — <title> (YouTube)` |
+| **Night** | a session in the night window (starting or ongoing) + a reminder every 30 min | `🌙 <child> uzywa iPada w nocy` · `23:12, YouTube, w domu` |
+| **Weekly report** | Sunday 19:00 | since the previous Sunday 19:00: minutes vs previous week, sessions, active days, top 5, longest session, night use, TV |
+| **Game time** (optional) | change from the panel, bonus end, schedule | `🎮 Czas gry dla <child>: +30 min (do 18:40)` |
+| **TV pause** (optional) | monitoring paused / resumed | `Monitoring TV wstrzymany do …` · `Monitoring TV wznowiony` |
 
-Plus **czujka własnej niesprawności** — patrz [Czujka](#czujka-najważniejsza-część-bez-nadzoru).
-
----
-
-## Najpierw: czym te liczby NIE są
-
-**To nie jest pomiar czasu przed ekranem.** Liczba minut przy aplikacji to liczba
-różnych minut, w których iPad wysłał zapytanie DNS do jej domen. iOS cachuje
-odpowiedzi DNS, więc dziecko może grać godzinę, generując zapytania w kilku
-minutach. **Każda podana liczba jest dolnym oszacowaniem** i każde powiadomienie
-mówi to wprost.
-
-Pełne dane, także z czasu offline, są w **Ustawienia → Czas przed ekranem** na
-Twoim iPhonie. Apple nie udostępnia do nich publicznego API i kidwatch nawet nie
-próbuje się tam wpinać. Jeśli będziesz porównywał jedno z drugim, kidwatch zawsze
-pokaże mniej — i to jest poprawne zachowanie, nie błąd.
-
-Czego jeszcze nie zobaczysz:
-
-- **aplikacji, które nie odpytują własnych domen** (gry offline, zdjęcia, notatki);
-- **rozróżnienia YouTube Kids od YouTube** w 100% — YT Kids używa części tych
-  samych domen (`googlevideo.com`, `youtubei.googleapis.com`), więc jego ruch
-  częściowo trafi na konto „YouTube";
-- **treści** — tylko domeny. Nie wiesz, *co* dziecko obejrzało.
+Plus the **self-monitoring watchdog** — see [Watchdog](#watchdog--the-most-important-part-without-supervision).
 
 ---
 
-## Szybki start — bez wymazywania iPada
+## First: what these numbers are NOT
 
-**Nie musisz nadzorować iPadów ani niczego wymazywać.** Sprawdzone w oficjalnym
-schemacie Apple ([`com.apple.dnsSettings.managed.yaml`](https://github.com/apple/device-management/blob/release/mdm/profiles/com.apple.dnsSettings.managed.yaml)):
-cały payload DNS ma `supervised: false` i `allowmanualinstall: true`.
+**This is not a screen-time measurement.** The minutes shown for an app are
+the number of distinct minutes in which the iPad sent a DNS query to that
+app's domains. iOS caches DNS answers, so a child can play for an hour while
+generating queries in only a few minutes. **Every number is a lower bound**,
+and every notification says so (`czasy szacunkowe — liczba minut z ruchem DNS`).
 
-### 1. Profil NextDNS
+The full data, including offline use, is in **Settings → Screen Time** on your
+iPhone. Apple offers no public API for it and kidwatch does not try to hook
+into it. If you compare the two, kidwatch will always show less — that is the
+correct behaviour, not a bug.
 
-1. Konto na [my.nextdns.io](https://my.nextdns.io/) → nowy profil. Zapisz **ID profilu**.
-2. **Account → API → klucz API.** To sekret, trafia do zmiennej środowiskowej.
-3. W profilu włącz logi (**Settings → Logs**) i retencję ≥ 1 dzień.
+What you will not see:
 
-### 2. DNS na każdym iPadzie — dwie drogi, wybierz jedną
+- **apps that don't query their own domains** (offline games, photos, notes);
+- **a 100% split between YouTube Kids and YouTube** — YT Kids uses some of the
+  same domains (`googlevideo.com`, `youtubei.googleapis.com`), so part of its
+  traffic lands under "YouTube";
+- **content** — only domains. You don't know *what* the child watched.
 
-**Droga A: aplikacja NextDNS (najprostsza)**
+---
 
-1. App Store → [NextDNS](https://apps.apple.com/us/app/nextdns/id1463342498) na iPadzie.
-2. Wpisz ID profilu.
-3. **Włącz wysyłanie nazwy urządzenia** — bez tego wszystkie iPady zlewają się
-   w jedno i kidwatch nie rozróżni dzieci.
-4. Nazwij urządzenie unikalnie, np. `iPad-Kuby`. Ta nazwa idzie do `source_ids`
-   w `config.yaml`.
+## Quick start — without erasing the iPad
 
-**Droga B: profil `.mobileconfig` (bez aplikacji)**
+**You don't need to supervise the iPads or wipe anything.** Checked against
+Apple's official schema
+([`com.apple.dnsSettings.managed.yaml`](https://github.com/apple/device-management/blob/release/mdm/profiles/com.apple.dnsSettings.managed.yaml)):
+the whole DNS payload has `supervised: false` and `allowmanualinstall: true`.
+
+### 1. NextDNS profile
+
+1. Create an account at [my.nextdns.io](https://my.nextdns.io/) → new profile.
+   Note the **profile ID**.
+2. **Account → API → API key.** This is a secret; it goes into an environment
+   variable.
+3. In the profile enable logs (**Settings → Logs**) with retention ≥ 1 day.
+
+### 2. DNS on each iPad — two options, pick one
+
+**Option A: the NextDNS app (simplest)**
+
+1. App Store → [NextDNS](https://apps.apple.com/us/app/nextdns/id1463342498) on the iPad.
+2. Enter the profile ID.
+3. **Enable sending the device name** — otherwise all iPads merge into one
+   and kidwatch can't tell the children apart.
+4. Give the device a unique name, e.g. `iPad-Child-1`. That name goes into
+   `source_ids` in `config.yaml`.
+
+**Option B: a `.mobileconfig` profile (no app)**
 
 ```bash
 uv run python tools/gen_profile.py \
-  --name "iPad Kuby" \
-  --doh-url "https://dns.nextdns.io/TWOJE_ID/iPad-Kuby" \
-  --out kuba.mobileconfig
+  --name "iPad Child 1" \
+  --doh-url "https://dns.nextdns.io/YOUR_ID/iPad-Child-1" \
+  --out child1.mobileconfig
 ```
 
-**Jeden plik na każdy iPad, z inną końcówką adresu.** Rozróżnienie urządzeń
-opiera się na ścieżce w adresie DoH — wspólny profil = jedno urządzenie w logach.
+**One file per iPad, each with a different URL suffix.** Devices are told
+apart by the path in the DoH URL — a shared profile = one device in the logs.
 
-Wyślij plik na iPada (AirDrop / mail), potem **Ustawienia → Pobrano profil → Zainstaluj**.
+Send the file to the iPad (AirDrop / mail), then **Settings → Profile
+Downloaded → Install**.
 
-### 3. Utrudnij zdjęcie (bez nadzoru nie da się zablokować)
+### 3. Make removal harder (without supervision it can't be locked)
 
-Screen Time **nie potrafi** zamknąć ustawień DNS — nie ogranicza dostępu do
-ekranu Ustawienia → Ogólne, a ustawienia VPN/DNS nie są pozycją, którą kontrola
-rodzicielska obejmuje. Co możesz zrobić:
+Screen Time **cannot** lock the DNS settings — it does not restrict access to
+Settings → General, and VPN/DNS settings are not something parental controls
+cover. What you can do:
 
-- **Screen Time → Ograniczenia treści i prywatności → App Store → Usuwanie aplikacji: Nie pozwalaj**
-  (przy drodze A blokuje usunięcie aplikacji NextDNS);
-- kod Screen Time, którego dzieci nie znają;
-- **zostaw czujkę włączoną** — ona zgłosi zdjęcie profilu.
+- **Screen Time → Content & Privacy Restrictions → App Store → Deleting Apps:
+  Don't Allow** (with option A this prevents deleting the NextDNS app);
+- a Screen Time passcode the kids don't know;
+- **keep the watchdog enabled** — it will report a removed profile.
 
-### 4. ntfy na Twoim iPhonie
+### 4. ntfy on your iPhone
 
 1. App Store → **ntfy**.
-2. Zasubskrybuj temat z `config.yaml` (`notifiers.ntfy.topic`).
-3. Temat podajesz w zmiennej `NTFY_TOPIC`, nie w pliku (`topic: ""` w
-   `config.example.yaml`; bez zmiennej konfiguracja się nie zwaliduje). Wylosuj
-   długi: `python3 -c "import secrets;print('kidwatch-'+secrets.token_hex(14))"`.
-   **Nazwa tematu na ntfy.sh JEST hasłem** — nie ma tam żadnej kontroli dostępu,
-   kto zna nazwę, czyta Twoje powiadomienia. Własny serwer ntfy jest lepszy.
+2. Subscribe to your topic.
+3. The topic is passed in the `NTFY_TOPIC` variable, not in the file
+   (`topic: ""` in `config.example.yaml`; without the variable the config does
+   not validate). Generate a long one:
+   `python3 -c "import secrets;print('kidwatch-'+secrets.token_hex(14))"`.
+   **On ntfy.sh the topic name IS the password** — there is no access control;
+   anyone who knows the name can read your notifications. A self-hosted ntfy
+   server is better.
 
-### 5. Uruchom
+### 5. Run
 
 ```bash
-cp config.example.yaml config.yaml    # wpisz profile_id i nazwy urządzeń
+cp config.example.yaml config.yaml    # set profile_id and device names
 export NEXTDNS_API_KEY="..." NTFY_TOPIC="kidwatch-..."
 uv sync
-uv run python -m kidwatch test-notify  # próbny push
+uv run python -m kidwatch test-notify  # test push
 uv run python -m kidwatch run
 ```
 
+### 6. Web panel (optional, locally)
+
+The panel is disabled by default (`panel.enabled: false`, listens on
+`127.0.0.1:8080`). It runs as a thread inside `run` and serves the built front
+end from `panel.static_dir` (default `web/dist`):
+
+```bash
+(cd web && npm ci && npm run build)
+uv run python -m kidwatch user-add <login>   # prints a random password ONCE
+```
+
+Then set `panel.enabled: true` in `config.yaml`. Session cookies are `Secure`
+by default; set `panel.cookie_secure: false` only if you serve the panel over
+plain `http://` on a host other than `localhost`. 2FA additionally requires
+`PANEL_TOTP_KEY` (e.g. `openssl rand -base64 32`).
+
 ---
 
-## Czujka — najważniejsza część bez nadzoru
+## Watchdog — the most important part without supervision
 
-Na nienadzorowanym iPadzie dziecko **może** wyłączyć DNS. Jego iPad znika wtedy
-z logów, co jest **nieodróżnialne od „iPad leży w szufladzie"**. To najgorszy
-możliwy cichy błąd: serwis milczy i wygląda na sprawny.
+On an unsupervised iPad the child **can** turn DNS off. Their iPad then
+disappears from the logs, which is **indistinguishable from "the iPad is lying
+in a drawer"**. That is the worst possible silent failure: the service is
+quiet and looks healthy.
 
-Dlatego szum systemowy ma tu wartość. iPad odpytuje domeny Apple non stop, także
-śpiąc. Cisza **licząca szum** znaczy jedno: przestaliśmy widzieć.
+That is why system noise is valuable here. An iPad queries Apple domains
+non-stop, even while asleep. Silence **including noise** means one thing: we
+have stopped seeing it.
 
-Trzy warstwy, każda pilnuje innej awarii:
+Each layer guards against a different failure:
 
-| warstwa | wykrywa | reakcja |
+| layer | detects | reaction |
 |---|---|---|
-| `stream_silence_minutes` (20) | zero zdarzeń ze **wszystkich** urządzeń — padł token, sieć, konto | push `kidwatch nie widzi ruchu DNS` |
-| `device_silence_minutes` (180) | cisza **jednego** iPada, gdy inne raportują — zdjęty profil | push `iPad Kuby nie zgłasza się do DNS` |
-| `livenessProbe` / `HEALTHCHECK` | proces **zawisł** — czujka nie zgłosi własnej śmierci, bo alarm wysyła ten sam proces | restart kontenera |
-| czujka UniFi (opcjonalna) | iPad w domowym Wi-Fi przesłał > 20 MB w 15 min, a NextDNS nie ma od niego ani jednego zapytania — zdjęty profil DNS | push `<iPad> — profil DNS prawdopodobnie usunięty` |
-| `tv.unreachable_alert_hours` (24) | telewizor bez jednego udanego odczytu przez dobę — tunel, ADB, klucz | push `<TV> — odczyt z urzadzenia nie dziala` |
+| `stream_silence_minutes` (20) | zero events from **all** devices — dead token, network, account | push `kidwatch nie widzi ruchu DNS` |
+| `device_silence_minutes` (180) | silence of **one** iPad while others report — profile removed | push `<device> nie zglasza sie do DNS` |
+| same threshold, device never seen | a configured device that has not appeared in DNS once since start — typo in `source_ids` or a profile that never worked | push `<device> nie pojawil sie w DNS` (at most once a day) |
+| `livenessProbe` / `HEALTHCHECK` | the process **hung** — the watchdog can't report its own death, since the alert is sent by the same process | container restart (heartbeat file `KIDWATCH_HEARTBEAT`) |
+| UniFi sensor (optional) | an iPad on home Wi-Fi transferred > `alarm_mb` (20) MB in `window_minutes` (15) while NextDNS has not a single query from it — DNS profile removed | push `<device> — profil DNS prawdopodobnie usunięty` |
+| `tv.unreachable_alert_hours` (24) | TV without a single successful read for a day — tunnel, ADB, key | push `<TV> — odczyt z urzadzenia nie dziala` |
+| outbox | notifications no channel accepted for a day (see below) | push `kidwatch nie dostarczyl powiadomien` |
 
-Powtórzenia alarmu idą w rosnących odstępach (20 → 40 → 80 min, sufit 8 h), żeby
-jedna awaria nie zrobiła kilkunastu pushy na dobę. Powrót do zdrowia też dostaje
-powiadomienie (czujki DNS i UniFi). Każda awaria to osobny epizod — kolejna,
-nawet tego samego dnia, znowu daje alarm i „wróciło”. Wyjątek: czujka telewizora
-zgłasza brak odczytu najwyżej raz na dobę i nie wysyła „wróciło”.
+Repeated alerts go out at increasing intervals (20 → 40 → 80 min, capped at
+8 h, `repeat_backoff_max_minutes`) so that one failure doesn't produce a dozen
+pushes a day. Recovery is notified too (DNS and UniFi watchdogs). Each failure
+is a separate episode — another one, even the same day, alerts again and gets
+its own "back" message. Exception: the TV watchdog reports a missing read at
+most once a day and sends no recovery message.
 
-W cichych godzinach cisza pojedynczego iPada nie alarmuje — nocą ma prawo być
-wyłączony (`device_silence_ignore_quiet_hours`).
+During quiet hours silence of a single iPad does not alert — it is allowed to
+be off at night (`device_silence_ignore_quiet_hours`).
 
 ---
 
-## Jak to działa
+## How it works
 
 ```
 NextDNS /logs/stream (SSE)  ─┐
-                             ├─→ classifier ─→ engine ─→ bramka (WhatsApp / e-mail)
-AdGuard /control/querylog   ─┘   (app_map)     (czysty)   ntfy, Home Assistant
+                             ├─→ classifier ─→ engine ─→ gateway (WhatsApp / e-mail)
+AdGuard /control/querylog   ─┘   (app_map)     (pure)    ntfy, Home Assistant
                                                   │
-Google TV (ADB), UniFi ─────────────────────→  SQLite  ─→ panel WWW
-                                     (sesje, kursor, dedup)
+Google TV (ADB), UniFi ─────────────────────→  SQLite  ─→ web panel
+                                     (sessions, cursor, dedup, outbox)
 ```
 
-- **`sources/`** — wspólny interfejs dla źródeł DNS (NextDNS, AdGuard). Obok
-  czujniki: `tv.py` (Google TV po ADB), `unifi.py` (obecność w Wi-Fi) i
-  `device.py` (odczyt z iPada po lockdown, w klastrze wyłączony). Źródła DNS same ponawiają
-  połączenia; błąd sieci nigdy nie przerywa iteracji.
-- **`classifier.py`** — domena → szum / aplikacja / nieznane. Dopasowanie
-  **najdłuższy wygrywa**, więc kolejność w `app_map.yaml` nie ma znaczenia.
-  Plik przeładowuje się na gorąco po mtime; zepsuty YAML zostawia starą mapę.
-- **`engine.py`** — wszystkie reguły. Zero I/O sieciowego, czas z wstrzykiwanego
-  zegara. Stąd testy silnika bez jednego `sleep`.
-- **`store.py`** — SQLite. Trzy rzeczy muszą przeżyć restart: otwarte sesje,
-  klucze wysłanych powiadomień (idempotencja) i kursor strumienia.
-- **`scheduler.py`** — pętla tików: domykanie sesji, podsumowanie, czujka,
-  sprzątanie, tętno.
+- **`sources/`** — a common interface for DNS sources (NextDNS, AdGuard).
+  Alongside them, sensors: `tv.py` (Google TV over ADB), `unifi.py` (Wi-Fi
+  presence) and `device.py` (reading the iPad over lockdown; disabled in the
+  cluster). DNS sources reconnect on their own; a network error never aborts
+  the loop.
+- **`classifier.py`** — domain → noise / shared / app / unknown. **Longest
+  match wins**, so the order in `app_map.yaml` doesn't matter. The file is
+  hot-reloaded on mtime change; broken YAML keeps the old map.
+- **`engine.py`** — all the rules. No network I/O, time comes from an injected
+  clock — hence engine tests without a single `sleep`.
+- **`store.py`** — SQLite. What must survive a restart: open sessions, keys of
+  sent notifications (idempotency), the stream cursor and the outbox.
+- **`scheduler.py`** — the tick loop: closing sessions, summaries, watchdog,
+  cleanup, heartbeat.
+- **`panel.py` / `panel_auth.py`** — the web panel's HTTP server (a thread in
+  the `run` process, read-only connection to the main DB) and its login
+  (Argon2id passwords, optional TOTP, separate `panel-auth.db`).
+- **`gametime.py`, `tvpause.py`, `rollup.py`** — game time, TV pause and the
+  daily aggregates.
 
-### Szum nie budzi i nie przedłuża sesji
+### Noise neither wakes nor extends a session
 
-Gdyby przedłużał, sesja nigdy by się nie skończyła — iPad odpytuje Apple bez
-przerwy. Sesja kończy się na ostatniej **niesystemowej** aktywności.
+If it did, a session would never end — an iPad queries Apple constantly. A
+session ends at the last **non-system** activity.
 
-### Restart nie dubluje pushy
+### A restart doesn't duplicate pushes
 
-Każde powiadomienie ma `dedup_key` zajmowany w SQLite atomowo. Powtórne
-przetworzenie tych samych zdarzeń (np. po wznowieniu strumienia) nic nie wyśle.
+Every notification has a `dedup_key` claimed atomically in SQLite. Processing
+the same events again (e.g. after the stream resumes) sends nothing.
 
-### Restart nie gubi pushy
+### A restart doesn't lose pushes
 
-Pętle nie wysyłają same — dopisują powiadomienie do tabeli `outbox` w
-`kidwatch.db`, a wysyła je osobne zadanie, po kolei. Wiszący kanał nie trzyma
-więc tiku ani tętna (liveness).
+The loops don't send directly — they append the notification to the `outbox`
+table in `kidwatch.db`, and a separate task sends them in order. A hanging
+channel therefore doesn't hold up the tick or the heartbeat (liveness).
 
-Wpis znika z kolejki **dopiero, gdy przyjął go co najmniej jeden kanał**
-(bramka odpowiedziała 2xx). Jeśli żaden nie przyjął — restart bramki przy
-wdrożeniu, 502 z Mailguna — wpis zostaje i jest ponawiany co 30 s, 1, 2, 5,
-10 min, potem co 15 min; przeżywa też restart kidwatch. Kolejne powiadomienia
-czekają za nim, żeby „koniec sesji” nie przyszedł przed „startem”. Po dobie
-(albo 100 próbach) wpis jest porzucany: WARNING w logu, „niedostarczone” w
-historii panelu i alarm czujki `kidwatch nie dostarczyl powiadomien` (najwyżej
-raz na dobę), który wyjdzie, gdy kanał wróci.
+An entry leaves the queue **only once at least one channel has accepted it**
+(the gateway answered 2xx). If none did — a gateway restart during a deploy,
+a 502 from the mail provider — the entry stays and is retried after 30 s, 1,
+2, 5, 10 min, then every 15 min; it also survives a kidwatch restart. Later
+notifications wait behind it so that "session end" never arrives before
+"start". After a day (or 100 attempts) the entry is dropped: a WARNING in the
+log, "undelivered" in the panel history, and the watchdog alert
+`kidwatch nie dostarczyl powiadomien` (at most once a day), which goes out
+when the channel is back.
 
-Cena: gdy kanał przyjmie push, a proces padnie, zanim skasuje wpis, po starcie
-ten sam push przyjdzie drugi raz. Zgubiony jest gorszy niż zdublowany.
+The price: if a channel accepts a push and the process dies before deleting
+the entry, the same push arrives a second time after startup. Lost is worse
+than duplicated.
+
+### YouTube ads inside games
+
+Games show video ads through Google IMA, which pulls clips from YouTube's
+servers — to DNS that looks like YouTube was opened. YouTube traffic within
+±60 s of a known ad network (Unity, AppLovin, ironSource, doubleclick, …)
+during a game is counted as the game, with no "YouTube" push; a stretch of
+YouTube longer than 2 min without the game is real viewing.
 
 ---
 
-## Konfiguracja
+## Configuration
 
-Wszystko w `config.yaml` (wzór: `config.example.yaml`). **Sekrety wyłącznie ze
-zmiennych środowiskowych:**
+Everything lives in `config.yaml` (template: `config.example.yaml`; `--config`
+or `KIDWATCH_CONFIG` selects the file). **Secrets come only from environment
+variables:**
 
-| zmienna | do czego | wymagana |
+| variable | purpose | required |
 |---|---|---|
-| `NEXTDNS_API_KEY` | klucz API NextDNS | przy `source.kind: nextdns` |
-| `ADGUARD_PASSWORD` | hasło AdGuard Home | przy `source.kind: adguard` |
-| `NTFY_TOKEN` | token ntfy | nie (publiczne tematy go nie wymagają) |
-| `HA_WEBHOOK_ID` | webhook Home Assistant | przy włączonym HA |
-| `NTFY_TOPIC` | temat ntfy (nazwa tematu jest hasłem, więc nie w pliku) | przy włączonym ntfy |
-| `BRAMKA_KLUCZ` | klucz **wysyłkowy** bramki powiadomień RenaCode (w bramce: `BRAMKA_KLUCZ_KIDWATCH`) | przy włączonej bramce |
-| `BRAMKA_KLUCZ_ADMIN` | klucz administracyjny bramki — panel: WhatsApp, wiadomość próbna | nie (bez niego panel bierze `BRAMKA_KLUCZ`, co działa tylko ze starym wspólnym kluczem) |
-| `PANEL_TOTP_KEY` | szyfruje sekrety 2FA panelu WWW | nie (bez niego 2FA nie da się włączyć) |
-| `UNIFI_API_KEY` | lokalne API kontrolera UniFi | przy `unifi.enabled` (bez niego czujka się nie uruchamia) |
+| `NEXTDNS_API_KEY` | NextDNS API key (logs and game time) | with `source.kind: nextdns` |
+| `ADGUARD_PASSWORD` | AdGuard Home password | with `source.kind: adguard` |
+| `NTFY_TOPIC` | ntfy topic (the topic name is a password, so not in the file) | with ntfy enabled |
+| `NTFY_TOKEN` | ntfy access token | no (public topics don't need it) |
+| `HA_WEBHOOK_ID` | Home Assistant webhook | with HA enabled |
+| `BRAMKA_KLUCZ` | the **sending** key for the RenaCode notification gateway (`notifiers.bramka`) | with the gateway enabled |
+| `BRAMKA_KLUCZ_ADMIN` | gateway admin key — panel: WhatsApp linking, recipients, test message | no (without it the panel falls back to `BRAMKA_KLUCZ`, which only works with the old shared key) |
+| `PANEL_TOTP_KEY` | encrypts the panel's 2FA secrets | no (without it 2FA can't be enabled) |
+| `UNIFI_API_KEY` | local UniFi controller API | with `unifi.enabled` (without it the sensor doesn't start) |
+| `KIDWATCH_STORE_PATH` | overrides `store.path` | no |
 
-Brak sekretu daje czytelny komunikat i kod wyjścia **2**, nie stack trace.
+A missing secret produces a readable message and exit code **2**, not a
+stack trace.
 
-### Ważniejsze progi
+### Main thresholds
 
-| klucz | domyślnie | znaczenie |
+| key | default | meaning |
 |---|---|---|
-| `idle_minutes` | 10 | cisza tak długa = koniec sesji |
-| `app_cooldown_minutes` | 15 | nierozpoznany ruch: kolejne domeny zbiorczo co tyle minut; nazwana apka i tak raz na sesję (także w nowej sesji nie wcześniej niż po tym czasie) |
-| `session_start_merge_seconds` | 20 | apka w tym okienku = wspólny push ze startem |
-| `max_notifications_per_hour` | 12 | limit na urządzenie; nadmiar agregowany |
-| `quiet_hours` | 21:30–07:00 | brak pushy o apkach, start sesji z priorytetem 5 |
-| `night` | = `quiet_hours` | okno alarmu nocnego (`start`/`end`), `reminder_minutes: 30`, `enabled` |
-| `weekly_report` | niedziela 19:00 | `weekday` (0=pon … 6=nd), `time`, `enabled` |
-| `store.retention_days` | 30 | starsze zdarzenia kasowane (0 = nigdy) |
+| `engine.idle_minutes` | 10 | this much silence = session end |
+| `engine.app_cooldown_minutes` | 15 | unrecognised traffic: further domains batched every N minutes; a named app is reported once per session anyway (and in a new session not sooner than after this time) |
+| `engine.confirm_minutes` / `confirm_moments` | 5 / 3 | session confirmation window and number of distinct moments (see below) |
+| `engine.shared_extend_minutes` | 30 | how long `shared` traffic may extend a session |
+| `engine.daily_summary_time` | 20:30 | daily summary |
+| `engine.max_notifications_per_hour` | 12 | per device; the excess is aggregated |
+| `engine.quiet_hours` | none (example config: 21:30–07:00) | no app pushes; session start with priority `session_start_priority` (5) |
+| `engine.night` | = `quiet_hours` | night-alert window (`start`/`end`), `reminder_minutes: 30`, `enabled` |
+| `engine.weekly_report` | Sunday 19:00 | `weekday` (0=Mon … 6=Sun), `time`, `enabled` |
+| `store.retention_days` | 30 | older events are deleted (0 = never) |
+| `store.notifications_retention_days` | 365 | notification history in the panel (0 = no limit) |
+| `store.rollup_retention_days` | 0 | daily aggregates (0 = no limit) |
 
-**Noc i ciche godziny to jeden push, nie dwa.** Start sesji w oknie nocy
-dostaje formę nocną (`🌙 Kuba używa iPada w nocy — 23:12, YouTube`, z „w domu”
-/ „poza domem”, gdy czujka UniFi ma świeży odczyt) zamiast dopisku „W CICHYCH
-GODZINACH”. Sesja zaczęta wieczorem, która trwa w noc, dostaje ten push, gdy
-w nocy pojawi się aktywność; potem przypomnienie co `reminder_minutes`.
+`engine.session_start_merge_seconds` and `engine.confirm_burst_events` are no
+longer used (session confirmation replaced them); they are still accepted so
+existing configs keep validating.
 
-**Raport tygodnia** (automatyczny, niedziela 19:00) liczy sesje od poprzedniej
-niedzieli 19:00 do bieżącej 19:00; czas „dokładnie” z TV (liczniki Androida)
-zostaje w tygodniu kalendarzowym pon–nd. Ręcznie liczy się cały tydzień ISO
-(pon–nd, bez odcięcia o 19:00; bez `--week` w niedzielę bieżący, w inny dzień
-ostatni pełny), bez zajmowania dedupu:
-`python -m kidwatch weekly [--week 2026-W40] [--dry-run]` (bez `--dry-run`
-wysyła też kanałami).
+**Night and quiet hours are one push, not two.** A session starting in the
+night window gets the night form (`🌙 <child> uzywa iPada w nocy — 23:12,
+YouTube`, with `w domu` / `poza domem` when the UniFi sensor has a fresh
+reading) instead of the `W CICHYCH GODZINACH` suffix. A session started in
+the evening that continues into the night gets this push when activity shows
+up at night; then a reminder every `reminder_minutes`.
 
-**Limit godzinowy nie dławi** startu sesji, czujki, nocy, raportów ani czasu gry.
-Zdławienie „iPad włączył się o 2 w nocy" zniweczyłoby sens serwisu; start sesji
-jest z natury ograniczony przez `idle_minutes`, więc sam nie zrobi lawiny.
+**The weekly report** (automatic, Sunday 19:00) counts sessions from the
+previous Sunday 19:00 to the current 19:00; the "exact" TV time (Android
+counters) stays in the calendar week Mon–Sun. Run manually it covers a whole
+ISO week (Mon–Sun, no 19:00 cut-off; without `--week`, on a Sunday the current
+week, on other days the last full one), without claiming the dedup key:
+`python -m kidwatch weekly [--week 2026-W40] [--dry-run]` (without
+`--dry-run` it also sends through the channels).
 
-### Sesje „w tle” nie istnieją
+**The hourly limit never throttles** session start and end, the watchdog,
+night alerts, reports, game time or TV pause. Throttling "the iPad turned on
+at 2 a.m." would defeat the purpose; session starts are inherently limited by
+`idle_minutes`, so they can't cause an avalanche.
 
-iPad leżący na biurku też odpytuje DNS: odświeżenie YouTube w tle, OCSP
-certyfikatu, powiadomienie gry. Każde takie zapytanie otwierało sesję
-„0 min” z pushem start i koniec. Teraz sesja jest **potwierdzona** dopiero,
-gdy w oknie `engine.confirm_minutes` (5 min) aktywność (aplikacja albo nieznana
-domena) ma:
+### "Background" sessions don't exist
 
-- co najmniej `engine.confirm_moments` (3) **odrębne chwile** rozpięte na
-  minutę lub dłużej — chwila to zapytania w ciągu 10 s od jej pierwszego
-  zapytania, więc pakiet kilkunastu zapytań w jednej sekundzie liczy się raz;
-- albo rozpiętość co najmniej 3 minut (gra, która z własnym zapleczem gada
-  rzadko).
+An iPad lying on a desk still queries DNS: a YouTube background refresh, a
+certificate OCSP check, a game notification. Each such query used to open a
+"0 min" session with start and end pushes. Now a session is **confirmed** only
+when, within the `engine.confirm_minutes` (5 min) window, activity (an app or
+an unknown domain) has:
 
-Push startu wychodzi wtedy z godziną faktycznego początku. Niepotwierdzona
-sesja zamyka się po cichu i zostaje w bazie (`sessions.confirmed=0`)
-wyłącznie do diagnostyki — nie liczy się do podsumowań, raportów, wykresów,
-agregatów ani alarmu nocnego. Nie liczymy jej osobno jako „tło”: to minuty
-zerowe i liczba bez działania, a rosnące „sesje tła” wyglądałyby jak problem.
+- at least `engine.confirm_moments` (3) **distinct moments** spanning one
+  minute or more — a moment is all queries within 10 s of its first query, so
+  a burst of a dozen queries in one second counts once;
+- or a span of at least 3 minutes (a game that rarely talks to its own
+  backend).
 
-Dlaczego chwile, a nie zapytania: odświeżenie YouTube w tle na leżącym iPadzie
-(produkcja, 10.2026) to `youtubei.googleapis.com`, `redirector` i kilka
-`rr*.googlevideo.com` w tej samej sekundzie, czasem jeszcze jedno `rr*` po 1–2
-minutach — i cisza. Dawna reguła „seria 5 zapytań aplikacji w minucie”
-potwierdzała taki pakiet, a „≥ 1 min ruchu” — pakiet z jednym spóźnionym
-zapytaniem. To dwie chwile, a nie trzy. Oglądanie dociąga segmenty co
-kilkanaście sekund i potwierdza się po ~minucie, gra z ruchem co 30–60 s po
-1–2 minutach. Stary klucz `engine.confirm_burst_events` jest ignorowany
-(zostaje dla zgodności konfiguracji).
+The start push then carries the actual start time. An unconfirmed session is
+closed silently and kept in the database (`sessions.confirmed=0`) for
+diagnostics only — it does not count toward summaries, reports, charts,
+aggregates or the night alert.
 
-Okno 5, nie 3 minuty: gra w trakcie rozgrywki odzywa się co ~3–3,5 min
-(nagranie Asphalta w `tests/fixtures/day.jsonl`) i przy 3 minutach prawdziwa
-półgodzinna sesja nie potwierdziłaby się nigdy.
+Why moments rather than queries: a YouTube background refresh on an idle iPad
+(production, 10.2026) is `youtubei.googleapis.com`, `redirector` and a few
+`rr*.googlevideo.com` in the same second, sometimes one more `rr*` after 1–2
+minutes — then silence. That's two moments, not three. Watching pulls
+segments every dozen or so seconds and confirms after ~1 minute; a game with
+traffic every 30–60 s after 1–2 minutes.
 
-### Profil: hasło i WhatsApp
+A 5-minute rather than 3-minute window: a game in play talks to its backend
+every ~3–3.5 min (an Asphalt recording in `tests/fixtures/day.jsonl`), and
+with 3 minutes a real half-hour session would never confirm.
 
-Avatar w nagłówku → **Profil**: weryfikacja dwuetapowa, zmiana hasła (stare +
-nowe, min. 12 znaków; wylogowuje inne sesje) i **Powiadomienia / WhatsApp**:
-stan kanałów bramki, „Połącz WhatsApp” (QR z WAHA odświeżany co 20 s do
-`WORKING`; to tu podpinasz numer bota), „Wyślij test”, „Rozłącz” i lista
-**odbiorców WhatsApp**. Panel woła bramkę po stronie serwera kluczem
-`BRAMKA_KLUCZ_ADMIN` (wysyłka powiadomień idzie osobnym `BRAMKA_KLUCZ`);
-przeglądarka nie zna żadnego z nich.
+### Panel accounts
 
-Odbiorcy (najwyżej 5): numer z kierunkowym, etykieta (≤ 40 znaków), kolumna
-**„Dostaje”** i przełącznik „aktywny”; „+ Dodaj odbiorcę”, „Usuń”, „Cofnij zmiany”. Zmiany
-są lokalne, dopóki nie klikniesz „Zapisz listę” — zapis **całej** listy wymaga
-hasła albo kodu 2FA (lista jest wspólna dla wszystkich aplikacji RenaCode,
-sama sesja nie wystarcza). Błędne potwierdzenie liczy się do blokady konta;
-błąd w liście (zły numer, powtórka) odpada wcześniej, z 400, bez sprawdzania
-hasła. „Wyślij test (N)” wysyła próbę tylko WhatsAppem do aktywnych
-z „Wszystko” i pokazuje, do ilu doszła (np. „doszło do 1 z 2”, z zamaskowanym numerem tego, do kogo
-nie doszło).
+Panel accounts are managed from the CLI (in the cluster via
+`kubectl exec deploy/kidwatch -c kidwatch -- python -m kidwatch …`):
 
-**„Dostaje”** to trasy w bramce (`charts/bramka/README.md` w renacode-infra,
-„Trasy”): „Wszystko” — każda aplikacja RenaCode (kidwatch, trader,
-monitoring…), alarmy techniczne czujki kidwatch i wiadomość próbna;
-„Tylko kidwatch (dzieci)” — zwykłe powiadomienia kidwatch, **bez** alarmów
-czujki (kidwatch wysyła je z `kategoria: czujka`). Nowy wiersz ma domyślnie
-„Tylko kidwatch”. Alarm, którego nikt nie dostaje WhatsAppem, idzie e-mailem
-na adres właściciela bramki. Przy bramce sprzed tras kolumna pokazuje
-„wszystko”, a zapis nie wysyła pola tras.
+```bash
+python -m kidwatch user-add <login> [--password-stdin]    # random password printed ONCE
+python -m kidwatch user-reset <login> [--password-stdin]  # new password, unlock, log out everywhere
+python -m kidwatch user-reset <login> --totp              # remove 2FA (lost phone)
+python -m kidwatch user-del <login>
+python -m kidwatch user-list
+```
 
-Bramka wysyła do wszystkich aktywnych z daną trasą naraz; gdy dojdzie do części, to
-sukces bez maila, a e-mail idzie dopiero, gdy nie doszło do nikogo. Numery
-widzi tylko zalogowany właściciel konta w Profilu; logi panelu i bramki mają
-wyłącznie trzy ostatnie cyfry (`...200`). Endpoint:
+### Profile: password and WhatsApp
+
+Avatar in the header → **Profil**: two-factor authentication, password change
+(old + new, min. 12 characters; logs out other sessions) and **Powiadomienia /
+WhatsApp**: gateway channel status, linking WhatsApp via QR (from WAHA,
+refreshed every 20 s until `WORKING`; this is where the bot number is
+connected), sending a test, disconnecting, and the list of **WhatsApp
+recipients**. The panel calls the gateway server-side with
+`BRAMKA_KLUCZ_ADMIN` (notifications are sent with the separate
+`BRAMKA_KLUCZ`); the browser knows neither.
+
+Recipients (at most 5): number with country code, label (≤ 40 characters),
+a **"Dostaje"** (receives) column and an "active" switch. Changes are local
+until you save the list — saving the **whole** list requires the password or
+a 2FA code (the list is shared by all RenaCode apps, a session alone is not
+enough). A wrong confirmation counts toward account lockout; an invalid list
+(bad number, duplicate) is rejected earlier with 400, without checking the
+password. The test button sends a WhatsApp-only test to active recipients
+with "everything" routing and shows how many it reached (with the masked
+number of anyone it didn't reach).
+
+**"Dostaje"** is gateway routing: "Wszystko" (everything) — every RenaCode
+app, kidwatch watchdog alerts and the test message; "Tylko kidwatch
+(dzieci)" — regular kidwatch notifications **without** watchdog alerts
+(kidwatch sends those with `kategoria: czujka`). A new row defaults to
+kidwatch-only. An alert no one receives on WhatsApp goes by e-mail to the
+gateway owner. With a gateway that predates routing the column shows
+"wszystko" and saving doesn't send the routing field.
+
+The gateway sends to all active recipients of a route at once; a partial
+delivery is a success with no e-mail, an e-mail goes out only when nobody was
+reached. Numbers are visible only to the logged-in account owner in the
+profile; panel and gateway logs show only the last three digits. Endpoint:
 `POST /api/profile/whatsapp/recipients`
-`{"recipients": [{"number", "label", "active", "sources"?: ["*"] | ["kidwatch"]}], "confirm": "<hasło albo kod>"}`
-(stary `POST /api/profile/whatsapp/recipient` z jednym numerem zostaje).
-Wymaga bramki z `POST /v1/whatsapp/odbiorcy` — przy starszej bramce Profil
-pokazuje jej jedynego odbiorcę, ale zapis listy kończy się błędem.
+`{"recipients": [{"number", "label", "active", "sources"?: ["*"] | ["kidwatch"]}], "confirm": "<password or code>"}`
+(the old single-number `POST /api/profile/whatsapp/recipient` remains).
+It requires a gateway with `POST /v1/whatsapp/odbiorcy` — with an older
+gateway the profile shows its single recipient, but saving the list fails.
 
-### Treść powiadomień
+### Notification content
 
-Podsumowanie dnia, raport tygodnia i koniec sesji to sekcje per dziecko
-i telewizor, z punktorami; tytuły TV skrócone (bez „ | kanał | tagi”,
-najwyżej 5, „+N więcej”). W WhatsAppie nagłówki sekcji są pogrubione
-(`*…*`), w mailu bramka zdejmuje gwiazdki. Panel dostaje te same dane w
-postaci strukturalnej (`notifications.data`) i rysuje listy z mini-paskami;
-stare wpisy pokazuje tekstem.
+The daily summary, weekly report and session end are sections per child and
+per TV, with bullet points; TV titles are shortened (without "| channel |
+tags", at most 5, "+N more"). In WhatsApp section headers are bold (`*…*`);
+in e-mail the gateway strips the asterisks. The panel receives the same data
+in structured form (`notifications.data`) and draws lists with mini bars;
+older entries are shown as text.
 
-### Panel: wszystkie ekrany, trendy, archiwum
+### Panel: tabs, trends, archive
 
-- **Wszystkie ekrany** — iPady (minuty z DNS) i telewizor (minuty odtwarzania,
-  tytuły) na jednej osi dnia, z sumą dnia i tygodnia ISO. Przy wybranym
-  dziecku telewizor jest osobnym, wyszarzonym pasem „TV (wspólny)” — da się
-  go ukryć i **nie** jest doliczany do dziecka. Pod spodem czas aplikacji TV
-  „dokładnie, z TV” (Android `dumpsys usagestats`, odczyt co
-  `tv.usage_poll_minutes`) obok szacunku z sesji; ten sam czas trafia do
-  raportu tygodnia.
-- **Trendy** — tydzień do tygodnia i miesiąc do miesiąca per dziecko (suma,
-  średnia dzienna, top aplikacje, minuty nocne) i wykres 12 tygodni.
-- **Archiwum** — tabela `daily_rollup`: jeden wiersz na urządzenie i dzień
-  (minuty, sesje, top aplikacje, minuty nocne, minuty TV z usagestats).
-  Przeliczana co 15 min dla dziś i wczoraj, plus każdy dzień bez agregatu
-  (pierwszy start zbiera całą istniejącą historię). Przeżywa
-  `store.retention_days`; własna retencja `store.rollup_retention_days`
-  (0 = bez limitu, domyślnie).
-- **Eksport CSV** — `GET /api/export.csv?from=RRRR-MM-DD&to=RRRR-MM-DD&child=`
-  (tylko po zalogowaniu; domyślnie ostatnie 30 dni, najwyżej 3660). Agregaty
-  dzienne, UTF-8 z BOM (Excel), komórki zaczynające się od `= + - @`
-  poprzedzone apostrofem.
+Tabs: **Powiadomienia** (notification history), **Wszystkie ekrany**,
+**Użycie** (daily usage chart), **Trendy**, **Dzień** (day view), with a
+per-child switcher.
 
-### Czas gry (NextDNS)
+- **Wszystkie ekrany** (all screens) — iPads (minutes from DNS) and the TV
+  (playback minutes, titles) on one daily timeline, with day and ISO-week
+  totals. With a child selected, the TV is a separate greyed-out "TV
+  (wspólny)" (shared) lane — it can be hidden and is **not** added to the
+  child. Below, TV app time "exact, from the TV" (Android
+  `dumpsys usagestats`, read every `tv.usage_poll_minutes`) next to the
+  session estimate; the same time goes into the weekly report.
+- **Trendy** — week over week and month over month per child (total, daily
+  average, top apps, night minutes) and a 12-week chart.
+- **Archive** — the `daily_rollup` table: one row per device per day
+  (minutes, sessions, top apps, night minutes, TV minutes from usagestats).
+  Recomputed every 15 min for today and yesterday, plus any day without an
+  aggregate (the first start backfills all existing history). It outlives
+  `store.retention_days`; its own retention is
+  `store.rollup_retention_days` (0 = no limit, the default).
+- **CSV export** — `GET /api/export.csv?from=YYYY-MM-DD&to=YYYY-MM-DD&child=`
+  (logged in only; last 30 days by default, at most 3660). Daily aggregates,
+  UTF-8 with BOM (for Excel), cells starting with `= + - @` prefixed with an
+  apostrophe.
 
-Panel ma na karcie iPada przyciski **Zablokuj gry / Odblokuj / +30 min**.
-Przełączają usługi i kategorie z `game_time` w kontroli rodzicielskiej
-NextDNS (`active: true/false`). Blokady w NextDNS są ustawieniem **profilu**,
-więc każde dziecko potrzebuje własnego profilu (`devices[].nextdns_profile`;
-bez niego — profil główny). kidwatch czyta wtedy strumienie logów wszystkich
-profili, każdy z własnym kursorem.
+### Game time (NextDNS)
+
+The iPad card in the panel has **Zablokuj gry / Odblokuj / +30 min** (block
+games / unblock / +30 min) buttons. They toggle the services and categories
+from `game_time` in NextDNS parental controls (`active: true/false`). Blocks
+in NextDNS are a **profile** setting, so each child needs their own profile
+(`devices[].nextdns_profile`; without it — the main profile). kidwatch then
+reads the log streams of all profiles, each with its own cursor.
 
 ```yaml
 game_time:
   enabled: true
   services: [youtube, roblox, minecraft, fortnite, tiktok, twitch]
-  categories: [gaming]            # video-streaming blokuje tez Netflixa i Disney+
+  categories: [gaming]            # video-streaming also blocks Netflix and Disney+
   default_bonus_minutes: 30
-  block_schedule: {start: "20:00", end: "07:00"}   # opcjonalnie
+  block_schedule: {start: "20:00", end: "07:00"}   # optional
 ```
 
-- Kliknięcie tylko **zleca** zmianę (kolejka w `panel-auth.db`); wykonuje ją
-  pętla serwisu — jedyny pisarz `kidwatch.db` — i wysyła push.
-- Bonus liczy się od końca bieżącego bonusu, z sufitem `max_bonus_minutes`
-  (180); po czasie pętla przywraca blokadę.
-- Co `sync_minutes` (5) stan jest czytany z NextDNS. Zmiana zrobiona ręcznie
-  w my.nextdns.io jest przyjmowana; nieudany zapis kidwatch — ponawiany co minutę.
-- Harmonogram blokuje na początku okna i zdejmuje rano **tylko własną**
-  blokadę — ręczna blokada z panelu zostaje.
-- Id kategorii spoza listy NextDNS (`dating, gambling, gaming, piracy, porn,
-  social-networks, video-streaming`) to błąd konfiguracji. Id usługi spoza
-  znanej listy to tylko ostrzeżenie w logu — NextDNS dokłada usługi, a id,
-  którego nie zna, odrzuci samo API (błąd w panelu i w pushu).
+- A click only **queues** the change (in `panel-auth.db`); it is executed by
+  the service loop — the single writer of `kidwatch.db` — which also sends a
+  push.
+- A bonus counts from the end of the current bonus, capped at
+  `max_bonus_minutes` (180); afterwards the loop restores the block.
+- Every `sync_minutes` (5) the state is read from NextDNS. A change made by
+  hand in my.nextdns.io is accepted; a failed kidwatch write is retried every
+  minute.
+- The schedule blocks at the start of the window and in the morning lifts
+  **only its own** block — a manual block from the panel stays.
+- A category id outside NextDNS's list (`dating, gambling, gaming, piracy,
+  porn, social-networks, video-streaming`) is a config error. An unknown
+  service id is only a log warning — NextDNS adds services, and an id it
+  doesn't know will be rejected by the API itself (error in the panel and in
+  the push).
 
-### Pauza monitoringu TV (wyjazd)
+### TV monitoring pause (trips)
 
-Gdy dzieci wyjeżdżają, a w domu telewizję oglądają inni, karta telewizora ma
-przycisk **Wstrzymaj monitoring TV** — do daty i godziny (domyślnie za 7 dni)
-albo do odwołania. W czasie pauzy panel pokazuje baner „Monitoring TV
-wstrzymany do …” z przyciskiem **Wznów teraz**. iPady są monitorowane
-normalnie (NextDNS działa poza domem).
+When the kids are away and others watch TV at home, the TV card has a
+**Wstrzymaj monitoring TV** (pause TV monitoring) button — until a date and
+time (default: 7 days ahead) or until cancelled. While paused, the panel shows
+a banner `Monitoring TV wstrzymany do …` with a **Wznów teraz** (resume now)
+button. iPads keep being monitored as usual (NextDNS works away from home).
 
-- Telewizor w pauzie **nie jest odpytywany wcale** (ani odtwarzacz, ani
-  usagestats): zero sesji, pushy i minut TV w sumach dnia i tygodnia. Czujka
-  „TV nie odpowiada” milczy, a po pauzie liczy ciszę od jej końca. Pierwszy
-  odczyt usagestats po pauzie tylko ustawia punkt odniesienia, żeby czas
-  z pauzy nie wpadł do „dokładnie, z TV”.
-- Oglądanie trwające w chwili włączenia pauzy kończy się po cichu na ostatnim
-  odczycie.
-- Push niskim priorytetem przy włączeniu („Monitoring TV wstrzymany do …”),
-  przy zmianie terminu i przy końcu pauzy („Monitoring TV wznowiony”).
-- Podsumowanie dnia i raport tygodnia dopisują w sekcji TV „monitoring
-  wstrzymany od … do …”, a oś „Wszystkie ekrany” kreskuje ten czas.
-- Jak czas gry: kliknięcie (sesja + CSRF) tylko **zleca** zmianę w kolejce
-  w `panel-auth.db` z loginem; wykonuje ją tik pętli (do ~30 s). Stan i audyt
-  (kto i kiedy włączył, kto albo termin zakończył) — tabela `tv_pause`
-  w `kidwatch.db`, przeżywa restart.
-- Z wiersza poleceń (zleca to samo zadanie, wykonuje je działający `run`):
+- A paused TV is **not polled at all** (neither the player nor usagestats):
+  no sessions, pushes or TV minutes in daily and weekly totals. The "TV not
+  responding" watchdog stays quiet and counts silence from the end of the
+  pause. The first usagestats read after a pause only sets a baseline so
+  paused time doesn't leak into "exact, from the TV".
+- Viewing in progress when the pause starts ends silently at the last read.
+- A low-priority push when enabled, when the end time changes and when the
+  pause ends (`Monitoring TV wznowiony`).
+- The daily summary and weekly report note "monitoring wstrzymany od … do …"
+  in the TV section, and the all-screens timeline hatches that period.
+- Like game time: a click (session + CSRF) only **queues** the change in
+  `panel-auth.db` with the login; the loop tick executes it (within ~30 s).
+  State and audit (who enabled it and when, who or what ended it) live in
+  the `tv_pause` table in `kidwatch.db` and survive restarts.
+- From the command line (queues the same job; the running `run` executes it):
 
   ```bash
-  kubectl -n default exec deploy/kidwatch -c kidwatch -- python -m kidwatch tv-pauza --do 2026-10-10T18:00
-  kubectl -n default exec deploy/kidwatch -c kidwatch -- python -m kidwatch tv-pauza --do-odwolania
-  kubectl -n default exec deploy/kidwatch -c kidwatch -- python -m kidwatch tv-pauza --wznow
-  kubectl -n default exec deploy/kidwatch -c kidwatch -- python -m kidwatch tv-pauza   # stan
+  python -m kidwatch tv-pauza --do 2026-10-10T18:00   # pause until
+  python -m kidwatch tv-pauza --do-odwolania          # pause until cancelled
+  python -m kidwatch tv-pauza --wznow                 # resume now
+  python -m kidwatch tv-pauza                         # show state
   ```
 
-  Termin bez strefy to czas lokalny z `timezone`.
+  A time without a zone is local time from `timezone`.
 
-### Mapa domen
+### Domain map
 
-`app_map.yaml`, przeładowywana na gorąco — lokalnie edytuj bez restartu.
-W klastrze plik jest montowany z ConfigMapy przez `subPath`, który się nie
-aktualizuje: zmiana idzie przez `checksum/app-map`, czyli restart poda.
+`app_map.yaml`, hot-reloaded — edit it locally without a restart. In the
+cluster the file is mounted from a ConfigMap via `subPath`, which doesn't
+update: a change rolls out through the `checksum/app-map` annotation, i.e. a
+pod restart.
 
 ```yaml
-noise:                    # nie liczy się jako aktywność
+noise:                    # never counts as activity
   - apple.com
-  - apple                 # Apple ma własny gTLD .apple i realnie go używa
+  - apple                 # Apple has its own .apple gTLD and actually uses it
+shared:                   # extends an open session, never opens or names one
+  - cloudfront.net
 apps:
   "Roblox":
-    - roblox.com          # domena i wszystkie poddomeny
-    - "*.rbxcdn.com"      # to samo, zapis dla czytelności
-  "Coś":
-    - "=tylko.example.com"  # DOKŁADNIE ta domena, bez poddomen
+    - roblox.com          # the domain and all subdomains
+    - "*.rbxcdn.com"      # same thing, written for readability
+  "Something":
+    - "=only.example.com" # EXACTLY this domain, no subdomains
 ```
 
-Szum ma pierwszeństwo przy identycznym wzorcu, ale **dłuższy wzorzec wygrywa** —
-`music.apple.com` w `apps` bije `apple.com` w `noise`.
+Noise wins on an identical pattern, but **the longer pattern wins** —
+`music.apple.com` in `apps` beats `apple.com` in `noise`.
 
-Ruch niesystemowy bez dopasowania trafia jako **„Przegladarka / inne"** — do
-bazy, sesji i panelu. Osobnego pusha o nim domyślnie **nie ma**
-(`engine.notify_unknown: false`): pierwszy dzień na żywo pokazał, że to prawie
-wyłącznie zaplecze aplikacji (Google, analityka, reklamy), nie strony.
+Non-system traffic with no match is recorded as **`Przegladarka / inne`**
+(browser / other) — in the database, sessions and the panel. By default there
+is **no** separate push for it (`engine.notify_unknown: false`): the first
+live day showed it is almost entirely app backends (Google, analytics, ads),
+not websites.
 
-### Co widać z przeglądania
+### What you can see of browsing
 
-DNS zna **domenę**, nigdy adresu strony ani treści. To sufit tej metody i nic go
-nie podniesie poza serwerem proxy z własnym certyfikatem CA (patrz niżej).
+DNS knows the **domain**, never the page URL or content. That is the ceiling
+of this method, and nothing raises it short of a proxy with its own CA (see
+below).
 
-W granicach tego sufitu kidwatch nazywa rzeczy po imieniu, zamiast zlewać je
-w „Przegladarka / inne":
+Within that ceiling kidwatch names things instead of lumping them into
+`Przegladarka / inne`:
 
 ```
-[START]  iPad Kuby aktywny
+[START]  <device> aktywny
          16:20 — super-gierka-online.com
-[APKA]   Kuba
+[APKA]   <child>
          Przegladarka / inne: forum-o-grach.pl, wikipedia.org, jakas-gazeta.pl
-[KONIEC] iPad Kuby — koniec
+[KONIEC] <device> — koniec
          15:12–15:59, 47 min
          Roblox ~26 min, Przegladarka / inne ~14 min
          strony: forum-o-grach.pl, wikipedia.org, jakas-gazeta.pl
          (czasy szacunkowe — liczba minut z ruchem DNS)
 ```
 
-Z `notify_unknown: true` push wychodzi przy **pierwszej** nierozpoznanej domenie, a kolejne czekają na
-`app_cooldown_minutes` i idą zbiorczo — inaczej każde kliknięcie w przeglądarce
-dawałoby osobne powiadomienie. Hosty jednej witryny są zwijane do jednej nazwy
-(`a.sklep.pl`, `cdn1.sklep.pl` → `sklep.pl`).
+With `notify_unknown: true` a push goes out on the **first** unrecognised
+domain, and further ones wait for `app_cooldown_minutes` and are batched —
+otherwise every browser click would be a separate notification. Hosts of one
+site are collapsed to one name (`a.shop.example`, `cdn1.shop.example` →
+`shop.example`).
 
-Raport dzienny:
+Domains report per child per day:
 
 ```bash
-uv run python -m kidwatch web --days 7
+uv run python -m kidwatch web --days 7 [--device "<device>"] [--limit 25]
 ```
 
 ```
 === niedziela 27.09.2026 ===
 
-iPad Kuby (Kuba)
+<device> (<child>)
   aplikacje: YouTube ~37 min, Roblox ~36 min, Przegladarka / inne ~33 min
   strony (5 domen):
       10x  forum-o-grach.pl
@@ -509,63 +588,64 @@ iPad Kuby (Kuba)
        5x  wikipedia.org
 ```
 
-Nazwy dni są wpisane po polsku na stałe, nie brane z `locale` — w kontenerze jest
-`C`, w terminalu co innego, a raport ma wyglądać tak samo wszędzie.
+Day names are hard-coded in Polish, not taken from `locale` — the container
+has `C`, the terminal something else, and the report should look the same
+everywhere.
 
-### Czego nie zobaczysz i dlaczego nie warto próbować
+### What you won't see, and why it isn't worth trying
 
-Adresów stron, treści, wiadomości, historii w aplikacjach. Jedyna droga to serwer
-proxy z własnym CA zainstalowanym na iPadzie. Technicznie możliwe na własnym
-urządzeniu dziecka, ale: przypinanie certyfikatów wywala znaczną część aplikacji,
-przechwytujesz też hasła i dane prywatne dzieci, a proxy staje się pojedynczym
-punktem, którego kompromitacja oddaje wszystko. To kruche i nieproporcjonalne.
+Page URLs, content, messages, in-app history. The only way is a proxy with
+its own CA installed on the iPad. Technically possible on the child's own
+device, but: certificate pinning breaks a large share of apps, you also
+intercept the children's passwords and private data, and the proxy becomes a
+single point whose compromise gives away everything. Fragile and
+disproportionate.
 
-Czego DNS nie da nigdy, niezależnie od wysiłku:
+What DNS will never give you, however hard you try:
 
-| potrzeba | jedyne źródło |
+| need | only source |
 |---|---|
-| lista zainstalowanych aplikacji | kabel USB + `ideviceinstaller`, albo Ustawienia → Pamięć iPada |
-| subskrypcje i zakupy w grach | paragony Apple w poczcie, Ustawienia → Subskrypcje |
-| **zapobieganie** zakupom | „Poproś o zakup" w Chmurze rodzinnej — bije każde monitorowanie po fakcie |
-| dokładny czas per apka, też offline | Czas przed ekranem (brak publicznego API) |
-| gry działające offline | nic — są dla DNS niewidzialne |
+| list of installed apps | USB cable + `ideviceinstaller`, or Settings → iPad Storage |
+| subscriptions and in-game purchases | Apple receipts by e-mail, Settings → Subscriptions |
+| **preventing** purchases | "Ask to Buy" in Family Sharing — beats any after-the-fact monitoring |
+| exact per-app time, including offline | Screen Time (no public API) |
+| games that work offline | nothing — they are invisible to DNS |
 
-### Trzy sekcje, trzy zachowania — i dlaczego to gry wymusiły
+### Three sections, three behaviours — and why games forced them
 
-| sekcja | otwiera sesję | przedłuża otwartą | nadaje nazwę |
+| section | opens a session | extends an open one | names it |
 |---|---|---|---|
-| `noise` | nie | **nie** | nie |
-| `shared` | nie | **tak**, w oknie `shared_extend_minutes` | nie |
-| `apps` | tak | tak | tak |
+| `noise` | no | **no** | no |
+| `shared` | no | **yes**, within `shared_extend_minutes` | no |
+| `apps` | yes | yes | yes |
 
-`shared` istnieje z powodu gier. Asphalt gada z `gameloft.com` raz na kilka minut,
-a z CloudFrontem bez przerwy. Gdyby CDN-y były szumem, sesja grania byłaby
-sztucznie krótka albo w ogóle by nie powstała; gdyby były aplikacją, reklama
-dociągnięta w tle budziłaby Cię pushem w nocy.
+`shared` exists because of games. Asphalt talks to `gameloft.com` once every
+few minutes and to CloudFront constantly. If CDNs were noise, a gaming
+session would be artificially short or never happen; if they were an app, an
+ad fetched in the background would wake you up with a push at night.
 
-Przedłużanie jest **ograniczone** progiem `shared_extend_minutes` (domyślnie 30),
-liczonym od ostatniego **rozpoznanego** zdarzenia. Bez tego odświeżanie aplikacji
-w tle trzymałoby sesję otwartą bez końca i żaden czas nie miałby sensu.
+Extension is **bounded** by `shared_extend_minutes` (default 30), counted
+from the last **recognised** event. Without it background app refresh would
+keep a session open forever and no duration would mean anything.
 
-Czego `shared` celowo **nie** zawiera: `akamaiedge.net` i `akadns.net`. Gry z nich
-korzystają, ale na iPadzie dominuje tam ruch Apple w tle — przedłużanie nim sesji
-zniweczyłoby ogranicznik.
+What `shared` deliberately does **not** contain: `akamaiedge.net` and
+`akadns.net`. Games use them, but on an iPad they are dominated by Apple
+background traffic — extending sessions with it would defeat the bound.
 
-### Gry to najtrudniejszy przypadek
+### Games are the hardest case
 
-Gry wykrywa się gorzej niż streaming, z trzech powodów:
+Games are detected worse than streaming, for three reasons:
 
-1. **Grają offline.** Gra, która nie odpytuje sieci, jest dla DNS niewidzialna.
-   Tego nie da się obejść — tylko Czas przed ekranem to pokaże.
-2. **Jadą po współdzielonych CDN-ach.** Netify pokazuje, że Gameloft używa
-   `gameloft.com` plus Akamai, CloudFront, AWS i Cloudflare. Tylko pierwsze da się
-   przypisać.
-3. **Wydawcy zmieniają zaplecze.** Każda lista domen napisana z góry gnije.
+1. **They play offline.** A game that doesn't hit the network is invisible to
+   DNS. There's no way around it — only Screen Time shows it.
+2. **They ride shared CDNs.** Netify shows Gameloft using `gameloft.com` plus
+   Akamai, CloudFront, AWS and Cloudflare. Only the first can be attributed.
+3. **Publishers change backends.** Any domain list written up front rots.
 
-Dlatego jest komenda, która zamyka lukę z **prawdziwych** danych:
+Hence a command that closes the gap from **real** data:
 
 ```bash
-uv run python -m kidwatch domains --unknown-only
+uv run python -m kidwatch domains --unknown-only [--days 7] [--limit 40]
 ```
 
 ```
@@ -575,210 +655,253 @@ super-gierka-online.com                unknown          10       2
 forum-o-grach.pl                       unknown          10       1
 ```
 
-Górę tej listy dopisujesz do `app_map.yaml` — plik przeładowuje się na gorąco,
-restart zbędny. To jedyny wiarygodny sposób na dobre pokrycie gier.
+Add the top of this list to `app_map.yaml` — the file hot-reloads, no
+restart needed. It is the only reliable way to get good game coverage.
+
+### Other CLI commands
+
+| command | what it does |
+|---|---|
+| `run` | the service: listen to sources, send notifications, serve the panel |
+| `test-notify` | send a test push through the enabled channels |
+| `summary [--date YYYY-MM-DD]` | print the daily summary (doesn't claim the dedup key) |
+| `weekly [--week YYYY-Www] [--dry-run]` | weekly report (see above) |
+| `domains`, `web` | domain reports (see above) |
+| `replay <file.jsonl> [--dry-run]` | replay a recorded day against an in-memory DB |
+| `tv [--raw]` | one-off TV read over ADB (checks key and tunnel) |
+| `tv-pauza` | TV monitoring pause (see above) |
+| `unifi [--fingerprint]` | who is on home Wi-Fi per UniFi; `--fingerprint` prints the controller's SHA-256 certificate fingerprint for `unifi.cert_sha256` |
+| `device`, `device-watch` | one-off / looping read of iPad state over lockdown (`device_read`, requires pairing and the same LAN) |
+| `user-add`, `user-reset`, `user-del`, `user-list` | panel accounts |
+
+Global options: `--config <path>` (default `$KIDWATCH_CONFIG` or
+`config.yaml`), `-v/--verbose`.
 
 ---
 
-## Wdrożenie
+## Deployment
 
-### k3s + ArgoCD (jak inne aplikacje w tym klastrze)
+### k3s + Argo CD
 
-Chart Helm w `charts/kidwatch`. Aplikacja ArgoCD siedzi w prywatnym repo
-infrastruktury (`renacode-infra/argocd-apps.yaml`) razem z pozostałymi.
-Wdrożenie bez tej infrastruktury (własny obraz, ntfy zamiast bramki, własna
-domena) opisuje [`docs/uruchomienie-od-zera.md`](docs/uruchomienie-od-zera.md),
-sekcja „Bez infrastruktury RenaCode". Tutaj ArgoCD obserwuje
-`charts/kidwatch/values.yaml`, a CI podbija w nim tag obrazu po każdym pushu na
-`main`. Nie ma tu żadnego SSH ani `kubectl apply`.
+Helm chart in `charts/kidwatch`. The author's Argo CD application lives in a
+private infrastructure repo. Deploying without that infrastructure (your own
+image, ntfy instead of the gateway, your own domain) is described in
+[`docs/uruchomienie-od-zera.md`](docs/uruchomienie-od-zera.md), section
+"Bez infrastruktury RenaCode". Argo CD watches `charts/kidwatch/values.yaml`,
+and CI (`.github/workflows/docker-publish.yml`) runs tests, ruff, the front-end
+tests/build and `helm lint`, then builds the image to GHCR and bumps its tag in
+that file on every push to `main`. There is no SSH or `kubectl apply`.
 
-Sekrety zakładasz **raz, ręcznie** — ArgoCD ich nie synchronizuje. Polecenia
-są w [`docs/uruchomienie-od-zera.md`](docs/uruchomienie-od-zera.md) (krok 7):
+The GHCR image is private: the chart expects an `imagePullSecrets` entry
+`ghcr-pull` (set `imagePullSecrets: []` and your own `image.repository` when
+building your own image).
 
-| Sekret | zawartość | wymagany |
+Secrets are created **once, by hand** — Argo CD doesn't sync them. Commands
+are in [`docs/uruchomienie-od-zera.md`](docs/uruchomienie-od-zera.md) (step 7):
+
+| Secret | contents | required |
 |---|---|---|
-| `kidwatch-secrets` | `NEXTDNS_API_KEY`, `BRAMKA_KLUCZ`, `BRAMKA_KLUCZ_ADMIN`, `PANEL_TOTP_KEY`, opcjonalnie `UNIFI_API_KEY` | tak |
-| `kidwatch-config` | prawdziwy `config.yaml` (wgrywa `tools/wgraj_konfiguracje.sh`) | tak |
-| `kidwatch-adb` | `adbkey`, `adbkey.pub` zaakceptowane przez telewizor | przy czujniku TV |
-| `kidwatch-pairing` | rekordy parowania `<UDID>.plist` | nie (montowany tylko przy `deviceRead.enabled: true`; w klastrze wyłączony) |
+| `kidwatch-secrets` | `NEXTDNS_API_KEY`, `BRAMKA_KLUCZ`, `BRAMKA_KLUCZ_ADMIN`, `PANEL_TOTP_KEY`, optionally `UNIFI_API_KEY` (or `NTFY_TOPIC` instead of the gateway keys) | yes |
+| `kidwatch-config` | the real `config.yaml` (uploaded by `tools/wgraj_konfiguracje.sh`) | yes |
+| `kidwatch-adb` | `adbkey`, `adbkey.pub` accepted by the TV | with the TV sensor |
+| `kidwatch-pairing` | pairing records `<UDID>.plist` | no (mounted only with `deviceRead.enabled: true`; disabled in the cluster) |
 
-Rekord parowania zawiera **klucz prywatny hosta** — kto go ma, jest dla iPada
-zaufanym komputerem. `.gitignore` blokuje `*.plist`, żeby nie trafił do repo.
+A pairing record contains the **host's private key** — whoever has it is a
+trusted computer for the iPad. `.gitignore` blocks `*.plist` so it can't land
+in the repo.
 
-Cztery rzeczy warte wiedzy:
+Things worth knowing:
 
-- **`replicas: 1` + `strategy: Recreate` to warunek poprawności.** SQLite ma
-  jednego pisarza; dwa pody rozjechałyby stan sesji i zdublowały pushe. Z tego
-  samego powodu **odczyt z iPadów jedzie w tym samym procesie co DNS**, nie
-  w osobnym kontenerze.
-- **`prune: false`** w aplikacji ArgoCD, inaczej niż przy innych aplikacjach
-  w tym klastrze.
-  PVC z bazą ma `helm.sh/resource-policy: keep`; automatyczne kasowanie mogłoby
-  usunąć wolumen razem ze stanem, a wtedy serwis wyśle wszystkie pushe od nowa.
-- **`Synced` nie znaczy „proces czyta nową konfigurację".** Pod ma adnotację
-  `checksum/config` z sumą `files/config.yaml`, ale prawdziwa konfiguracja
-  jest w Sekrecie `kidwatch-config`, którego suma nie obejmuje — po jego
-  zmianie restart robi `tools/wgraj_konfiguracje.sh`. `app_map.yaml` jest
-  wyjątkiem — przeładowuje się na gorąco.
-- **`charts/kidwatch/files/app_map.yaml` to kopia** pliku z korzenia (chart nie
-  sięga poza swój katalog). Po zmianie mapy:
-  `cp app_map.yaml charts/kidwatch/files/app_map.yaml`. Rozjazd wyłapuje
-  `tests/test_deploy.py`.
+- **`replicaCount: 1` + `strategy: Recreate` are a correctness requirement.**
+  SQLite has one writer; two pods would diverge session state and duplicate
+  pushes. For the same reason the panel runs as a thread in the same process,
+  not in a separate pod.
+- **Disable pruning in the Argo CD application.** The database PVC has
+  `helm.sh/resource-policy: keep`; automatic deletion could remove the volume
+  with its state, and then the service would send every push again.
+- **`Synced` doesn't mean "the process reads the new config".** The pod has a
+  `checksum/config` annotation over `files/config.yaml`, but the real config
+  is in the `kidwatch-config` Secret, which the checksum doesn't cover — after
+  changing it, `tools/wgraj_konfiguracje.sh` validates the file locally,
+  uploads it and restarts the pod.
+- **`charts/kidwatch/files/app_map.yaml` is a copy** of the root file (a chart
+  can't reach outside its directory). After changing the map:
+  `cp app_map.yaml charts/kidwatch/files/app_map.yaml`. `tests/test_deploy.py`
+  catches drift.
+- **NetworkPolicy** (`networkPolicy.enabled`, on by default): ingress only
+  from Traefik to the panel port; optional egress restriction to the home
+  network (`networkPolicy.egress.siecDomowa` / `wDomu`, empty in the public
+  repo and injected by the deployment).
+- **Ingress** uses Traefik with per-client rate limits (`ingress.limity`,
+  requires the `traefik.io/v1alpha1` CRDs) and optional alias hosts that
+  301-redirect to the main host (`ingress.aliasy`).
 
-### Tailscale — wyłączony
+### Tailscale — disabled
 
-Chart ma kontener poboczny Tailscale (`tailscale.enabled`, domyślnie `false`)
-z czasów, gdy odczyt iPadów miał iść przez tailnet. Sprawdzone 2026-10-02:
-iOS przyjmuje lockdown (port 62078) tylko z tej samej sieci lokalnej, więc ani
-Tailscale, ani tunel WireGuard do domu tego nie dają (`ConnectionResetError`).
-Tailscale nie jest wdrożony i nie jest potrzebny. Telewizor i UniFi pod sięga
-tunelem WireGuard VPS ↔ dom (`docs/uruchomienie-od-zera.md`, krok 4).
+The chart has a Tailscale sidecar (`tailscale.enabled`, default `false`) left
+over from when iPad reads were meant to go over a tailnet. Verified
+2026-10-02: iOS accepts lockdown (port 62078) only from the same local
+network, so neither Tailscale nor a WireGuard tunnel home works
+(`ConnectionResetError`). Tailscale is not deployed and not needed. The pod
+reaches the TV and UniFi through a VPS ↔ home WireGuard tunnel
+(`docs/uruchomienie-od-zera.md`, step 4).
 
 ### docker compose
 
 ```bash
 cp config.example.yaml config.yaml
-printf 'NEXTDNS_API_KEY=...\nNTFY_TOPIC=...\n' > .env     # .env jest w .gitignore
+printf 'NEXTDNS_API_KEY=...\nNTFY_TOPIC=...\n' > .env     # .env is in .gitignore
 docker compose up -d --build
 ```
 
-Baza (`kidwatch.db`, `panel-auth.db`) ląduje na wolumenie `kidwatch-data`
-w `/data` — `docker-compose.yml` ustawia `KIDWATCH_STORE_PATH`, które
-nadpisuje `store.path` z konfiguracji.
+The databases (`kidwatch.db`, `panel-auth.db`) live on the `kidwatch-data`
+volume under `/data` — `docker-compose.yml` sets `KIDWATCH_STORE_PATH`, which
+overrides `store.path` from the config. `app_map.yaml` is mounted from the
+host, so the map can be edited without restarting the container. The image
+includes the built panel at `/app/web`; to use it set `panel.enabled: true`,
+`panel.host: 0.0.0.0`, `panel.static_dir: /app/web` and publish the port.
 
 ---
 
-## Profil: tryb zwykły a nadzorowany
+## Profile: regular vs supervised
 
-Zweryfikowane w schemacie Apple. To, do jakich sieci stosuje się profil DNS,
-zależy **wyłącznie** od sposobu instalacji:
+Verified against Apple's schema. Which networks a DNS profile applies to
+depends **only** on how it is installed:
 
-| sposób | zakres sieci |
+| method | network scope |
 |---|---|
-| **local install** (ręcznie, Apple Configurator) | **wszystkie** ✅ |
-| **supervised** (MDM, urządzenie nadzorowane) | **wszystkie** ✅ |
-| **device enrollment** (MDM bez nadzoru) | tylko sieci zarządzane ❌ |
+| **local install** (manual, Apple Configurator) | **all** ✅ |
+| **supervised** (MDM, supervised device) | **all** ✅ |
+| **device enrollment** (MDM without supervision) | managed networks only ❌ |
 
-Źródło: [`network.dns-settings.yaml`](https://github.com/apple/device-management/blob/release/declarative/declarations/configurations/network.dns-settings.yaml)
-(linie 242–249) oraz nota w `com.apple.dnsSettings.managed.yaml` (257–259).
+Source: [`network.dns-settings.yaml`](https://github.com/apple/device-management/blob/release/declarative/declarations/configurations/network.dns-settings.yaml)
+(lines 242–249) and the note in `com.apple.dnsSettings.managed.yaml`
+(257–259).
 
-**Wniosek: nie zakładaj organizacji MDM.** Apple Business Manager wymaga podmiotu
-prawnego i numeru D-U-N-S, a MDM bez nadzoru daje **gorsze** pokrycie sieci niż
-ręcznie zainstalowany profil. Nadzór (Apple Configurator, kabel, **wymazanie
-iPada**) to jedyne, co dokłada realne blokady.
+**Conclusion: don't set up an MDM organisation.** Apple Business Manager
+requires a legal entity and a D-U-N-S number, and MDM without supervision
+gives **worse** network coverage than a manually installed profile.
+Supervision (Apple Configurator, cable, **wiping the iPad**) is the only thing
+that adds real locks.
 
-Z `--supervised` generator dodaje klucze, które **działają wyłącznie na
-urządzeniu nadzorowanym** — na zwykłym iPadzie iOS je zignoruje:
+With `--supervised` the generator adds keys that **work only on a supervised
+device** — on a regular iPad iOS ignores them:
 
-| klucz | od | blokuje |
+| key | since | blocks |
 |---|---|---|
-| `ProhibitDisablement` | iOS 14 | wyłączenie DNS w Ustawieniach |
-| `PayloadRemovalDisallowed` | iOS 6 | usunięcie profilu |
-| `allowCloudPrivateRelay: false` | iOS 15 | Private Relay omijający DNS |
-| `allowVPNCreation: false` | iOS 11 | darmowy VPN z App Store |
-| `allowUIConfigurationProfileInstallation: false` | iOS 6 | własny profil dziecka |
+| `ProhibitDisablement` | iOS 14 | turning DNS off in Settings |
+| `PayloadRemovalDisallowed` | iOS 6 | removing the profile |
+| `allowCloudPrivateRelay: false` | iOS 15 | Private Relay bypassing DNS |
+| `allowVPNCreation: false` | iOS 11 | a free VPN from the App Store |
+| `allowUIConfigurationProfileInstallation: false` | iOS 6 | the child's own profile |
 
-Dlatego **domyślny tryb ich nie wstawia**. Obecność klucza, który nic nie robi,
-dawałaby złudzenie zabezpieczenia — a tu nie ma nic gorszego niż fałszywe
-poczucie wglądu.
+That is why **the default mode doesn't add them**. A key that does nothing
+would give an illusion of protection — and nothing is worse here than a false
+sense of visibility.
 
-### Uwaga na przyszłość: payload jest `deprecated`
+Other generator options: `--org` (organisation name in the profile).
 
-`com.apple.dnsSettings.managed` jest oznaczony jako **deprecated od OS 27**.
-Następca to deklaracja DDM `com.apple.configuration.network.dns-settings`
-(wprowadzona w 27.0), dostarczana przez serwer MDM. *Deprecated* nie znaczy
-*usunięty* — stary payload działa. Flaga `--also-declaration` zapisuje obok plik
-JSON z deklaracją DDM, gotowy na moment, gdy to się zmieni.
+### Note for the future: the payload is `deprecated`
+
+`com.apple.dnsSettings.managed` is marked **deprecated as of OS 27**. Its
+successor is the DDM declaration `com.apple.configuration.network.dns-settings`
+(introduced in 27.0), delivered by an MDM server. *Deprecated* doesn't mean
+*removed* — the old payload works. The `--also-declaration` flag writes a JSON
+file with the DDM declaration next to the profile, ready for when that
+changes.
 
 ---
 
-## Rozwój
+## Development
 
 ```bash
 uv sync
-uv run pytest              # jedyne testy, ktore otwieraja gniazdo, to test_integration_live_http.py
+uv run pytest              # the only tests that open a socket are in test_integration_live_http.py
 uv run ruff check .
+(cd web && npm ci && npm test && npm run build)
 ```
 
-Odtworzenie realistycznego dnia i porównanie ze snapshotem:
+Replay a realistic day and compare with the snapshot:
 
 ```bash
 uv run python -m kidwatch --config tests/fixtures/config.yaml \
   replay tests/fixtures/day.jsonl --dry-run
 ```
 
-### Walidacja profilu przeciw schematowi Apple
+### Validating the profile against Apple's schema
 
-`plutil -lint` sprawdza **wyłącznie składnię plista**. Klucz o złej nazwie, w złym
-miejscu drzewa albo złego typu przechodzi lint bez mrugnięcia, a iOS **milcząco go
-ignoruje** — profil instaluje się „poprawnie", tylko nie robi tego, co obiecuje.
-Przy profilu, którego całą rolą jest blokowanie obejść DNS, to najgorszy możliwy
-tryb awarii.
+`plutil -lint` checks **only plist syntax**. A key with a wrong name, in the
+wrong place in the tree or of the wrong type passes lint without a blink, and
+iOS **silently ignores it** — the profile installs "fine", it just doesn't do
+what it promises. For a profile whose whole job is blocking DNS bypasses,
+that is the worst possible failure mode.
 
-Dowód: profil z literówką `allowVPNCreaton` (zamiast `allowVPNCreation`) przechodzi
-`plutil -lint` jako **OK**.
+Proof: a profile with the typo `allowVPNCreaton` (instead of
+`allowVPNCreation`) passes `plutil -lint` as **OK**.
 
-`tests/test_profile_schema.py` waliduje każdy emitowany klucz przeciw oficjalnemu
-schematowi Apple — nazwa, typ, dozwolone wartości, poziom zagnieżdżenia i wymóg
-nadzoru. Lista kluczy wymagających nadzoru jest **liczona ze schematu**, nie pisana
-z pamięci. Indeks jest generowany z
+`tests/test_profile_schema.py` validates every emitted key against Apple's
+official schema — name, type, allowed values, nesting level and supervision
+requirement. The list of keys requiring supervision is **derived from the
+schema**, not written from memory. The index is generated from
 [apple/device-management](https://github.com/apple/device-management):
 
 ```bash
-uv run python tools/fetch_apple_schema.py   # odświeża tools/apple_schema_index.json
+uv run python tools/fetch_apple_schema.py   # refreshes tools/apple_schema_index.json
 ```
 
-Ten test wykrył realny błąd: `ProhibitDisablement` był wstawiany do wnętrza
-`DNSSettings`, a według schematu jest jego **rodzeństwem** na poziomie payloadu.
-W złym miejscu iOS go ignoruje, więc tryb `--supervised` obiecywał blokadę,
-której nie było.
+This test caught a real bug: `ProhibitDisablement` was being placed inside
+`DNSSettings`, while according to the schema it is its **sibling** at the
+payload level. In the wrong place iOS ignores it, so `--supervised` mode
+promised a lock that wasn't there.
 
-### Czego nie da się przetestować wirtualnym iPadem
+### Can't be tested with a virtual iPad
 
-Nie da się. Apple nie pozwala na wirtualizację iPadOS, więc Parallels jest bez
-znaczenia, a symulator iOS w Xcode **nie ma żadnego mechanizmu instalacji profilu
-konfiguracyjnego** — `xcrun simctl` nie ma takiej podkomendy (flaga `--profiles`
-dotyczy profili typów urządzeń CoreSimulatora, nie `.mobileconfig`).
+It can't. Apple doesn't allow iPadOS virtualisation, so Parallels is
+irrelevant, and the Xcode iOS simulator **has no mechanism for installing a
+configuration profile** — `xcrun simctl` has no such subcommand (the
+`--profiles` flag concerns CoreSimulator device-type profiles, not
+`.mobileconfig`).
 
-Profil da się sprawdzić na prawdziwym systemie Apple w maszynie wirtualnej
-**macOS** — payload `com.apple.dnsSettings.managed` wspiera macOS 11.0+ — ale to
-weryfikuje macOS, nie iPadOS. Poza tym zostaje walidacja przeciw schematowi (wyżej)
-i instalacja na prawdziwym iPadzie, która jest odwracalna.
+The profile can be checked on a real Apple system in a **macOS** VM — the
+`com.apple.dnsSettings.managed` payload supports macOS 11.0+ — but that
+verifies macOS, not iPadOS. Beyond that there is schema validation (above)
+and installing on a real iPad, which is reversible.
 
-### Testy integracyjne na prawdziwym gniazdku
+### Integration tests on a real socket
 
-Reszta testów jedzie na `httpx.MockTransport`, czyli na atrapie transportu —
-żadne gniazdo się nie otwiera. To nie dowodzi, że po **faktycznym zerwaniu
-połączenia TCP** źródło wznowi strumień od właściwego kursora.
+The rest of the tests run on `httpx.MockTransport`, a fake transport — no
+socket is opened. That doesn't prove that after an **actual TCP disconnect**
+the source resumes the stream from the right cursor.
 
-`tests/test_integration_live_http.py` stawia dwa prawdziwe serwery HTTP/1.1 na
-efemerycznych portach loopbacka i przepuszcza pełną ścieżkę: gniazdo → SSE →
-parser → silnik → HTTP POST → odbiornik. Serwer NextDNS **rozłącza się w połowie
-strumienia**, a test sprawdza, że ponowne połączenie przychodzi z `?id=evt-1`.
+`tests/test_integration_live_http.py` starts two real HTTP/1.1 servers on
+ephemeral loopback ports and drives the full path: socket → SSE → parser →
+engine → HTTP POST → receiver. The NextDNS server **disconnects mid-stream**,
+and the test checks that the reconnect comes with `?id=evt-1`.
 
-`replay` **nigdy nie dotyka prawdziwej bazy** (używa `:memory:`) — inaczej jeden
-przebieg testowy zająłby klucze dedupu i zablokował prawdziwe powiadomienia.
+`replay` **never touches the real database** (it uses `:memory:`) —
+otherwise a test run would claim dedup keys and block real notifications.
 
-Zmiana scenariusza dnia: edytuj `tools/gen_fixture_day.py`, potem odśwież
-fixture i snapshot (komendy w jego docstringu).
+To change the day scenario: edit `tools/gen_fixture_day.py`, then regenerate
+the fixture and snapshot (commands in its docstring).
 
-### Decyzja, która odchodzi od oczywistego
+### A decision that departs from the obvious
 
-**ntfy dostaje JSON, nie nagłówki HTTP.** Nagłówki nie przenoszą UTF-8 — httpx
-koduje je kodekiem `ascii`, więc tytuł z polskim znakiem wywala całą wysyłkę
-wyjątkiem `UnicodeEncodeError`. Imiona dzieci to dokładnie te napisy, które
-wchodzą do tytułu. Test `test_naglowki_http_naprawde_nie_przenosza_polskich_znakow`
-utrwala ten powód.
+**ntfy gets JSON, not HTTP headers.** Headers don't carry UTF-8 — httpx
+encodes them with the `ascii` codec, so a title with a Polish character blows
+up the whole send with `UnicodeEncodeError`. Children's names are exactly the
+strings that go into the title. The test
+`test_naglowki_http_naprawde_nie_przenosza_polskich_znakow` pins down the
+reason.
 
 ---
 
-## Prywatność
+## Privacy
 
-Logi DNS pokazują, z czym łączy się urządzenie. To dane o dzieciach — trzymaj
-je u siebie, na własnym profilu NextDNS i własnym serwerze ntfy, i nie dawaj
-dostępu nikomu, komu nie musisz. Warto, żeby dzieci wiedziały, że iPady mają
-filtr DNS; kidwatch nie jest narzędziem do ukrywania nadzoru.
+DNS logs show what a device connects to. This is data about children — keep
+it to yourself, on your own NextDNS profile and your own ntfy server, and
+don't give access to anyone who doesn't need it. Kids should know their iPads
+have a DNS filter; kidwatch is not a tool for hiding supervision.
 
-## Licencja
+## License
 
-MIT — patrz [LICENSE](LICENSE). *License: MIT.*
+MIT — see [LICENSE](LICENSE).
