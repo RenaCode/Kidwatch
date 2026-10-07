@@ -83,6 +83,10 @@ tv:
   # unifi_mac: "aa:bb:cc:dd:ee:ff"
   # nextdns_ids: ["TV-salon"]    # bez tego sesja z ruchu nazywa sie "Streaming"
   adb_alert_minutes: 30         # push "ADB nie odpowiada", gdy ruch pokazuje ogladanie
+  # Sony BRAVIA REST pod `host` (sources/sony.py): zasilanie bez klucza; antena
+  # (kanal, program z EPG) i HDMI z kluczem PSK w TV_SONY_PSK (kidwatch-secrets).
+  # Na TV: Siec -> Siec domowa -> Sterowanie IP -> "Normalne i klucz wstepny".
+  sony: true
 
 # -------------------------------------------------------- UniFi (opcja)
 # Klucz API w zmiennej UNIFI_API_KEY. Odcisk certyfikatu UDM:

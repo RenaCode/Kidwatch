@@ -183,6 +183,7 @@ Each layer guards against a different failure:
 | UniFi sensor (optional) | an iPad on home Wi-Fi transferred > `alarm_mb` (20) MB in `window_minutes` (15) while NextDNS has not a single query from it — DNS profile removed | push `<device> — profil DNS prawdopodobnie usunięty` |
 | `tv.unreachable_alert_hours` (24) | TV without a single successful read for a day — tunnel, ADB, key | push `<TV> — odczyt z urzadzenia nie dziala` |
 | `tv.traffic` (true), `tv.traffic_min_mb` (10), `tv.traffic_window_minutes` (3) | ADB not answering but UniFi sees the TV streaming — sessions continue from network traffic (no titles; service name from NextDNS if `tv.nextdns_ids` is set) | push `<TV> — ADB nie odpowiada, monitoring z ruchu sieci` after `tv.adb_alert_minutes` (30) |
+| `tv.sony` (true), `TV_SONY_PSK` | Sony BRAVIA REST API on the TV host: power state without a key; with the pre-shared key also antenna (channel + EPG programme title) and HDMI input — sources ADB never saw | sessions `TVP1 HD: <programme> (Telewizja)`, `HDMI 2` |
 | outbox | notifications no channel accepted for a day (see below) | push `kidwatch nie dostarczyl powiadomien` |
 
 Repeated alerts go out at increasing intervals (20 → 40 → 80 min, capped at

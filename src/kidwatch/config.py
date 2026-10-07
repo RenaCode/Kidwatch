@@ -484,6 +484,12 @@ class TvConfig(_Base):
     nextdns_ids: list[str] = Field(default_factory=list)
     #: Alarm "ADB nie odpowiada", gdy ruch pokazuje ogladanie od tylu minut.
     adb_alert_minutes: int = Field(default=30, ge=1)
+    #: Sony BRAVIA REST (sources/sony.py) pod `host`: zasilanie bez klucza,
+    #: antena/HDMI z kluczem PSK w TV_SONY_PSK (Sekret kidwatch-secrets).
+    sony: bool = True
+
+    def sony_psk(self) -> str | None:
+        return os.environ.get("TV_SONY_PSK", "").strip() or None
 
     @model_validator(mode="after")
     def _host_when_enabled(self) -> TvConfig:

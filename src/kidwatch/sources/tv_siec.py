@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from ..store import Store
+from .sony import SonyAuthError, SonyClient, SonyError, Zrodlo
 from .tv import MediaSession, TvProbe, TvSnapshot, TvUnavailable
 
 log = logging.getLogger(__name__)
@@ -122,12 +123,15 @@ class LicznikRuchu:
 class HybridProbe(TvProbe):
     """ADB, a przy martwym ADB - ruch sieciowy. Patrz docstring modulu."""
 
-    def __init__(self, adb: TvProbe, licznik: LicznikRuchu, store: Store, *,
+    def __init__(self, adb: TvProbe, licznik: LicznikRuchu | None, store: Store, *,
                  prog_mb: float = 10.0, nextdns_ids: list[str] | tuple[str, ...] = (),
-                 device_name: str = "TV") -> None:
+                 device_name: str = "TV", sony: SonyClient | None = None) -> None:
         super().__init__(adb.shell)
         self.adb = adb
         self.licznik = licznik
+        #: Sony BRAVIA REST (sony.py): zasilanie zawsze, tuner/HDMI z kluczem PSK.
+        self.sony = sony
+        self._sony_auth_zgloszone = False
         self.store = store
         self.prog = prog_mb * 1_000_000
         self.nextdns_ids = tuple(nextdns_ids)
@@ -144,10 +148,44 @@ class HybridProbe(TvProbe):
                 raise
             return await self._z_sieci(now, exc)
         if self.adb_padl is not None:
-            log.info("%s: ADB znowu odpowiada — koniec odczytu z ruchu sieci",
+            log.info("%s: ADB znowu odpowiada — koniec odczytu zapasowego",
                      self.device_name)
         self.adb_padl, self.ostatni_blad = None, None
+        if snap.awake and snap.playing({}) is None and self.sony is not None:
+            # ADB nie widzi anteny ani HDMI (to nie sesje odtwarzacza Androida).
+            zr = await self._sony_zrodlo()
+            if zr is not None:
+                return self._z_sony(zr)
         return snap
+
+    async def _sony_zrodlo(self) -> Zrodlo | None:
+        if self.sony is None or not self.sony.psk:
+            return None
+        try:
+            return await self.sony.zrodlo()
+        except SonyAuthError as exc:
+            if not self._sony_auth_zgloszone:
+                log.warning("%s: %s", self.device_name, exc)
+                self._sony_auth_zgloszone = True
+        except SonyError as exc:
+            log.debug("%s: Sony getPlayingContentInfo: %s", self.device_name, exc)
+        return None
+
+    @staticmethod
+    def _z_sony(zr: Zrodlo) -> TvSnapshot:
+        """Antena: "Telewizja" z kanalem i programem; HDMI: nazwa wejscia."""
+        if zr.rodzaj == "tuner":
+            pakiet, app = "kidwatch.sony.tuner", "Telewizja"
+            title, channel = (zr.program, zr.nazwa) if zr.program else (zr.nazwa, None)
+        else:
+            pakiet, app, title, channel = f"kidwatch.sony.{zr.nazwa}", zr.nazwa, None, None
+        return TvSnapshot(
+            awake=True,
+            foreground=pakiet,
+            sessions=(MediaSession(pakiet, True, 3, title, channel),),
+            zrodlo="sony",
+            aplikacja=app,
+        )
 
     async def _z_sieci(self, now: datetime, exc: TvUnavailable) -> TvSnapshot:
         from .unifi import UnifiError  # noqa: PLC0415
@@ -155,12 +193,32 @@ class HybridProbe(TvProbe):
         if self.adb_padl is None:
             self.adb_padl = now
         self.ostatni_blad = str(exc)
+        wlaczony: bool | None = None
+        if self.sony is not None:
+            try:
+                wlaczony = await self.sony.wlaczony()
+            except SonyError as sexc:
+                log.debug("%s: Sony getPowerStatus: %s", self.device_name, sexc)
+            if wlaczony is False:
+                # Czuwanie wedlug samego telewizora - pewniejsze niz cisza w sieci.
+                return TvSnapshot(awake=False, foreground=None, sessions=(), zrodlo="sony")
+            if wlaczony:
+                zr = await self._sony_zrodlo()
+                if zr is not None:
+                    return self._z_sony(zr)
+        # Aplikacja na ekranie (albo Sony nieznany): o odtwarzaniu decyduje ruch.
+        if self.licznik is None:
+            if wlaczony:
+                return TvSnapshot(awake=True, foreground=None, sessions=(), zrodlo="sony")
+            raise exc
         try:
             odczyt = await self.licznik.odczyt(now)
         except UnifiError as uexc:
             log.debug("%s: zapas z ruchu niedostepny: %s", self.device_name, uexc)
             raise exc from uexc
         if not odczyt.w_sieci:
+            if wlaczony:
+                return TvSnapshot(awake=True, foreground=None, sessions=(), zrodlo="sony")
             # Telewizora nie ma w sieci: wyjety z pradu albo gleboki sen.
             raise exc
         gra = odczyt.pokryte and odczyt.bajty_w_oknie >= self.prog
@@ -185,3 +243,5 @@ class HybridProbe(TvProbe):
 
     async def aclose(self) -> None:
         await self.adb.aclose()
+        if self.sony is not None:
+            await self.sony.aclose()

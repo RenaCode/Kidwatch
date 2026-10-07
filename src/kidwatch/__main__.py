@@ -510,28 +510,38 @@ def build_tv_watcher(cfg, store):
 
 
 def build_tv_traffic(cfg, store, probe):
-    """Hybryda ADB + ruch sieci (sources/tv_siec.py) albo None, gdy UniFi nie
-    jest skonfigurowane - wtedy telewizor czytany jest jak dotad, samym ADB."""
+    """Hybryda ADB + Sony REST + ruch sieci (sources/tv_siec.py, sony.py) albo
+    None, gdy oba zapasy sa wylaczone - wtedy telewizor czyta samo ADB."""
+    from .sources.sony import SonyClient  # noqa: PLC0415
     from .sources.tv_siec import HybridProbe, LicznikRuchu  # noqa: PLC0415
     from .sources.unifi import UnifiClient  # noqa: PLC0415
 
-    if not cfg.tv.traffic:
-        return None
+    licznik = None
     key = cfg.unifi.api_key() if cfg.unifi.enabled else None
-    if not key or not cfg.unifi.cert_sha256:
-        log.info("%s: zapas z ruchu sieci wylaczony — brak skonfigurowanego UniFi",
-                 cfg.tv.name)
+    if cfg.tv.traffic and key and cfg.unifi.cert_sha256:
+        client = UnifiClient(cfg.unifi.url, cfg.unifi.site, key, cfg.unifi.cert_sha256,
+                             cfg.unifi.timeout_seconds)
+        licznik = LicznikRuchu(client, cfg.tv.host, cfg.tv.unifi_mac,
+                               okno_min=cfg.tv.traffic_window_minutes,
+                               odswiez_s=cfg.unifi.poll_seconds)
+    sony = None
+    if cfg.tv.sony:
+        sony = SonyClient(cfg.tv.host, cfg.tv.sony_psk(), timeout=cfg.tv.timeout_seconds)
+    if licznik is None and sony is None:
+        log.info("%s: odczyt zapasowy wylaczony (brak UniFi i tv.sony: false)", cfg.tv.name)
         return None
-    client = UnifiClient(cfg.unifi.url, cfg.unifi.site, key, cfg.unifi.cert_sha256,
-                         cfg.unifi.timeout_seconds)
-    licznik = LicznikRuchu(client, cfg.tv.host, cfg.tv.unifi_mac,
-                           okno_min=cfg.tv.traffic_window_minutes,
-                           odswiez_s=cfg.unifi.poll_seconds)
-    log.info("%s: zapas z ruchu sieci wlaczony (UniFi, prog %.0f MB / %.0f min%s)",
-             cfg.tv.name, cfg.tv.traffic_min_mb, cfg.tv.traffic_window_minutes,
-             ", serwis z NextDNS" if cfg.tv.nextdns_ids else "")
+    czesci = []
+    if sony:
+        czesci.append("Sony REST z kluczem PSK" if sony.psk
+                      else "Sony REST (tylko zasilanie, brak TV_SONY_PSK)")
+    if licznik:
+        czesci.append(f"ruch UniFi (prog {cfg.tv.traffic_min_mb:.0f} MB / "
+                      f"{cfg.tv.traffic_window_minutes:.0f} min)")
+        if cfg.tv.nextdns_ids:
+            czesci.append("serwis z NextDNS")
+    log.info("%s: odczyt zapasowy: %s", cfg.tv.name, ", ".join(czesci))
     return HybridProbe(probe, licznik, store, prog_mb=cfg.tv.traffic_min_mb,
-                       nextdns_ids=cfg.tv.nextdns_ids, device_name=cfg.tv.name)
+                       nextdns_ids=cfg.tv.nextdns_ids, device_name=cfg.tv.name, sony=sony)
 
 
 def build_game_time(cfg: Config, store: Store, dispatcher):

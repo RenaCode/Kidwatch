@@ -650,11 +650,12 @@ class TvWatcher:
         blad = getattr(self.probe, "ostatni_blad", None) or "brak odpowiedzi"
         return self._emit(Notification(
             kind=NotifyKind.WATCHDOG,
-            title=f"{self.device_name} — ADB nie odpowiada, monitoring z ruchu sieci",
+            title=f"{self.device_name} — ADB nie odpowiada, monitoring zapasowy",
             text=(
                 f"Od {self._local(padl):%H:%M} brak odczytu po ADB ({blad}), a telewizor "
-                "przesyła dane. Start i koniec oglądania idą z ruchu sieciowego, bez "
-                "tytułów.\nNa TV: okno „Zezwolić na debugowanie?” -> Zawsze zezwalaj; "
+                "jest włączony. Start i koniec oglądania idą z API telewizora "
+                "i ruchu sieci, bez tytułów z aplikacji.\nNa TV: okno „Zezwolić na "
+                "debugowanie?” -> Zawsze zezwalaj; "
                 "albo wyłącz i włącz debugowanie sieciowe w Opcjach programisty."
             ),
             dedup_key=f"tv-adb-down:{self.device_name}:{self._local(now):%Y%m%d}",
@@ -678,8 +679,10 @@ class TvWatcher:
         if self._quiet(now):
             title = f"{self.device_name} W CICHYCH GODZINACH: start — {playing.label}"
         text = f"{self._local(now):%H:%M}"
-        if self._zrodlo != "adb":
+        if self._zrodlo == "siec":
             text += " · wykryte z ruchu sieci (bez tytułu)"
+        elif self._zrodlo == "sony":
+            text += " · z API telewizora"
         return self._emit(Notification(
             kind=NotifyKind.TV_START,
             title=title,

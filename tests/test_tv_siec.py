@@ -150,3 +150,112 @@ async def test_dzialajace_ADB_ma_pierwszenstwo(store):
     assert notes[0].kind is NotifyKind.TV_START
     assert "Fiksiki" in notes[0].title           # tytul z ADB, nie "Streaming"
     assert "z ruchu sieci" not in notes[0].text
+
+
+# ================================================================ Sony REST
+from kidwatch.sources.sony import SonyAuthError, SonyClient, Zrodlo, parse_zrodlo  # noqa: E402
+
+
+def test_parse_tuner_hdmi_i_aplikacja():
+    assert parse_zrodlo({"source": "tv:dvbt", "title": "TVP1 HD", "dispNum": "001",
+                         "programTitle": "Teleexpress"}) == Zrodlo("tuner", "TVP1 HD",
+                                                                  "Teleexpress")
+    assert parse_zrodlo({"source": "extInput:hdmi", "uri": "extInput:hdmi?port=2",
+                         "title": ""}) == Zrodlo("hdmi", "HDMI 2")
+    assert parse_zrodlo({"source": "extInput:hdmi", "title": "PlayStation"}).nazwa == "PlayStation"
+    assert parse_zrodlo(None) is None
+
+
+class FakeSony:
+    def __init__(self, wlaczony=True, zrodlo=None, psk="k", blad=None):
+        self._w, self._z, self.psk, self._blad = wlaczony, zrodlo, psk, blad
+
+    async def wlaczony(self):
+        if self._blad:
+            raise self._blad
+        return self._w
+
+    async def zrodlo(self):
+        if isinstance(self._z, Exception):
+            raise self._z
+        return self._z
+
+    async def aclose(self):
+        pass
+
+
+def uklad_sony(store, sony, kontroler=None):
+    licznik = (LicznikRuchu(kontroler, TV_IP, None, okno_min=3, odswiez_s=0)
+               if kontroler else None)
+    probe = HybridProbe(TvProbe(MartweAdb()), licznik, store, prog_mb=10,
+                        device_name="TV salon", sony=sony)
+    return TvWatcher(probe, "TV salon", store, idle_minutes=10, adb_alert_minutes=30)
+
+
+async def test_antena_z_kanalem_i_programem_przy_martwym_ADB(store):
+    sony = FakeSony(zrodlo=Zrodlo("tuner", "TVP1 HD", "Teleexpress"))
+    w = uklad_sony(store, sony)
+    notes = await w.poll(T0)
+    assert notes[0].kind is NotifyKind.TV_START
+    assert notes[0].title == "TV salon: start — TVP1 HD: Teleexpress (Telewizja)"
+    assert "API telewizora" in notes[0].text
+
+
+async def test_czuwanie_wedlug_sony_konczy_od_razu(store):
+    sony = FakeSony(zrodlo=Zrodlo("hdmi", "HDMI 1"))
+    w = uklad_sony(store, sony)
+    assert (await w.poll(T0))[0].kind is NotifyKind.TV_START
+    sony._w = False
+    notes = await w.poll(T0 + timedelta(minutes=1))
+    assert [n.kind for n in notes] == [NotifyKind.TV_END]
+
+
+async def test_aplikacja_wedlug_sony_decyduje_ruch(store):
+    k = Kontroler()
+    w = uklad_sony(store, FakeSony(zrodlo=None), k)
+    notes = await _przebieg(w, k, T0, 6, 30)
+    assert [n.title for n in notes if n.kind is NotifyKind.TV_START] == [
+        f"TV salon: start — {STREAMING}"]
+
+
+async def test_bez_PSK_tylko_zasilanie_a_ruch_decyduje(store):
+    k = Kontroler()
+    w = uklad_sony(store, FakeSony(zrodlo=Zrodlo("tuner", "X"), psk=None), k)
+    notes = await _przebieg(w, k, T0, 6, 0)
+    assert notes == []   # wlaczony, ale bez ruchu i bez klucza nic nie wiemy o antenie
+
+
+async def test_zly_PSK_nie_wywraca_odczytu(store):
+    k = Kontroler()
+    w = uklad_sony(store, FakeSony(zrodlo=SonyAuthError("403")), k)
+    notes = await _przebieg(w, k, T0, 6, 30)
+    assert any(n.kind is NotifyKind.TV_START for n in notes)
+
+
+async def test_sony_nieosiagalny_i_brak_w_sieci_to_nieosiagalny(store):
+    from kidwatch.sources.sony import SonyError  # noqa: PLC0415
+
+    k = Kontroler()
+    k.bajty = None
+    w = uklad_sony(store, FakeSony(blad=SonyError("timeout")), k)
+    with pytest.raises(TvUnavailable):
+        await w.poll(T0)
+
+
+async def test_klient_sony_wysyla_psk_i_czyta_zasilanie():
+    import httpx  # noqa: PLC0415
+
+    widziane = []
+
+    def handler(r: httpx.Request):
+        widziane.append(r.headers.get("X-Auth-PSK"))
+        if r.url.path.endswith("/system"):
+            return httpx.Response(200, json={"result": [{"status": "active"}], "id": 1})
+        return httpx.Response(200, json={"error": [403, "Forbidden"], "id": 1})
+
+    c = SonyClient("tv", "tajne", http=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    assert await c.wlaczony() is True
+    with pytest.raises(SonyAuthError):
+        await c.zrodlo()
+    assert widziane == ["tajne", "tajne"]
+    await c.aclose()
