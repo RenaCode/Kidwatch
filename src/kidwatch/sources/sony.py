@@ -37,6 +37,18 @@ import httpx
 
 log = logging.getLogger(__name__)
 
+
+class _BezZapytanSony(logging.Filter):
+    """httpx loguje KAZDE zapytanie na INFO. Przy martwym ADB Sony jest pytany
+    co 30 s - linia w logu co pol minuty, ktora niczego nie mowi. Zapytania do
+    bramki powiadomien (ten sam logger) zostaja widoczne."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "/sony/" not in record.getMessage()
+
+
+logging.getLogger("httpx").addFilter(_BezZapytanSony())
+
 #: Bledy JSON-RPC Sony, ktore sa stanem, nie awaria.
 ILLEGAL_STATE = 7
 DISPLAY_OFF = 40005

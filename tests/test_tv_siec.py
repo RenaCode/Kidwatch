@@ -259,3 +259,16 @@ async def test_klient_sony_wysyla_psk_i_czyta_zasilanie():
         await c.zrodlo()
     assert widziane == ["tajne", "tajne"]
     await c.aclose()
+
+
+def test_zapytania_sony_nie_trafiaja_do_logu_httpx(caplog):
+    import logging  # noqa: PLC0415
+
+    import kidwatch.sources.sony  # noqa: F401, PLC0415
+
+    with caplog.at_level(logging.INFO, logger="httpx"):
+        lg = logging.getLogger("httpx")
+        lg.info('HTTP Request: POST http://192.168.3.219/sony/system "HTTP/1.1 200 OK"')
+        lg.info('HTTP Request: POST http://bramka/v1/wyslij "HTTP/1.0 200 OK"')
+    assert [r.getMessage() for r in caplog.records] == [
+        'HTTP Request: POST http://bramka/v1/wyslij "HTTP/1.0 200 OK"']
