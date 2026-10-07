@@ -74,6 +74,15 @@ tv:
   # Dokladny czas aplikacji z `dumpsys usagestats` (Android sam go liczy),
   # odczyt co tyle minut; w panelu i raporcie obok szacunku z sesji. 0 = wyl.
   usage_poll_minutes: 15
+  # Zapas z ruchu sieci, gdy ADB nie odpowiada (sources/tv_siec.py): bajty
+  # telewizora z UniFi (po `host` albo `unifi_mac`), serwis z NextDNS
+  # (`nextdns_ids`). Wlaczony sam przy dzialajacej czujce UniFi.
+  traffic: true
+  traffic_min_mb: 10            # ogladanie = tyle MB w oknie
+  traffic_window_minutes: 3
+  # unifi_mac: "aa:bb:cc:dd:ee:ff"
+  # nextdns_ids: ["TV-salon"]    # bez tego sesja z ruchu nazywa sie "Streaming"
+  adb_alert_minutes: 30         # push "ADB nie odpowiada", gdy ruch pokazuje ogladanie
 
 # -------------------------------------------------------- UniFi (opcja)
 # Klucz API w zmiennej UNIFI_API_KEY. Odcisk certyfikatu UDM:

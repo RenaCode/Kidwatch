@@ -470,6 +470,20 @@ class TvConfig(_Base):
     #: interwalach dziennych i zerowane przy ich zmianie, wiec zapisujemy
     #: przyrosty miedzy odczytami. 0 = wylaczone.
     usage_poll_minutes: int = Field(default=15, ge=0, le=180)
+    #: ZAPAS Z RUCHU SIECI (sources/tv_siec.py), gdy ADB nie odpowiada.
+    #: Wlaczony sam, jesli dziala czujka UniFi; telewizor szukany po `host`
+    #: albo po `unifi_mac`. `traffic: false` wylacza zapas.
+    traffic: bool = True
+    unifi_mac: str | None = None
+    #: Ogladanie = co najmniej tyle MB w oknie. YouTube 480p to ~20 MB na
+    #: 3 min, 1080p ~100 MB; ekran glowny i czuwanie praktycznie zero.
+    traffic_min_mb: float = Field(default=10.0, gt=0)
+    traffic_window_minutes: float = Field(default=3.0, ge=1.0, le=30.0)
+    #: Identyfikatory telewizora w NextDNS (device.id/name) - serwis
+    #: (YouTube, Netflix...) z zapytan DNS. Puste = sesja "Streaming".
+    nextdns_ids: list[str] = Field(default_factory=list)
+    #: Alarm "ADB nie odpowiada", gdy ruch pokazuje ogladanie od tylu minut.
+    adb_alert_minutes: int = Field(default=30, ge=1)
 
     @model_validator(mode="after")
     def _host_when_enabled(self) -> TvConfig:

@@ -162,6 +162,10 @@ class TvSnapshot:
     awake: bool
     foreground: str | None
     sessions: tuple[MediaSession, ...]
+    #: "adb" albo "siec" (zapas z ruchu sieciowego, sources/tv_siec.py).
+    zrodlo: str = "adb"
+    #: Nazwa aplikacji podana wprost (odczyt z ruchu nie ma pakietu Androida).
+    aplikacja: str | None = None
 
     def playing(self, apps: dict[str, str]) -> Playing | None:
         if not self.awake:
@@ -173,8 +177,8 @@ class TvSnapshot:
             )
         if chosen is None:
             return None
-        return Playing(chosen.package, app_name(chosen.package, apps), chosen.title,
-                       chosen.channel)
+        return Playing(chosen.package, self.aplikacja or app_name(chosen.package, apps),
+                       chosen.title, chosen.channel)
 
 
 def app_name(package: str, apps: dict[str, str]) -> str:
@@ -438,7 +442,8 @@ class TvProbe:
     async def usage(self) -> str:
         return await self.shell.shell(USAGE_COMMAND)
 
-    async def snapshot(self) -> TvSnapshot:
+    async def snapshot(self, now: datetime | None = None) -> TvSnapshot:
+        # `now` uzywa tylko HybridProbe (zapas z ruchu sieci, tv_siec.py).
         raw = await self.raw()
         return parse_snapshot(raw["media"], raw["activity"], raw["power"])
 
@@ -492,8 +497,14 @@ class TvWatcher:
         apps: dict[str, str] | None = None,
         quiet_hours=None,
         usage_minutes: int = 0,
+        adb_alert_minutes: int = 30,
     ) -> None:
         self.probe = probe
+        #: Alarm "ADB nie dziala", gdy ruch pokazuje ogladanie, a ADB milczy
+        #: od tylu minut. Czujka dobowa nie widzi tego stanu: odczyt z ruchu
+        #: jest udanym odczytem.
+        self.adb_alert = timedelta(minutes=adb_alert_minutes)
+        self._zrodlo = "adb"
         self.usage_every = timedelta(minutes=usage_minutes)
         self.device_name = device_name
         self.store = store
@@ -516,8 +527,12 @@ class TvWatcher:
     async def poll(self, now: datetime) -> list[Notification]:
         if self.paused(now):
             return []
-        snap = await self.probe.snapshot()
+        snap = await self.probe.snapshot(now)
         notes = self.observe(snap, now)
+        if snap.zrodlo != "adb":
+            # ADB nie odpowiada - usagestats tez nie; pomijamy zamiast logowac
+            # nieudany odczyt co kwadrans.
+            return notes + self._adb_alarm(snap, now)
         try:
             await self._maybe_usage(now)
         except Unreachable as exc:
@@ -578,6 +593,9 @@ class TvWatcher:
             # Pauza wlaczona w trakcie odczytu (tik dziala miedzy await-ami):
             # wynik idzie do kosza, sesje domknal juz TvPause.
             return []
+        if snap.zrodlo != self._zrodlo:
+            log.info("%s: zrodlo odczytu %s -> %s", self.device_name, self._zrodlo, snap.zrodlo)
+            self._zrodlo = snap.zrodlo
         playing = snap.playing(self.apps)
         session = self.store.get_open_session(self.device_name)
         if playing is None:
@@ -619,6 +637,33 @@ class TvWatcher:
             return []
         return self._finish(session, last, now)
 
+    def _adb_alarm(self, snap: TvSnapshot, now: datetime) -> list[Notification]:
+        """Raz na dobe: ruch pokazuje ogladanie, a ADB milczy od `adb_alert`.
+
+        To jest dokladnie stan z 2026-10-07 (port otwarty, uzgadnianie ADB
+        wisi) - wtedy wiadomo, ze telewizor JEST wlaczony, wiec cisza ADB
+        to awaria, nie sen.
+        """
+        padl = getattr(self.probe, "adb_padl", None)
+        if padl is None or now - padl < self.adb_alert or snap.playing(self.apps) is None:
+            return []
+        blad = getattr(self.probe, "ostatni_blad", None) or "brak odpowiedzi"
+        return self._emit(Notification(
+            kind=NotifyKind.WATCHDOG,
+            title=f"{self.device_name} — ADB nie odpowiada, monitoring z ruchu sieci",
+            text=(
+                f"Od {self._local(padl):%H:%M} brak odczytu po ADB ({blad}), a telewizor "
+                "przesyła dane. Start i koniec oglądania idą z ruchu sieciowego, bez "
+                "tytułów.\nNa TV: okno „Zezwolić na debugowanie?” -> Zawsze zezwalaj; "
+                "albo wyłącz i włącz debugowanie sieciowe w Opcjach programisty."
+            ),
+            dedup_key=f"tv-adb-down:{self.device_name}:{self._local(now):%Y%m%d}",
+            ts=now,
+            device=self.device_name,
+            priority=3,
+            tags=("warning",),
+        ))
+
     # ------------------------------------------------------------- pushe
     def _local(self, ts: datetime) -> datetime:
         return ts.astimezone(self.tz) if self.tz else ts
@@ -632,10 +677,13 @@ class TvWatcher:
         title = f"{self.device_name}: start — {playing.label}"
         if self._quiet(now):
             title = f"{self.device_name} W CICHYCH GODZINACH: start — {playing.label}"
+        text = f"{self._local(now):%H:%M}"
+        if self._zrodlo != "adb":
+            text += " · wykryte z ruchu sieci (bez tytułu)"
         return self._emit(Notification(
             kind=NotifyKind.TV_START,
             title=title,
-            text=f"{self._local(now):%H:%M}",
+            text=text,
             dedup_key=f"tv-start:{sid}",
             ts=now,
             device=self.device_name,

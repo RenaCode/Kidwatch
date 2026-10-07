@@ -494,8 +494,10 @@ def build_tv_watcher(cfg, store):
     except (FileNotFoundError, ValueError) as exc:
         log.error("%s: czujnik TV wylaczony — %s", cfg.tv.name, exc)
         return None
+    probe = TvProbe(shell)
+    hybryda = build_tv_traffic(cfg, store, probe)
     return TvWatcher(
-        TvProbe(shell),
+        hybryda or probe,
         cfg.tv.name,
         store,
         tz=cfg.tz,
@@ -503,7 +505,33 @@ def build_tv_watcher(cfg, store):
         apps=cfg.tv.apps,
         quiet_hours=cfg.engine.quiet_hours,
         usage_minutes=cfg.tv.usage_poll_minutes,
+        adb_alert_minutes=cfg.tv.adb_alert_minutes,
     )
+
+
+def build_tv_traffic(cfg, store, probe):
+    """Hybryda ADB + ruch sieci (sources/tv_siec.py) albo None, gdy UniFi nie
+    jest skonfigurowane - wtedy telewizor czytany jest jak dotad, samym ADB."""
+    from .sources.tv_siec import HybridProbe, LicznikRuchu  # noqa: PLC0415
+    from .sources.unifi import UnifiClient  # noqa: PLC0415
+
+    if not cfg.tv.traffic:
+        return None
+    key = cfg.unifi.api_key() if cfg.unifi.enabled else None
+    if not key or not cfg.unifi.cert_sha256:
+        log.info("%s: zapas z ruchu sieci wylaczony — brak skonfigurowanego UniFi",
+                 cfg.tv.name)
+        return None
+    client = UnifiClient(cfg.unifi.url, cfg.unifi.site, key, cfg.unifi.cert_sha256,
+                         cfg.unifi.timeout_seconds)
+    licznik = LicznikRuchu(client, cfg.tv.host, cfg.tv.unifi_mac,
+                           okno_min=cfg.tv.traffic_window_minutes,
+                           odswiez_s=cfg.unifi.poll_seconds)
+    log.info("%s: zapas z ruchu sieci wlaczony (UniFi, prog %.0f MB / %.0f min%s)",
+             cfg.tv.name, cfg.tv.traffic_min_mb, cfg.tv.traffic_window_minutes,
+             ", serwis z NextDNS" if cfg.tv.nextdns_ids else "")
+    return HybridProbe(probe, licznik, store, prog_mb=cfg.tv.traffic_min_mb,
+                       nextdns_ids=cfg.tv.nextdns_ids, device_name=cfg.tv.name)
 
 
 def build_game_time(cfg: Config, store: Store, dispatcher):

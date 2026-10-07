@@ -495,6 +495,20 @@ class Store:
         ).fetchone()
         return row["app"] if row else None
 
+    def last_app_for_sources(self, source_ids, since: datetime) -> str | None:
+        """Ostatnia rozpoznana aplikacja z zapytan DNS o danych `source_id`
+        od `since` - serwis telewizora przy odczycie z ruchu (tv_siec.py)."""
+        ids = list(source_ids)
+        if not ids:
+            return None
+        rows = ",".join("?" * len(ids))
+        row = self.conn.execute(
+            f"SELECT app FROM events WHERE source_id IN ({rows}) AND kind='app' "
+            "AND app IS NOT NULL AND ts >= ? ORDER BY ts DESC LIMIT 1",
+            (*ids, to_iso(since)),
+        ).fetchone()
+        return row["app"] if row else None
+
     def session_minutes(self, session_id: int) -> list[datetime]:
         """Rozne minuty z ruchem aplikacji w sesji, jako aware UTC."""
         rows = self.conn.execute(
