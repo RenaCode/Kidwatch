@@ -73,7 +73,7 @@ export default function App() {
   return <Panel user={user} onSignOut={signOut} onUserChanged={checkSession} />;
 }
 
-// Konto jako avatar z menu (Profil, Wyloguj). Kropka na avatarze mowi o 2FA:
+// Konto jako avatar z menu (Ustawienia, Wyloguj). Kropka na avatarze mowi o 2FA:
 // zielona = wlaczone, pomaranczowa = wylaczone albo malo kodow zapasowych.
 function AccountMenu({ user, onProfile, onSignOut }) {
   const [open, setOpen] = useState(false);
@@ -108,7 +108,7 @@ function AccountMenu({ user, onProfile, onSignOut }) {
               {user?.totp_enabled ? '2FA' : 'bez 2FA'}
             </span>
           </div>
-          <button role="menuitem" onClick={() => { setOpen(false); onProfile(); }}>Profil</button>
+          <button role="menuitem" onClick={() => { setOpen(false); onProfile(); }}>Ustawienia</button>
           <button role="menuitem" onClick={() => { setOpen(false); onSignOut(); }}>Wyloguj</button>
         </div>
       )}
@@ -177,7 +177,8 @@ function Panel({ user, onSignOut, onUserChanged }) {
       <TvPauseBanner pause={tvPause.data} onChanged={tvPauseChanged} />
 
       {profile && (
-        <Profile user={user} onChanged={onUserChanged} onClose={() => setProfile(false)} />
+        <Profile user={user} onChanged={onUserChanged} onClose={() => setProfile(false)}
+                 tvPause={tvPause.data} onTvPauseChanged={tvPauseChanged} />
       )}
 
       {devices.error && !devices.data && (

@@ -126,7 +126,7 @@ class HybridProbe(TvProbe):
     def __init__(self, adb: TvProbe, licznik: LicznikRuchu | None, store: Store, *,
                  prog_mb: float = 10.0, nextdns_ids: list[str] | tuple[str, ...] = (),
                  device_name: str = "TV", sony: SonyClient | None = None,
-                 pilot=None, apps: dict[str, str] | None = None) -> None:
+                 pilot=None, apps: dict[str, str] | None = None, aplikacja=None) -> None:
         super().__init__(adb.shell)
         self.adb = adb
         self.licznik = licznik
@@ -135,6 +135,10 @@ class HybridProbe(TvProbe):
         #: Pilot Google TV (tv_pilot.py): zasilanie i aplikacja, bez ADB.
         self.pilot = pilot
         self.apps = dict(apps or {})
+        #: Aplikacja Kidwatch TV (tv_app.py): tytuly bez ADB. Pierwszenstwo
+        #: przed wszystkim innym, gdy sparowana i odpowiada.
+        self.aplikacja = aplikacja
+        self._aplikacja_ok: bool | None = None
         self._sony_auth_zgloszone = False
         self.store = store
         self.prog = prog_mb * 1_000_000
@@ -145,6 +149,9 @@ class HybridProbe(TvProbe):
         self.ostatni_blad: str | None = None
 
     async def snapshot(self, now: datetime | None = None) -> TvSnapshot:
+        snap = await self._z_aplikacji()
+        if snap is not None:
+            return snap
         try:
             snap = await self.adb.snapshot()
         except TvUnavailable as exc:
@@ -157,6 +164,40 @@ class HybridProbe(TvProbe):
         self.adb_padl, self.ostatni_blad = None, None
         if snap.awake and snap.playing({}) is None and self.sony is not None:
             # ADB nie widzi anteny ani HDMI (to nie sesje odtwarzacza Androida).
+            zr = await self._sony_zrodlo()
+            if zr is not None:
+                return self._z_sony(zr)
+        return snap
+
+    async def _z_aplikacji(self) -> TvSnapshot | None:
+        """Aplikacja Kidwatch TV albo None (niesparowana, nie odpowiada) - wtedy
+        dalej jak dotad: ADB, pilot, Sony, ruch."""
+        import asyncio  # noqa: PLC0415
+
+        app = self.aplikacja
+        if app is None:
+            return None
+        # Petla dla akcji z panelu (instalacja, parowanie) - takze przed parowaniem.
+        app.loop = asyncio.get_running_loop()
+        if not app.sparowana:
+            return None
+        st = self.pilot.stan() if self.pilot is not None else None
+        fg = st.aplikacja if st is not None and st.polaczony else None
+        try:
+            snap = await app.snapshot(fg)
+        except TvUnavailable as exc:
+            if self._aplikacja_ok is not False:
+                log.info("%s: aplikacja Kidwatch TV nie odpowiada (%s) — odczyt zastepczy",
+                         self.device_name, exc)
+            self._aplikacja_ok = False
+            return None
+        if self._aplikacja_ok is not True:
+            log.info("%s: odczyt z aplikacji Kidwatch TV (wersja %s)",
+                     self.device_name, app.wersja)
+        self._aplikacja_ok = True
+        # Tytuly sa - alarm "ADB nie odpowiada" nie ma juz czego zglaszac.
+        self.adb_padl, self.ostatni_blad = None, None
+        if snap.awake and snap.playing(self.apps) is None and self.sony is not None:
             zr = await self._sony_zrodlo()
             if zr is not None:
                 return self._z_sony(zr)

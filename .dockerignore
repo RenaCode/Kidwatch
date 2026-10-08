@@ -9,3 +9,9 @@ config.yaml
 node_modules/
 web/node_modules/
 web/dist/
+
+# Aplikacja na TV: build Gradle nie wchodzi do obrazu, tylko tv-app/dist.
+tv-app/.gradle/
+tv-app/app/build/
+tv-app/build/
+tv-app/.kotlin/

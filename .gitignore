@@ -36,3 +36,4 @@ node_modules/
 /config.cluster.yaml
 /LISTA-ZADAN.md
 /profile/
+tv-app/dist/*.apk

@@ -392,6 +392,9 @@ class AdbTcpShell:
         )
         self.host, self.port, self.timeout = host, port, timeout
         self._dev = None
+        # Jedno polaczenie ADB, dwoch uzytkownikow: odczyt co 30 s i instalacja
+        # aplikacji Kidwatch TV z panelu. adb-shell nie przeplata polecen.
+        self._zamek = asyncio.Lock()
 
     async def _device(self):
         from adb_shell.adb_device_async import AdbDeviceTcpAsync  # noqa: PLC0415
@@ -403,14 +406,24 @@ class AdbTcpShell:
             self._dev = dev
         return self._dev
 
-    async def shell(self, command: str) -> str:
+    async def shell(self, command: str, limit_s: float | None = None) -> str:
+        t = limit_s or self.timeout
+        return await self._wykonaj(
+            lambda dev: dev.shell(command, read_timeout_s=t), t * 2)
+
+    async def push(self, local: str, remote: str, limit_s: float = 120.0) -> None:
+        """Plik na telewizor (instalacja aplikacji Kidwatch TV, tv_app.py)."""
+        await self._wykonaj(
+            lambda dev: dev.push(local, remote, read_timeout_s=limit_s,
+                                 transport_timeout_s=limit_s), limit_s * 2)
+
+    async def _wykonaj(self, akcja, limit: float):
         from adb_shell import exceptions as adb_exc  # noqa: PLC0415
 
         try:
-            dev = await self._device()
-            return await asyncio.wait_for(
-                dev.shell(command, read_timeout_s=self.timeout), self.timeout * 2
-            )
+            async with self._zamek:
+                dev = await self._device()
+                return await asyncio.wait_for(akcja(dev), limit)
         except adb_exc.DeviceAuthError as exc:
             await self.aclose()
             raise TvUnavailable(
@@ -430,6 +443,20 @@ class AdbTcpShell:
                 await dev.close()
             except Exception:  # noqa: BLE001 — zamykamy zerwane polaczenie
                 log.debug("tv: blad przy zamykaniu ADB", exc_info=True)
+
+
+class BrakAdb:
+    """Telewizor bez klucza ADB: kazde polecenie to TvUnavailable. Odczyt idzie
+    wtedy z aplikacji Kidwatch TV i zapasow (tv_siec.py)."""
+
+    def __init__(self, powod: str) -> None:
+        self.powod = powod
+
+    async def shell(self, command: str, limit_s: float | None = None) -> str:
+        raise TvUnavailable(f"brak ADB: {self.powod}")
+
+    async def aclose(self) -> None:
+        pass
 
 
 class TvProbe:
@@ -529,6 +556,9 @@ class TvWatcher:
             return []
         snap = await self.probe.snapshot(now)
         notes = self.observe(snap, now)
+        if snap.zrodlo == "aplikacja":
+            # Tytuly z aplikacji Kidwatch TV; usagestats czyta tylko ADB.
+            return notes
         if snap.zrodlo != "adb":
             # ADB nie odpowiada - usagestats tez nie; pomijamy zamiast logowac
             # nieudany odczyt co kwadrans.

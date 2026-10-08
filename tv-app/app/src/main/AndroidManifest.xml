@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Serwer HTTP w sieci domowej: Kidwatch odpytuje /stan co 30 s. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Aplikacja na telewizor: bez ekranu dotykowego, z launcherem Google TV. -->
+    <uses-feature android:name="android.software.leanback" android:required="true" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <application
+        android:allowBackup="false"
+        android:banner="@drawable/banner"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Dostep do sesji odtwarzaczy (MediaSessionManager) maja tylko
+             wlaczone "nasluchiwacze powiadomien". System sam wiaze te usluge
+             po starcie telewizora i trzyma ja w tle - dlatego to ona prowadzi
+             serwer HTTP. Tresci powiadomien NIE czytamy. -->
+        <service
+            android:name=".KidwatchListener"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

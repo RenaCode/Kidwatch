@@ -57,6 +57,9 @@ COPY --chown=10001:10001 src ./src
 COPY --chown=10001:10001 app_map.yaml ./app_map.yaml
 # Zbudowany front panelu — serwuje go watek panelu z procesu `run`.
 COPY --from=web --chown=10001:10001 /web/dist ./web
+# Aplikacja Kidwatch TV (APK z joba `tv-app` w CI) - panel instaluje ja
+# na telewizor przez ADB (sources/tv_app.py). Lokalnie katalog bez APK.
+COPY --chown=10001:10001 tv-app/dist ./tv-app
 
 # Katalog na baze — w k8s montowany jako PVC.
 RUN mkdir -p /data && chown 10001:10001 /data

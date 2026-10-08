@@ -970,6 +970,8 @@ def make_handler(
                     self._tv_pause_request("resume")
                 elif path in ("/api/tv/pilot/start", "/api/tv/pilot/kod"):
                     self._tv_pilot(path)
+                elif path in ("/api/tv/aplikacja/instaluj", "/api/tv/aplikacja/paruj"):
+                    self._tv_aplikacja(path)
                 elif path == "/api/auth/password":
                     self._change_password()
                 elif path.startswith("/api/profile/"):
@@ -1122,6 +1124,28 @@ def make_handler(
                 raise AuthError(409, str(exc)) from exc
             self._json(200, stan_pilota())
 
+        def _tv_aplikacja(self, path: str) -> None:
+            """Aplikacja Kidwatch TV (sources/tv_app.py): instalacja przez ADB
+            i parowanie kodem z jej ekranu. Wykonuje petla serwisu."""
+            from .sources import tv_app  # noqa: PLC0415
+
+            session = self._authed()
+            app = tv_app.AKTYWNA
+            if app is None:
+                raise AuthError(404, "Aplikacja TV jest wyłączona w konfiguracji")
+            data = self._read_json()
+            komunikat = None
+            try:
+                if path.endswith("/instaluj"):
+                    log.info("panel: %s instaluje aplikacje Kidwatch TV", session.login)
+                    komunikat = app.instaluj()
+                else:
+                    app.paruj(self._str(data, "kod", 16))
+                    log.info("panel: %s sparowal aplikacje Kidwatch TV", session.login)
+            except tv_app.AppError as exc:
+                raise AuthError(409, str(exc)) from exc
+            self._json(200, {**stan_aplikacji(), "message": komunikat})
+
         def _change_password(self) -> None:
             session = self._authed()
             data = self._read_json()
@@ -1271,6 +1295,9 @@ def make_handler(
             if path == "/api/tv/pilot":
                 self._json(200, stan_pilota())
                 return
+            if path == "/api/tv/aplikacja":
+                self._json(200, stan_aplikacji())
+                return
             routes = {
                 "/api/screens": lambda c: queries.screens(c, params),
                 "/api/trends": lambda c: queries.trends(c, params),
@@ -1379,6 +1406,25 @@ def stan_pilota() -> dict:
         "on": st.wlaczony,
         "app": app_name(st.aplikacja, {}) if st.aplikacja else None,
         "changed": to_iso(st.zmiana) if st.zmiana else None,
+    }
+
+
+def stan_aplikacji() -> dict:
+    """Stan aplikacji Kidwatch TV dla panelu (`available: false` = wylaczona)."""
+    from .sources import tv_app  # noqa: PLC0415
+
+    app = tv_app.AKTYWNA
+    if app is None:
+        return {"available": False}
+    st = app.stan()
+    return {
+        "available": True,
+        "paired": st.sparowana,
+        "version": st.wersja,
+        "permission": st.uprawnienie,
+        "last_read": to_iso(st.ostatni_odczyt) if st.ostatni_odczyt else None,
+        "error": st.blad,
+        "adb": app.adb is not None,
     }
 
 

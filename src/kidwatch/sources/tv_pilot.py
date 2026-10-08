@@ -19,7 +19,7 @@ telewizor zapamietuje przy parowaniu, lezy na wolumenie danych
 
 ## Parowanie
 
-Z panelu (Profil -> TV): "Sparuj pilota" wysyla `paruj_start` - telewizor
+Z panelu (Ustawienia -> Telewizor): "Sparuj pilota" wysyla `paruj_start` - telewizor
 pokazuje kod - "Potwierdz" wysyla `paruj_kod`. Panel dziala w osobnym watku,
 wiec obie metody przerzucaja korutyny na petle serwisu
 (`run_coroutine_threadsafe`) i czekaja na wynik.
@@ -108,7 +108,7 @@ class PilotTv:
         if self.sparowany:
             await self._polacz()
         else:
-            log.info("pilot TV: niesparowany - sparuj w panelu (Profil -> TV)")
+            log.info("pilot TV: niesparowany - sparuj w panelu (Ustawienia -> Telewizor)")
         await asyncio.Event().wait()
 
     async def _polacz(self) -> None:

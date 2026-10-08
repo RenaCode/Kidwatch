@@ -3,6 +3,9 @@
    bramki - kazda akcja idzie przez /api/profile/* z sesja i CSRF, a bramke
    woła serwer. */
 import React, { useCallback, useEffect, useState } from 'react';
+import { TvPauseControl } from './TvPause';
+import { TvPilotControl } from './TvPilot';
+import { TvAppControl } from './TvApp';
 import { get, post } from '../utils/api';
 import {
   MAX_LABEL, MAX_RECIPIENTS, SOURCES_ALL, SOURCES_FAMILY, getsEverything, newRecipient,
@@ -412,11 +415,24 @@ function WhatsApp() {
   );
 }
 
-export default function Profile({ user, onChanged, onClose }) {
+// Telewizor: wstrzymanie monitoringu, aplikacja Kidwatch TV, pilot Google TV.
+// Do 2026-10-09 te przyciski siedzialy na karcie TV w widoku urzadzen.
+function TvSettings({ tvPause, onTvPauseChanged }) {
+  return (
+    <div className="card">
+      <div className="card-title"><span>Telewizor</span></div>
+      <TvPauseControl pause={tvPause} onChanged={onTvPauseChanged} />
+      <TvAppControl />
+      <TvPilotControl />
+    </div>
+  );
+}
+
+export default function Profile({ user, onChanged, onClose, tvPause, onTvPauseChanged }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 22 }}>
       <div className="card-title" style={{ marginBottom: 0 }}>
-        <span>Profil · {user?.login}</span>
+        <span>Ustawienia · {user?.login}</span>
         <button className="btn-ghost" onClick={onClose}>← Wróć do panelu</button>
       </div>
       <div className="stat-label">Bezpieczeństwo</div>
@@ -426,6 +442,8 @@ export default function Profile({ user, onChanged, onClose }) {
       </div>
       <div className="stat-label">Powiadomienia / WhatsApp</div>
       <WhatsApp />
+      <div className="stat-label">Telewizor</div>
+      <TvSettings tvPause={tvPause} onTvPauseChanged={onTvPauseChanged} />
     </div>
   );
 }

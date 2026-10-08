@@ -492,6 +492,10 @@ class TvConfig(_Base):
     #: (puste = katalog `tv-pilot` obok bazy, czyli na wolumenie).
     pilot: bool = True
     pilot_dir: str = ""
+    #: Aplikacja Kidwatch TV na telewizorze (tv-app/, sources/tv_app.py, port
+    #: 8765): tytuly bez ADB. Instalacja i parowanie z panelu; token w
+    #: katalogu `tv-app` obok bazy.
+    aplikacja: bool = True
 
     def sony_psk(self) -> str | None:
         return os.environ.get("TV_SONY_PSK", "").strip() or None

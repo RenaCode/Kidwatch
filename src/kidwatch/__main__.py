@@ -516,15 +516,25 @@ def build_tv_watcher(cfg, store, pilot=None):
     Brak klucza nie zabija procesu — jak przy rekordach parowania iPadow:
     klucz zaklada sie recznie PO wdrozeniu, a DNS ma dzialac od razu.
     """
-    from .sources.tv import AdbTcpShell, TvProbe, TvWatcher  # noqa: PLC0415
+    from .sources.tv import (  # noqa: PLC0415
+        AdbTcpShell,
+        BrakAdb,  # noqa: PLC0415
+        TvProbe,
+        TvWatcher,
+    )
 
     try:
         shell = AdbTcpShell(cfg.tv.host, cfg.tv.port, cfg.tv.adb_key_dir, cfg.tv.timeout_seconds)
     except (FileNotFoundError, ValueError) as exc:
-        log.error("%s: czujnik TV wylaczony — %s", cfg.tv.name, exc)
-        return None
+        if not cfg.tv.aplikacja:
+            log.error("%s: czujnik TV wylaczony — %s", cfg.tv.name, exc)
+            return None
+        # Aplikacja Kidwatch TV i zapasy dzialaja bez ADB.
+        log.warning("%s: bez ADB — %s", cfg.tv.name, exc)
+        shell = BrakAdb(str(exc))
+    aplikacja = build_tv_app(cfg, shell)
     probe = TvProbe(shell)
-    hybryda = build_tv_traffic(cfg, store, probe, pilot)
+    hybryda = build_tv_traffic(cfg, store, probe, pilot, aplikacja)
     return TvWatcher(
         hybryda or probe,
         cfg.tv.name,
@@ -538,7 +548,24 @@ def build_tv_watcher(cfg, store, pilot=None):
     )
 
 
-def build_tv_traffic(cfg, store, probe, pilot=None):
+def build_tv_app(cfg, shell):
+    """Aplikacja Kidwatch TV (sources/tv_app.py) albo None (tv.aplikacja: false).
+    Rejestrowana w `tv_app.AKTYWNA` dla panelu (instalacja, parowanie)."""
+    from .sources import tv_app  # noqa: PLC0415
+    from .sources.tv import AdbTcpShell  # noqa: PLC0415
+
+    if not cfg.tv.aplikacja:
+        return None
+    katalog = Path(cfg.store.path).expanduser().parent / "tv-app"
+    app = tv_app.AplikacjaTv(cfg.tv.host, katalog, timeout=cfg.tv.timeout_seconds)
+    app.adb = shell if isinstance(shell, AdbTcpShell) else None
+    tv_app.AKTYWNA = app
+    log.info("%s: aplikacja Kidwatch TV (%s:%d) - %s", cfg.tv.name, cfg.tv.host, tv_app.PORT,
+             "sparowana" if app.sparowana else "do instalacji/parowania w panelu")
+    return app
+
+
+def build_tv_traffic(cfg, store, probe, pilot=None, aplikacja=None):
     """Hybryda ADB + Sony REST + ruch sieci (sources/tv_siec.py, sony.py) albo
     None, gdy oba zapasy sa wylaczone - wtedy telewizor czyta samo ADB."""
     from .sources.sony import SonyClient  # noqa: PLC0415
@@ -556,13 +583,15 @@ def build_tv_traffic(cfg, store, probe, pilot=None):
     sony = None
     if cfg.tv.sony:
         sony = SonyClient(cfg.tv.host, cfg.tv.sony_psk(), timeout=cfg.tv.timeout_seconds)
-    if licznik is None and sony is None and pilot is None:
+    if licznik is None and sony is None and pilot is None and aplikacja is None:
         log.info("%s: odczyt zapasowy wylaczony (brak UniFi i tv.sony: false)", cfg.tv.name)
         return None
     czesci = []
     if sony:
         czesci.append("Sony REST z kluczem PSK" if sony.psk
                       else "Sony REST (tylko zasilanie, brak TV_SONY_PSK)")
+    if aplikacja is not None:
+        czesci.insert(0, "aplikacja Kidwatch TV")
     if pilot is not None:
         czesci.append("pilot Google TV")
     if licznik:
@@ -573,7 +602,7 @@ def build_tv_traffic(cfg, store, probe, pilot=None):
     log.info("%s: odczyt zapasowy: %s", cfg.tv.name, ", ".join(czesci))
     return HybridProbe(probe, licznik, store, prog_mb=cfg.tv.traffic_min_mb,
                        nextdns_ids=cfg.tv.nextdns_ids, device_name=cfg.tv.name, sony=sony,
-                       pilot=pilot, apps=cfg.tv.apps)
+                       pilot=pilot, apps=cfg.tv.apps, aplikacja=aplikacja)
 
 
 def build_game_time(cfg: Config, store: Store, dispatcher):

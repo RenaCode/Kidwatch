@@ -234,7 +234,7 @@ tv:
   sony: true
   # Pilot Google TV (Android TV Remote v2, porty 6466/6467; sources/tv_pilot.py):
   # zasilanie i aplikacja bez ADB i bez opcji programisty. Parowanie raz,
-  # w panelu na karcie TV ("Sparuj pilota TV" + kod z ekranu). Certyfikat
+  # w panelu: Ustawienia -> Telewizor ("Sparuj pilota TV" + kod z ekranu). Certyfikat
   # w pilot_dir (puste = tv-pilot obok bazy, na wolumenie).
   pilot: true
 
