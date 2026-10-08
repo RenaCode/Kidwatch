@@ -16,7 +16,7 @@ imagePullSecrets:
 
 image:
   repository: ghcr.io/renacode/kidwatch
-  tag: "sha-951c200"
+  tag: "sha-4ce591b"
   pullPolicy: IfNotPresent
 
 resources:
