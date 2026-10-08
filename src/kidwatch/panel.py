@@ -968,6 +968,8 @@ def make_handler(
                     self._tv_pause_request("pause")
                 elif path == "/api/tv/resume":
                     self._tv_pause_request("resume")
+                elif path in ("/api/tv/pilot/start", "/api/tv/pilot/kod"):
+                    self._tv_pilot(path)
                 elif path == "/api/auth/password":
                     self._change_password()
                 elif path.startswith("/api/profile/"):
@@ -1097,6 +1099,28 @@ def make_handler(
                      "wstrzymanie" if action == "pause" else "wznowienie",
                      f" do {to_iso(until)}" if until else "")
             self._json(202, {"ok": True, "id": req_id})
+
+        def _tv_pilot(self, path: str) -> None:
+            """Parowanie pilota Google TV (sources/tv_pilot.py): start pokazuje
+            kod na ekranie TV, `kod` go potwierdza. Wykonuje petla serwisu,
+            ten watek czeka na wynik (do 30 s)."""
+            from .sources import tv_pilot  # noqa: PLC0415
+
+            session = self._authed()
+            pilot = tv_pilot.AKTYWNY
+            if pilot is None:
+                raise AuthError(404, "Pilot TV jest wyłączony w konfiguracji")
+            data = self._read_json()
+            try:
+                if path.endswith("/start"):
+                    pilot.paruj_start()
+                    log.info("panel: %s zaczyna parowanie pilota TV", session.login)
+                else:
+                    pilot.paruj_kod(self._str(data, "kod", 16))
+                    log.info("panel: %s sparowal pilota TV", session.login)
+            except tv_pilot.PilotError as exc:
+                raise AuthError(409, str(exc)) from exc
+            self._json(200, stan_pilota())
 
         def _change_password(self) -> None:
             session = self._authed()
@@ -1244,6 +1268,9 @@ def make_handler(
             if path == "/api/export.csv":
                 self._export(params)
                 return
+            if path == "/api/tv/pilot":
+                self._json(200, stan_pilota())
+                return
             routes = {
                 "/api/screens": lambda c: queries.screens(c, params),
                 "/api/trends": lambda c: queries.trends(c, params),
@@ -1334,6 +1361,25 @@ def _bramka_admin(cfg: Config) -> BramkaAdmin | None:
             "(dziala tylko ze starym wspolnym kluczem bramki)"
         )
     return BramkaAdmin(bc, key)
+
+
+def stan_pilota() -> dict:
+    """Stan pilota Google TV dla panelu (`available: false` = wylaczony)."""
+    from .sources import tv_pilot  # noqa: PLC0415
+    from .sources.tv import app_name  # noqa: PLC0415
+
+    pilot = tv_pilot.AKTYWNY
+    if pilot is None:
+        return {"available": False}
+    st = pilot.stan()
+    return {
+        "available": True,
+        "paired": st.sparowany,
+        "connected": st.polaczony,
+        "on": st.wlaczony,
+        "app": app_name(st.aplikacja, {}) if st.aplikacja else None,
+        "changed": to_iso(st.zmiana) if st.zmiana else None,
+    }
 
 
 def start_panel(cfg: Config) -> ThreadingHTTPServer:

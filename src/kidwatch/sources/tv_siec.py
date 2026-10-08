@@ -43,7 +43,7 @@ from datetime import datetime, timedelta
 
 from ..store import Store
 from .sony import SonyAuthError, SonyClient, SonyError, Zrodlo
-from .tv import MediaSession, TvProbe, TvSnapshot, TvUnavailable
+from .tv import USAGE_IGNORE, MediaSession, TvProbe, TvSnapshot, TvUnavailable, app_name
 
 log = logging.getLogger(__name__)
 
@@ -125,12 +125,16 @@ class HybridProbe(TvProbe):
 
     def __init__(self, adb: TvProbe, licznik: LicznikRuchu | None, store: Store, *,
                  prog_mb: float = 10.0, nextdns_ids: list[str] | tuple[str, ...] = (),
-                 device_name: str = "TV", sony: SonyClient | None = None) -> None:
+                 device_name: str = "TV", sony: SonyClient | None = None,
+                 pilot=None, apps: dict[str, str] | None = None) -> None:
         super().__init__(adb.shell)
         self.adb = adb
         self.licznik = licznik
         #: Sony BRAVIA REST (sony.py): zasilanie zawsze, tuner/HDMI z kluczem PSK.
         self.sony = sony
+        #: Pilot Google TV (tv_pilot.py): zasilanie i aplikacja, bez ADB.
+        self.pilot = pilot
+        self.apps = dict(apps or {})
         self._sony_auth_zgloszone = False
         self.store = store
         self.prog = prog_mb * 1_000_000
@@ -194,7 +198,17 @@ class HybridProbe(TvProbe):
             self.adb_padl = now
         self.ostatni_blad = str(exc)
         wlaczony: bool | None = None
-        if self.sony is not None:
+        pakiet: str | None = None
+        st = self.pilot.stan() if self.pilot is not None else None
+        if st is not None and st.polaczony and st.wlaczony is not None:
+            # Pilot mowi o zasilaniu i aplikacji wprost - pierwszenstwo przed Sony.
+            if not st.wlaczony:
+                return TvSnapshot(awake=False, foreground=None, sessions=(), zrodlo="pilot")
+            wlaczony, pakiet = True, st.aplikacja
+            zr = await self._sony_zrodlo()
+            if zr is not None:
+                return self._z_sony(zr)
+        elif self.sony is not None:
             try:
                 wlaczony = await self.sony.wlaczony()
             except SonyError as sexc:
@@ -206,6 +220,8 @@ class HybridProbe(TvProbe):
                 zr = await self._sony_zrodlo()
                 if zr is not None:
                     return self._z_sony(zr)
+        if pakiet is not None:
+            return await self._z_pilota(now, pakiet)
         # Aplikacja na ekranie (albo Sony nieznany): o odtwarzaniu decyduje ruch.
         if self.licznik is None:
             if wlaczony:
@@ -231,6 +247,35 @@ class HybridProbe(TvProbe):
             sessions=(MediaSession(PAKIET_SIEC, True, 3, None, None),),
             zrodlo="siec",
             aplikacja=aplikacja,
+        )
+
+    async def _z_pilota(self, now: datetime, pakiet: str) -> TvSnapshot:
+        """Aplikacja wedlug pilota. Ekran glowny, ustawienia, wygaszacz - nie
+        ogladanie. Aplikacja z odtwarzaczem - ogladanie, jesli ruch to
+        potwierdza (otwarty, ale zatrzymany YouTube to nie ogladanie); bez
+        UniFi sama aplikacja na pierwszym planie."""
+        from .unifi import UnifiError  # noqa: PLC0415
+
+        if pakiet in USAGE_IGNORE:
+            return TvSnapshot(awake=True, foreground=pakiet, sessions=(), zrodlo="pilot")
+        gra = True
+        if self.licznik is not None:
+            try:
+                odczyt = await self.licznik.odczyt(now)
+                # Niepelne okno (swiezy start) to brak dowodu ogladania - jak
+                # przy samym ruchu: start najwyzej o jedno okno pozniej.
+                gra = odczyt.pokryte and odczyt.bajty_w_oknie >= self.prog
+            except UnifiError as uexc:
+                log.debug("%s: ruch niedostepny, decyduje sam pilot: %s",
+                          self.device_name, uexc)
+        if not gra:
+            return TvSnapshot(awake=True, foreground=pakiet, sessions=(), zrodlo="pilot")
+        return TvSnapshot(
+            awake=True,
+            foreground=pakiet,
+            sessions=(MediaSession(pakiet, True, 3, None, None),),
+            zrodlo="pilot",
+            aplikacja=app_name(pakiet, self.apps),
         )
 
     def _serwis_z_dns(self, now: datetime) -> str | None:

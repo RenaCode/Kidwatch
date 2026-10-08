@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { post } from '../utils/api';
 import { ago, hhmm, minutes } from '../utils/format';
 import { TvPauseControl } from './TvPause';
+import { TvPilotControl } from './TvPilot';
 
 const GAME_STATE = {
   blocked: { label: 'gry zablokowane', badge: 'warn' },
@@ -105,6 +106,7 @@ export default function Devices({ devices, onChanged, tvPause, onTvPauseChanged 
           )}
           {d.game && <GameControl child={d.child} game={d.game} onChanged={onChanged} />}
           {d.kind === 'tv' && <TvPauseControl pause={tvPause} onChanged={onTvPauseChanged} />}
+          {d.kind === 'tv' && <TvPilotControl />}
           <div className="grid grid-3">
             <div className="stat">
               <span className="stat-label">Ostatnia aktywność</span>

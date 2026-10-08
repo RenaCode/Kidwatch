@@ -487,6 +487,11 @@ class TvConfig(_Base):
     #: Sony BRAVIA REST (sources/sony.py) pod `host`: zasilanie bez klucza,
     #: antena/HDMI z kluczem PSK w TV_SONY_PSK (Sekret kidwatch-secrets).
     sony: bool = True
+    #: Pilot Google TV (sources/tv_pilot.py, porty 6466/6467): zasilanie
+    #: i aplikacja bez ADB. Parowanie z panelu. Certyfikat w `pilot_dir`
+    #: (puste = katalog `tv-pilot` obok bazy, czyli na wolumenie).
+    pilot: bool = True
+    pilot_dir: str = ""
 
     def sony_psk(self) -> str | None:
         return os.environ.get("TV_SONY_PSK", "").strip() or None
