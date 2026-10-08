@@ -130,7 +130,20 @@ uv run python tools/gen_profile.py --name "iPad Dziecka 1" \
   --out profile/dziecko1.mobileconfig
 ```
 
-Wyślij plik AirDropem na właściwy iPad, a potem **Ustawienia → Pobrano profil →
+**Podpis (zalecane):** niepodpisany profil iOS pokazuje jako „Niezweryfikowany”.
+Podpisany certyfikatem HTTPS panelu (Let's Encrypt, Sekret `kidwatch-tls-cert`)
+pokazuje się jako „Zweryfikowany” z nazwą domeny. Podpis robi root — klucz
+certyfikatu nie opuszcza katalogu tymczasowego skryptu:
+
+```bash
+sudo tools/podpisz_profil.sh profile/dziecko1.mobileconfig profile/dziecko1-podpisany.mobileconfig
+```
+
+Certyfikat żyje 90 dni i liczy się jego ważność w chwili instalacji — plik
+podpisany dawno temu podpisz ponownie. Podpis nie blokuje usunięcia profilu
+(to daje tylko tryb nadzorowany, `--supervised`).
+
+Wyślij plik (podpisany) AirDropem na właściwy iPad, a potem **Ustawienia → Pobrano profil →
 Zainstaluj**. Sprawdzenie: w NextDNS → **Logs** pojawiają się zapytania z nazwą
 `iPad-Dziecko1`.
 
