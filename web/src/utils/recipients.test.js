@@ -71,7 +71,7 @@ test('trasy: z bramki, do zapisu, opis i nowy wiersz', () => {
   assert.deepEqual(lista.map((r) => r.sources), [['*'], ['kidwatch']]);
   assert.deepEqual(recipientsPayload(lista).map((r) => r.sources), [['*'], ['kidwatch']]);
   assert.equal(sourcesLabel(['*']), 'wszystko');
-  assert.equal(sourcesLabel(['kidwatch']), 'tylko kidwatch (dzieci)');
+  assert.equal(sourcesLabel(['kidwatch']), 'tylko sesje dzieci');
   assert.equal(sourcesLabel(['kidwatch', 'trader']), 'kidwatch, trader');
   assert.equal(sourcesLabel(null), 'wszystko');
   assert.deepEqual(lista.map(getsEverything), [true, false]);

@@ -94,7 +94,7 @@ function SourcesSelect({ i, sources, apps, onChange }) {
       <option value={sourcesKey(SOURCES_ALL)}>
         Wszystko{others.length ? ` (kidwatch, ${others.join(', ')}, testy)` : ''}
       </option>
-      <option value={sourcesKey(SOURCES_FAMILY)}>Tylko kidwatch (dzieci)</option>
+      <option value={sourcesKey(SOURCES_FAMILY)}>Tylko sesje dzieci (bez alarmów)</option>
       {!presets.includes(key) && <option value={key}>Inne: {sourcesLabel(sources)}</option>}
     </select>
   );
