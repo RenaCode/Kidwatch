@@ -336,21 +336,39 @@ async def test_bramka_wysyla_temat_tresc_i_zrodlo_z_kluczem():
     await client.aclose()
 
 
-async def test_bramka_czujka_idzie_z_kategoria_a_zwykle_bez():
-    """Trasy w bramce: alarm techniczny (WATCHDOG) to "kidwatch:czujka", ktorej
-    rodzina z trasa "kidwatch" nie dostaje. Zwykle powiadomienia bez kategorii."""
+async def test_bramka_rodzina_dostaje_tylko_sesje():
+    """Trasy w bramce: bez kategorii (trasa "kidwatch", ktora ma rodzina) ida
+    tylko informacje o sesjach. Alarmy, raporty i czas gry maja kategorie."""
     from kidwatch.config import BramkaConfig
     from kidwatch.notifiers.bramka import BramkaNotifier
 
     n = BramkaNotifier(BramkaConfig(url="http://bramka.test/"), key="k1",
                        client=httpx.AsyncClient())
     ts = datetime.now(UTC)
-    assert n.payload(Notification(kind=NotifyKind.WATCHDOG, title="Cisza DNS", text="x",
-                                  dedup_key="w", ts=ts))["kategoria"] == "czujka"
-    for kind in set(NotifyKind) - {NotifyKind.WATCHDOG}:
-        body = n.payload(Notification(kind=kind, title="t", text="x", dedup_key="d", ts=ts))
-        assert "kategoria" not in body, kind
+
+    def kat(kind):
+        return n.payload(Notification(kind=kind, title="t", text="x", dedup_key="d",
+                                      ts=ts)).get("kategoria")
+
+    sesja = {NotifyKind.SESSION_START, NotifyKind.APP, NotifyKind.SESSION_END,
+             NotifyKind.THROTTLED, NotifyKind.DEVICE_LAUNCH, NotifyKind.DEVICE_SCREEN,
+             NotifyKind.TV_START, NotifyKind.TV_END}
+    for kind in sesja:
+        assert kat(kind) is None, kind
+    for kind in set(NotifyKind) - sesja:
+        assert kat(kind), kind
+    assert kat(NotifyKind.WATCHDOG) == "czujka"
+    assert kat(NotifyKind.DNS_PROFILE) == "czujka"
+    assert kat(NotifyKind.NIGHT) == "alarm"
+    assert kat(NotifyKind.DAILY) == "raport"
     await n.aclose()
+
+
+def test_bramka_nowy_rodzaj_nie_trafia_do_rodziny():
+    """Lista dozwolona: rodzaj nieznany obu tablicom idzie jako "inne"."""
+    from kidwatch.notifiers import bramka
+
+    assert bramka.kategoria("cos_nowego") == "inne"  # type: ignore[arg-type]
 
 
 def test_bramka_kazdy_rodzaj_ma_podpis_w_mailu():

@@ -12,10 +12,11 @@ pole `zrodlo` w ciele zostaje dla zgodnosci ze starsza bramka.
 alarm / wazne / informacja, podpis w naglowku, listy i sekcje z tekstu).
 Starsza bramka ich nie czyta i wysyla jak dotad - pola sa zgodne wstecz.
 
-`kategoria` steruje TRASA w bramce: alarmy czujki ida jako "kidwatch:czujka",
-a odbiorca z trasa "kidwatch" (rodzina) dostaje tylko zwykle powiadomienia
-o dzieciach. Starsza bramka pole ignoruje - wtedy czujka idzie do wszystkich,
-jak dotad.
+`kategoria` steruje TRASA w bramce. Bez kategorii (trasa "kidwatch", ktora ma
+rodzina) ida WYLACZNIE informacje o sesjach - patrz SESJA. Kazdy inny rodzaj
+idzie jako "kidwatch:<kategoria>", ktora dostaje tylko odbiorca z "*" albo
+z ta trasa wpisana jawnie. Starsza bramka pole ignoruje - wtedy wszystko idzie
+do wszystkich, jak dotad.
 """
 
 from __future__ import annotations
@@ -50,11 +51,42 @@ RODZAJE = {
     NotifyKind.GAME: "czas gry",
 }
 
-#: Rodzaje, ktore nie sa powiadomieniem o dzieciach, tylko alarmem
-#: technicznym (cisza DNS, odczyt iPada nie dziala, kolejka porzucila push).
-#: Bramka kieruje je tylko do odbiorcow z "*" - patrz charts/bramka/README.md,
-#: "Trasy".
-KATEGORIE = {NotifyKind.WATCHDOG: "czujka"}
+#: Informacje o sesjach: jedyne, co idzie bez kategorii, czyli do rodziny
+#: (trasa "kidwatch"). Lista DOZWOLONA, nie blokowana: nowy rodzaj bez wpisu
+#: tutaj trafia do kategorii "inne" i rodzina go nie dostanie, zamiast
+#: dostac alarm tylko dlatego, ze nikt nie dopisal go do wyjatkow.
+SESJA = frozenset({
+    NotifyKind.SESSION_START,
+    NotifyKind.APP,
+    NotifyKind.SESSION_END,
+    NotifyKind.THROTTLED,
+    NotifyKind.DEVICE_LAUNCH,
+    NotifyKind.DEVICE_SCREEN,
+    NotifyKind.TV_START,
+    NotifyKind.TV_END,
+})
+
+#: Reszta: trasy "kidwatch:<kategoria>", ktore dostaje tylko odbiorca z "*"
+#: (albo z trasa wpisana jawnie) - patrz charts/bramka/README.md, "Trasy".
+KATEGORIE = {
+    # alarmy techniczne: cisza DNS, odczyt iPada nie dziala, kolejka porzucila push
+    NotifyKind.WATCHDOG: "czujka",
+    NotifyKind.DNS_PROFILE: "czujka",
+    NotifyKind.TV_PAUSE: "czujka",
+    # alarmy o dzieciach: iPad w nocy, nowa/usunieta aplikacja
+    NotifyKind.NIGHT: "alarm",
+    NotifyKind.DEVICE_INVENTORY: "alarm",
+    NotifyKind.DAILY: "raport",
+    NotifyKind.WEEKLY: "raport",
+    NotifyKind.GAME: "gra",
+}
+
+
+def kategoria(kind: NotifyKind) -> str | None:
+    """None = informacja o sesji (trasa "kidwatch"), inaczej kategoria trasy."""
+    if kind in SESJA:
+        return None
+    return KATEGORIE.get(kind, "inne")
 
 
 class BramkaNotifier:
@@ -78,7 +110,8 @@ class BramkaNotifier:
         return self.cfg.url.rstrip("/") + "/v1/wyslij"
 
     def payload(self, note: Notification) -> dict:
-        extra = {"kategoria": KATEGORIE[note.kind]} if note.kind in KATEGORIE else {}
+        kat = kategoria(note.kind)
+        extra = {"kategoria": kat} if kat else {}
         return {
             "temat": note.title,
             "tresc": note.text,

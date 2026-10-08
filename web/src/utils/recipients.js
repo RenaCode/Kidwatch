@@ -8,7 +8,8 @@ export const MAX_LABEL = 40;
 
 /* Trasy odbiorcy w bramce (`zrodla`): "*" to wszystko - kidwatch, trader,
    monitoring, wiadomosc probna i aplikacje dopisane pozniej; "kidwatch" to
-   tylko powiadomienia o dzieciach (bez alarmow technicznych czujki). */
+   tylko informacje o sesjach dzieci (bez alarmow, raportow i czasu gry -
+   te ida jako "kidwatch:<kategoria>", patrz notifiers/bramka.py). */
 export const ALL = '*';
 export const SOURCES_ALL = [ALL];
 export const SOURCES_FAMILY = ['kidwatch'];
@@ -18,7 +19,7 @@ export const sourcesKey = (s) => (Array.isArray(s) ? s.join(',') : '');
 /* Opis tras dla czlowieka. `null` = bramka sprzed tras (wysyla wszystko). */
 export function sourcesLabel(sources) {
   if (!Array.isArray(sources) || sources.includes(ALL)) return 'wszystko';
-  if (sourcesKey(sources) === sourcesKey(SOURCES_FAMILY)) return 'tylko kidwatch (dzieci)';
+  if (sourcesKey(sources) === sourcesKey(SOURCES_FAMILY)) return 'tylko sesje dzieci';
   return sources.join(', ');
 }
 
