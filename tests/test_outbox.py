@@ -258,3 +258,54 @@ def test_stara_baza_dostaje_kolumny_kolejki_raz(tmp_path):
     [item] = store.outbox_pending()
     assert item.next_at is None and item.attempts == 0
     store.close()
+
+
+# ================================================== audyt 2026-10-09: N7
+def _bramka(statuses: dict[str, int], requests: list) -> BramkaNotifier:
+    """Bramka odpowiadajaca kodem wedlug tytulu powiadomienia."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json  # noqa: PLC0415
+
+        title = json.loads(request.content)["temat"]
+        requests.append(title)
+        return httpx.Response(next((c for k, c in statuses.items() if k in title), 200))
+
+    return BramkaNotifier(
+        BramkaConfig(url="http://bramka.test"), key="k",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)), sleep=_no_sleep,
+    )
+
+
+async def test_trwale_odrzucenie_tresci_nie_blokuje_kolejki(store, caplog):
+    """400/413 dotyczy tej jednej wiadomosci — wczesniej wpis stal na czele
+    kolejki i wstrzymywal wszystkie kolejne pushe az do OUTBOX_MAX_AGE (doba)."""
+    requests: list[str] = []
+    bramka = _bramka({"zly": 413}, requests)
+    outbox = _outbox(store, bramka, Clock())
+    await outbox.send_all([_note("start:zly"), _note("start:dobry")])
+    with caplog.at_level(logging.WARNING):
+        sent = await outbox.flush()
+    assert sent == 1  # "dobry" nie czeka za odrzuconym
+    assert await outbox.flush() == 1  # alarm czujki o porzuconym
+    assert store.outbox_pending() == []
+    assert requests[:2] == ["tytul start:zly", "tytul start:dobry"]
+    assert requests.count("tytul start:zly") == 1  # bez ponawiania
+    assert ("tytul start:zly", 0) in _history(store)
+    assert ("tytul start:dobry", 1) in _history(store)
+    assert any("kidwatch nie dostarczyl" in t for t in requests)
+    assert "odrzucone trwale" in caplog.text
+    await bramka.aclose()
+
+
+async def test_zly_token_nadal_czeka_w_kolejce(store):
+    """401 to blad konfiguracji kanalu, nie tresci — po poprawce tokenu wpis
+    ma wyjsc, wiec zostaje w kolejce jak przy awarii."""
+    requests: list[str] = []
+    bramka = _bramka({"start": 401}, requests)
+    outbox = _outbox(store, bramka, Clock())
+    await outbox.send_all([_note("start:a")])
+    assert await outbox.flush() == 0
+    [item] = store.outbox_pending()
+    assert item.attempts == 1
+    await bramka.aclose()

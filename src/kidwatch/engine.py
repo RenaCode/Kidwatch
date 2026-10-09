@@ -551,10 +551,17 @@ class Engine:
             browsed = self.store.browsed_since(device, started_at, ts)
             what = fmt_domains(browsed, limit=4) if browsed else ""
         text = f"{local:%H:%M} — {what}" if what else f"{local:%H:%M}"
+        kind = NotifyKind.SESSION_START
         if night:
             # Start w nocy to JEDEN push w formie nocnej — zamiast dopisku
             # o cichych godzinach, nie obok niego. Przypomnienia o trwajacej
             # sesji liczy _night_watch od tego pusha.
+            #
+            # Rodzaj NIGHT, nie SESSION_START: to alarm (trasa kidwatch:alarm,
+            # tylko wlasciciel), tak jak przypomnienia „nadal uzywa". Rodzina
+            # dostaje wylacznie informacje o sesjach — a SESSION_START szedl
+            # do niej z priorytetem nocnym (audyt 2026-10-09, S5).
+            kind = NotifyKind.NIGHT
             title = f"\U0001F319 {device_cfg.child} uzywa iPada w nocy"
             text = ", ".join(x for x in (f"{local:%H:%M}", what, self._presence(device, ts)) if x)
             priority = self._night_priority()
@@ -565,7 +572,7 @@ class Engine:
         tags = ("warning", "ipad") if quiet or night else ("iphone", "ipad")
         return self._emit(
             Notification(
-                kind=NotifyKind.SESSION_START,
+                kind=kind,
                 title=title,
                 text=text,
                 dedup_key=f"start:{session_id}",

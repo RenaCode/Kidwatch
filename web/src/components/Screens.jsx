@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import { useApi, qs } from '../utils/api';
 import { dayPct, hhmm, localToday, minutes, pauseUntil } from '../utils/format';
+import { loadState } from '../utils/loadState';
 
 const TV_KEY = 'kidwatch.screens.hideTv';
 function readHideTv() {
@@ -82,7 +83,11 @@ export default function Screens({ child }) {
         {res.error && <span className="badge bad">błąd: {res.error}</span>}
       </div>
 
-      {!data ? (
+      {loadState(res) === 'error' ? (
+        // Blad pierwszego odczytu: bez danych nie ma czego ladowac - wieczne
+        // „Wczytywanie…" obok plakietki bledu udawalo, ze cos jeszcze przyjdzie.
+        <div className="notice">Nie udało się pobrać danych: {res.error}</div>
+      ) : loadState(res) === 'loading' ? (
         <div className="empty loading-pulse">Wczytywanie…</div>
       ) : (
         <>

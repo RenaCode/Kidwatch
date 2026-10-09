@@ -111,7 +111,7 @@ def test_aktywnosc_nocna_ma_podwyzszony_priorytet():
     nocne = [
         n
         for n in produced
-        if n.kind is NotifyKind.SESSION_START and "w nocy" in n.title
+        if n.kind is NotifyKind.NIGHT and n.dedup_key.startswith("start:")
     ]
     assert len(nocne) == 1, "scenariusz ma dokladnie jedna sesje w nocy"
     assert nocne[0].priority == 5
@@ -152,7 +152,8 @@ def test_podsumowanie_dnia_liczy_tylko_sesje_o_ktorych_wiesz():
 
 def test_kazdy_koniec_sesji_ma_swoj_start():
     _, _, produced = replay()
-    starts = len([n for n in produced if n.kind is NotifyKind.SESSION_START])
+    # Start w nocy ma rodzaj NIGHT (alarm), ale to nadal start sesji.
+    starts = len([n for n in produced if n.dedup_key.startswith("start:")])
     ends = len([n for n in produced if n.kind is NotifyKind.SESSION_END])
     assert starts == ends == 7
 

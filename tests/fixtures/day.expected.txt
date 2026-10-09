@@ -63,7 +63,7 @@
           strony: forum-o-grach.pl, jakas-gazeta.pl, sklep-modelarski.pl
           
           (czasy szacunkowe — liczba minut z ruchem DNS)
-[START]  🌙 Kuba uzywa iPada w nocy
+[NOC]    🌙 Kuba uzywa iPada w nocy
           22:47, TikTok
 [KONIEC] iPad Kuby — koniec
           22:47–23:11, 24 min
