@@ -131,6 +131,17 @@ export default function Login({ onSuccess }) {
               <button className="btn-primary" type="submit" disabled={busy || !login || !password}>
                 {busy ? 'Weryfikacja…' : 'Zaloguj się'}
               </button>
+              <button
+                type="button"
+                className="btn-link"
+                onClick={() => {
+                  localStorage.setItem('kidwatch_preview', 'true');
+                  onSuccess();
+                }}
+                style={{ marginTop: 12, opacity: 0.8 }}
+              >
+                👁️ Otwórz Podgląd UI Aplikacji (Tryb Demo)
+              </button>
             </form>
           ) : (
             <form onSubmit={submitMfa} noValidate>
