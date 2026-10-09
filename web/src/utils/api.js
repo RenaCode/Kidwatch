@@ -31,7 +31,22 @@ function isLoginFlow(path, method) {
   return method !== 'GET' || path.startsWith('/api/auth/me');
 }
 
+/* Podglad UI bez backendu (`npm run dev` + ?preview) - zmyslone dane
+   z utils/preview.js. Warunek zaczyna sie od import.meta.env.DEV: w buildzie
+   produkcyjnym Vite podstawia false, galaz znika razem z dynamicznym
+   importem i plik podgladu nie trafia do dist. */
+function previewOn() {
+  try {
+    return window.location.search.includes('preview')
+      || window.localStorage.getItem('kidwatch_preview') === 'true';
+  } catch { return false; }
+}
+
 async function request(path, { method = 'GET', body } = {}) {
+  if (import.meta.env.DEV && previewOn()) {
+    const { previewResponse } = await import('./preview.js');
+    return previewResponse(path, method);
+  }
   const headers = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (method !== 'GET' && method !== 'HEAD') headers['X-CSRF-Token'] = csrfToken();

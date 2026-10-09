@@ -5,6 +5,7 @@
    normalnie - jada z dziecmi. */
 import React, { useState } from 'react';
 import { post } from '../utils/api';
+import Icon from './Icons';
 import { defaultPauseUntil, localInputValue, pauseUntil } from '../utils/format';
 
 const REFRESH_AFTER_MS = [1000, 5000, 15000, 32000];
@@ -59,9 +60,10 @@ export function TvPauseBanner({ pause, onChanged }) {
   );
 }
 
-// Na karcie telewizora: przycisk otwiera wybor konca pauzy - termin (domyslnie
-// za tydzien) albo "do odwolania".
-export function TvPauseControl({ pause, onChanged }) {
+// Przycisk otwiera wybor konca pauzy - termin (domyslnie za tydzien) albo
+// "do odwolania". `hero`: duza pigulka na karcie szybkiej kontroli w Pulpicie;
+// w Ustawieniach zwykly przycisk. Logika ta sama.
+export function TvPauseControl({ pause, onChanged, hero = false }) {
   const { busy, error, run } = usePauseAction(onChanged);
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState('until');
@@ -69,6 +71,20 @@ export function TvPauseControl({ pause, onChanged }) {
   if (!pause?.available) return null;
   const pending = busy || pause.request?.pending;
   const failed = error || failedRequest(pause);
+
+  if (pause.active && hero) {
+    return (
+      <div className="tv-hero-action">
+        <button className="btn-pill" disabled={pending}
+                onClick={() => run('/api/tv/resume', {})}>
+          <Icon name="play" size={18} /> Wznów monitoring TV
+        </button>
+        <span className="dim">wstrzymany {pauseUntil(pause.active.until)}</span>
+        {pending && <span className="badge loading-pulse">wysyłanie…</span>}
+        {failed && <div className="notice">{failed}</div>}
+      </div>
+    );
+  }
 
   if (pause.active) {
     return (
@@ -88,8 +104,16 @@ export function TvPauseControl({ pause, onChanged }) {
   };
 
   return (
-    <div className="row-body" style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {!open ? (
+    <div className={hero ? 'tv-hero' : 'row-body'} style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {!open && hero ? (
+        <div className="tv-hero-action">
+          <button className="btn-pill" disabled={pending}
+                  onClick={() => { setUntil(defaultPauseUntil()); setOpen(true); }}>
+            <Icon name="pause" size={18} /> Wstrzymaj monitoring TV
+          </button>
+          {pending && <span className="badge loading-pulse">wysyłanie…</span>}
+        </div>
+      ) : !open ? (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <button className="btn-ghost" disabled={pending}
                   onClick={() => { setUntil(defaultPauseUntil()); setOpen(true); }}>

@@ -4,6 +4,7 @@
    i wygasa po 5 minutach. */
 import React, { useEffect, useRef, useState } from 'react';
 import { post, ApiError } from '../utils/api';
+import Icon from './Icons';
 
 export default function Login({ onSuccess }) {
   const [step, setStep] = useState('password');     // 'password' | 'mfa'
@@ -65,7 +66,7 @@ export default function Login({ onSuccess }) {
         {/* Lewa kolumna znika ponizej 900 px - na telefonie liczy sie sam formularz. */}
         <aside className="login-aside">
           <div className="login-brand">
-            <div className="logo-icon">👀</div>
+            <div className="logo-icon"><Icon name="logo" size={24} /></div>
             <div>
               <div className="logo-text">Kidwatch</div>
               <div className="login-sub">Aktywność iPadów dzieci</div>

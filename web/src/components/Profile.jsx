@@ -418,7 +418,7 @@ function WhatsApp() {
 // Do 2026-10-09 te przyciski siedzialy na karcie TV w widoku urzadzen.
 function TvSettings({ tvPause, onTvPauseChanged }) {
   return (
-    <div className="card">
+    <div className="glass-card">
       <div className="card-title"><span>Telewizor</span></div>
       <TvPauseControl pause={tvPause} onChanged={onTvPauseChanged} />
       <TvAppControl />
