@@ -30,9 +30,6 @@ dependencies = [
     # Czujnik telewizora (Google TV): ADB po TCP, czysty Python — bez binarki
     # `adb` w obrazie. Extra [async] daje AdbDeviceTcpAsync dla petli asyncio.
     "adb-shell[async]>=0.4.4",
-    # Pilot Google TV (Android TV Remote v2, sources/tv_pilot.py): zasilanie
-    # i aplikacja bez ADB i bez opcji programisty - parowanie kodem z ekranu.
-    "androidtvremote2>=0.3.2",
     # kidwatch-mdm: odczyt naglowka Mdm-Signature (CMS SignedData). cryptography
     # umie CMS podpisac i odszyfrowac, ale nie zweryfikowac — strukture rozbiera
     # asn1crypto, a sam podpis sprawdza cryptography.

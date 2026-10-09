@@ -43,7 +43,7 @@ from datetime import datetime, timedelta
 
 from ..store import Store
 from .sony import SonyAuthError, SonyClient, SonyError, Zrodlo
-from .tv import USAGE_IGNORE, MediaSession, TvProbe, TvSnapshot, TvUnavailable, app_name
+from .tv import MediaSession, TvProbe, TvSnapshot, TvUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -126,14 +126,12 @@ class HybridProbe(TvProbe):
     def __init__(self, adb: TvProbe, licznik: LicznikRuchu | None, store: Store, *,
                  prog_mb: float = 10.0, nextdns_ids: list[str] | tuple[str, ...] = (),
                  device_name: str = "TV", sony: SonyClient | None = None,
-                 pilot=None, apps: dict[str, str] | None = None, aplikacja=None) -> None:
+                 apps: dict[str, str] | None = None, aplikacja=None) -> None:
         super().__init__(adb.shell)
         self.adb = adb
         self.licznik = licznik
         #: Sony BRAVIA REST (sony.py): zasilanie zawsze, tuner/HDMI z kluczem PSK.
         self.sony = sony
-        #: Pilot Google TV (tv_pilot.py): zasilanie i aplikacja, bez ADB.
-        self.pilot = pilot
         self.apps = dict(apps or {})
         #: Aplikacja Kidwatch TV (tv_app.py): tytuly bez ADB. Pierwszenstwo
         #: przed wszystkim innym, gdy sparowana i odpowiada.
@@ -171,7 +169,7 @@ class HybridProbe(TvProbe):
 
     async def _z_aplikacji(self) -> TvSnapshot | None:
         """Aplikacja Kidwatch TV albo None (niesparowana, nie odpowiada) - wtedy
-        dalej jak dotad: ADB, pilot, Sony, ruch."""
+        dalej jak dotad: ADB, Sony, ruch."""
         import asyncio  # noqa: PLC0415
 
         app = self.aplikacja
@@ -181,10 +179,11 @@ class HybridProbe(TvProbe):
         app.loop = asyncio.get_running_loop()
         if not app.sparowana:
             return None
-        st = self.pilot.stan() if self.pilot is not None else None
-        fg = st.aplikacja if st is not None and st.polaczony else None
         try:
-            snap = await app.snapshot(fg)
+            # Bez pierwszego planu: liczy sie tylko sesja, ktora GRA. Zatrzymane
+            # wideo nie jest ogladaniem (pilot Google TV, ktory podawal pierwszy
+            # plan, usuniety 2026-10-09).
+            snap = await app.snapshot(None)
         except TvUnavailable as exc:
             if self._aplikacja_ok is not False:
                 log.info("%s: aplikacja Kidwatch TV nie odpowiada (%s) — odczyt zastepczy",
@@ -239,17 +238,7 @@ class HybridProbe(TvProbe):
             self.adb_padl = now
         self.ostatni_blad = str(exc)
         wlaczony: bool | None = None
-        pakiet: str | None = None
-        st = self.pilot.stan() if self.pilot is not None else None
-        if st is not None and st.polaczony and st.wlaczony is not None:
-            # Pilot mowi o zasilaniu i aplikacji wprost - pierwszenstwo przed Sony.
-            if not st.wlaczony:
-                return TvSnapshot(awake=False, foreground=None, sessions=(), zrodlo="pilot")
-            wlaczony, pakiet = True, st.aplikacja
-            zr = await self._sony_zrodlo()
-            if zr is not None:
-                return self._z_sony(zr)
-        elif self.sony is not None:
+        if self.sony is not None:
             try:
                 wlaczony = await self.sony.wlaczony()
             except SonyError as sexc:
@@ -261,8 +250,6 @@ class HybridProbe(TvProbe):
                 zr = await self._sony_zrodlo()
                 if zr is not None:
                     return self._z_sony(zr)
-        if pakiet is not None:
-            return await self._z_pilota(now, pakiet)
         # Aplikacja na ekranie (albo Sony nieznany): o odtwarzaniu decyduje ruch.
         if self.licznik is None:
             if wlaczony:
@@ -288,35 +275,6 @@ class HybridProbe(TvProbe):
             sessions=(MediaSession(PAKIET_SIEC, True, 3, None, None),),
             zrodlo="siec",
             aplikacja=aplikacja,
-        )
-
-    async def _z_pilota(self, now: datetime, pakiet: str) -> TvSnapshot:
-        """Aplikacja wedlug pilota. Ekran glowny, ustawienia, wygaszacz - nie
-        ogladanie. Aplikacja z odtwarzaczem - ogladanie, jesli ruch to
-        potwierdza (otwarty, ale zatrzymany YouTube to nie ogladanie); bez
-        UniFi sama aplikacja na pierwszym planie."""
-        from .unifi import UnifiError  # noqa: PLC0415
-
-        if pakiet in USAGE_IGNORE:
-            return TvSnapshot(awake=True, foreground=pakiet, sessions=(), zrodlo="pilot")
-        gra = True
-        if self.licznik is not None:
-            try:
-                odczyt = await self.licznik.odczyt(now)
-                # Niepelne okno (swiezy start) to brak dowodu ogladania - jak
-                # przy samym ruchu: start najwyzej o jedno okno pozniej.
-                gra = odczyt.pokryte and odczyt.bajty_w_oknie >= self.prog
-            except UnifiError as uexc:
-                log.debug("%s: ruch niedostepny, decyduje sam pilot: %s",
-                          self.device_name, uexc)
-        if not gra:
-            return TvSnapshot(awake=True, foreground=pakiet, sessions=(), zrodlo="pilot")
-        return TvSnapshot(
-            awake=True,
-            foreground=pakiet,
-            sessions=(MediaSession(pakiet, True, 3, None, None),),
-            zrodlo="pilot",
-            aplikacja=app_name(pakiet, self.apps),
         )
 
     def _serwis_z_dns(self, now: datetime) -> str | None:

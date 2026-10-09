@@ -4,7 +4,6 @@
    woła serwer. */
 import React, { useCallback, useEffect, useState } from 'react';
 import { TvPauseControl } from './TvPause';
-import { TvPilotControl } from './TvPilot';
 import { TvAppControl } from './TvApp';
 import { get, post } from '../utils/api';
 import {
@@ -415,7 +414,7 @@ function WhatsApp() {
   );
 }
 
-// Telewizor: wstrzymanie monitoringu, aplikacja Kidwatch TV, pilot Google TV.
+// Telewizor: wstrzymanie monitoringu i aplikacja Kidwatch TV.
 // Do 2026-10-09 te przyciski siedzialy na karcie TV w widoku urzadzen.
 function TvSettings({ tvPause, onTvPauseChanged }) {
   return (
@@ -423,7 +422,6 @@ function TvSettings({ tvPause, onTvPauseChanged }) {
       <div className="card-title"><span>Telewizor</span></div>
       <TvPauseControl pause={tvPause} onChanged={onTvPauseChanged} />
       <TvAppControl />
-      <TvPilotControl />
     </div>
   );
 }

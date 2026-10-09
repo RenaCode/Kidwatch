@@ -487,11 +487,6 @@ class TvConfig(_Base):
     #: Sony BRAVIA REST (sources/sony.py) pod `host`: zasilanie bez klucza,
     #: antena/HDMI z kluczem PSK w TV_SONY_PSK (Sekret kidwatch-secrets).
     sony: bool = True
-    #: Pilot Google TV (sources/tv_pilot.py, porty 6466/6467): zasilanie
-    #: i aplikacja bez ADB. Parowanie z panelu. Certyfikat w `pilot_dir`
-    #: (puste = katalog `tv-pilot` obok bazy, czyli na wolumenie).
-    pilot: bool = True
-    pilot_dir: str = ""
     #: Aplikacja Kidwatch TV na telewizorze (tv-app/, sources/tv_app.py, port
     #: 8765): tytuly bez ADB. Instalacja i parowanie z panelu; token w
     #: katalogu `tv-app` obok bazy.
