@@ -449,6 +449,11 @@ class PanelQueries:
 
         Urzadzenia bez dziecka (`child: null`) sa osobnymi seriami przy
         "Wszyscy" i znikaja przy wybranym dziecku — tak samo jak w kartach.
+
+        `timeline=1` (tylko przy `days=1`, Pulpit) dokleja do kazdej komorki
+        os dnia: odcinki sesji i ciagi minut per aplikacja. Liczone z tych
+        samych wierszy co suma i `top_apps`, wiec minuty sesji sumuja sie do
+        `minutes`, a minuty ciagow aplikacji — do jej minut dnia.
         """
         try:
             days = int(params.get("days") or USAGE_DEFAULT_DAYS)
@@ -456,6 +461,9 @@ class PanelQueries:
             raise BadRequest("days musi byc liczba") from exc
         if not 1 <= days <= USAGE_MAX_DAYS:
             raise BadRequest(f"days musi byc w zakresie 1..{USAGE_MAX_DAYS}")
+        timeline = params.get("timeline") in ("1", "true")
+        if timeline and days != 1:
+            raise BadRequest("timeline tylko dla days=1")
         until = self._parse_day(params.get("until"))
         first = until - timedelta(days=days - 1)
         lo, _ = self._day_bounds(first)
@@ -464,9 +472,9 @@ class PanelQueries:
         day_keys = [(first + timedelta(days=i)).isoformat() for i in range(days)]
         tz = self.cfg.tz
 
-        # cells[dzien][urzadzenie] = {minutes, sessions, apps{app: min}}
+        # cells[dzien][urzadzenie] = {minutes, sessions, apps{app: min}, spans}
         cells: dict[str, dict[str, dict]] = {
-            k: {d.name: {"minutes": 0, "sessions": 0, "apps": {}} for d in devices}
+            k: {d.name: {"minutes": 0, "sessions": 0, "apps": {}, "spans": []} for d in devices}
             for k in day_keys
         }
         names = [d.name for d in devices]
@@ -482,6 +490,12 @@ class PanelQueries:
             cell["minutes"] += self._session_minutes(s)
             cell["sessions"] += 1
             session_day[s["id"]] = (key, s["device"])
+            if timeline:
+                cell["spans"].append({
+                    "started_at": self._local(s["started_at"]),
+                    "ended_at": self._local(s["ended_at"] or s["last_activity_at"]),
+                    "minutes": self._session_minutes(s),
+                })
 
         # Jedno zapytanie na caly zakres zamiast jednego na sesje — przy 90
         # dniach i kilku urzadzeniach to setki zapytan na kazde odswiezenie.
@@ -496,18 +510,25 @@ class PanelQueries:
             apps = cells[key][device]["apps"]
             apps[a["app"]] = apps.get(a["app"], 0) + a["n"]
 
+        runs = self._app_runs(conn, names, marks, lo, hi, session_day) if timeline else {}
         rows = []
         for key in day_keys:
             per_device = []
             for name in names:
                 cell = cells[key][name]
                 top = sorted(cell["apps"].items(), key=lambda kv: (-kv[1], kv[0]))
-                per_device.append({
+                entry = {
                     "name": name,
                     "minutes": cell["minutes"],
                     "sessions": cell["sessions"],
                     "top_apps": [{"app": app, "minutes": n} for app, n in top[:USAGE_TOP_APPS]],
-                })
+                }
+                if timeline:
+                    entry["timeline"] = {
+                        "sessions": sorted(cell["spans"], key=lambda x: x["started_at"]),
+                        "runs": runs.get(name, []),
+                    }
+                per_device.append(entry)
             rows.append({
                 "day": key,
                 "total_minutes": sum(d["minutes"] for d in per_device),
@@ -518,6 +539,51 @@ class PanelQueries:
             "until": until.isoformat(),
             "devices": [{"name": d.name, "child": d.child, "kind": d.kind} for d in devices],
             "days": rows,
+        }
+
+    def _app_runs(self, conn, names, marks, lo, hi, session_day) -> dict[str, list[dict]]:
+        """Ciagi kolejnych minut tej samej aplikacji w sesji, per urzadzenie.
+
+        Minuta w `session_apps` to minuta z ruchem DNS (albo odtwarzania na
+        TV) — ta sama, ktora liczy `COUNT(*)` w minutach aplikacji. Ciag
+        konczy sie minute po ostatniej minucie, wiec jego dlugosc to dokladnie
+        liczba jego minut. Kilka aplikacji w jednej minucie daje nachodzace
+        na siebie ciagi — kazda dostaje swoja minute, jak w sumie."""
+        out: dict[str, list[dict]] = {}
+        cur: dict | None = None
+        last: datetime | None = None
+        for a in conn.execute(
+            f"SELECT sa.session_id, sa.app, sa.minute FROM session_apps sa "
+            f"JOIN sessions s ON s.id = sa.session_id "
+            f"WHERE s.device IN ({marks}) AND s.started_at >= ? AND s.started_at < ? "
+            f"AND s.confirmed=1 ORDER BY sa.session_id, sa.app, sa.minute",
+            (*names, lo, hi),
+        ):
+            at = datetime.strptime(a["minute"], "%Y-%m-%dT%H:%M").replace(tzinfo=UTC)
+            device = session_day[a["session_id"]][1]
+            key = (a["session_id"], a["app"])
+            if cur is not None and cur["key"] == key and at - last == timedelta(minutes=1):
+                cur["minutes"] += 1
+            else:
+                cur = {"key": key, "app": a["app"], "start": at, "minutes": 1}
+                out.setdefault(device, []).append(cur)
+            last = at
+        tz = self.cfg.tz
+        return {
+            device: sorted(
+                (
+                    {
+                        "app": r["app"],
+                        "started_at": r["start"].astimezone(tz).isoformat(),
+                        "ended_at": (r["start"] + timedelta(minutes=r["minutes"]))
+                        .astimezone(tz).isoformat(),
+                        "minutes": r["minutes"],
+                    }
+                    for r in lst
+                ),
+                key=lambda r: (r["started_at"], r["app"]),
+            )
+            for device, lst in out.items()
         }
 
     # ------------------------------------------------------ pauza telewizora

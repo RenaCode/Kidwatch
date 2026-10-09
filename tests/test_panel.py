@@ -267,6 +267,60 @@ def test_uzycie_zgadza_sie_z_widokiem_dnia(disk):
     assert [x["child"] for x in u["devices"]] == ["Kuba"]
 
 
+def test_os_dnia_pulpitu_zgadza_sie_z_suma_i_minutami_aplikacji(disk):
+    """Odcinki osi dnia na Pulpicie licza sie z tych samych wierszy co suma:
+    sesje sumuja sie do `minutes`, ciagi aplikacji — do jej minut dnia."""
+    cfg, store = disk
+    kuba_i_zosia(store)
+    # Druga aplikacja w tej samej minucie co Roblox i dziura w ciagu YouTube.
+    sid = store.open_session("iPad Kuby", "Kuba", local(2026, 10, 2, 20, 0))
+    for m in (0, 1, 2, 5, 6):
+        store.record_app_minute(sid, "YouTube", local(2026, 10, 2, 20, m))
+    store.record_app_minute(sid, "Roblox", local(2026, 10, 2, 20, 1))
+    store.close_session(sid, local(2026, 10, 2, 20, 9))
+    q = PanelQueries(cfg, cfg.store.path)
+    with q.connect() as conn:
+        u = q.usage(conn, {"days": "1", "until": "2026-10-02", "timeline": "1"})
+        bez = q.usage(conn, {"days": "1", "until": "2026-10-02"})
+    assert "timeline" not in bez["days"][0]["devices"][0]
+    kuba = {d["name"]: d for d in u["days"][0]["devices"]}["iPad Kuby"]
+    tl = kuba["timeline"]
+    assert sum(s["minutes"] for s in tl["sessions"]) == kuba["minutes"] == 66
+    assert [s["started_at"][11:16] for s in tl["sessions"]] == ["15:00", "18:00", "20:00"]
+    assert tl["sessions"][0]["ended_at"][11:16] == "15:47"
+    per_app: dict[str, int] = {}
+    for r in tl["runs"]:
+        per_app[r["app"]] = per_app.get(r["app"], 0) + r["minutes"]
+    assert per_app == {"Roblox": 4, "YouTube": 7}
+    assert {a["app"]: a["minutes"] for a in kuba["top_apps"]} == per_app
+    assert [(r["app"], r["started_at"][11:16], r["ended_at"][11:16]) for r in tl["runs"]] == [
+        ("Roblox", "15:00", "15:03"), ("YouTube", "15:05", "15:06"),
+        ("YouTube", "18:01", "18:02"),
+        ("YouTube", "20:00", "20:03"), ("Roblox", "20:01", "20:02"), ("YouTube", "20:05", "20:07"),
+    ]
+    # Czas lokalny z przesunieciem strefy — front liczy pozycje z daty.
+    assert tl["runs"][0]["started_at"].endswith("+02:00")
+
+
+def test_os_dnia_otwartej_sesji_konczy_sie_na_ostatniej_aktywnosci(disk):
+    cfg, store = disk
+    sid = store.open_session("iPad Kuby", "Kuba", local(2026, 10, 2, 15, 0))
+    store.touch_session(sid, local(2026, 10, 2, 15, 12))
+    q = PanelQueries(cfg, cfg.store.path)
+    with q.connect() as conn:
+        u = q.usage(conn, {"days": "1", "until": "2026-10-02", "timeline": "1"})
+    cell = u["days"][0]["devices"][0]
+    assert cell["timeline"]["sessions"][0]["ended_at"][11:16] == "15:12"
+    assert cell["timeline"]["sessions"][0]["minutes"] == cell["minutes"] == 12
+
+
+def test_os_dnia_tylko_dla_jednego_dnia(disk):
+    cfg, _ = disk
+    q = PanelQueries(cfg, cfg.store.path)
+    with q.connect() as conn, pytest.raises(BadRequest, match="timeline"):
+        q.usage(conn, {"days": "7", "timeline": "1"})
+
+
 def test_uzycie_liczy_dzien_w_strefie_lokalnej(disk):
     """00:30 w Warszawie to jeszcze poprzedni dzien w UTC — ma nalezec do dzisiaj."""
     cfg, store = disk
