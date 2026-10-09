@@ -271,7 +271,7 @@ a.src-link:hover { text-decoration: underline; }
 .input-field:focus {
   outline: none;
   border-color: var(--color-primary);
-  box-shadow: var(--focus-ring);
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.35), 0 0 16px rgba(124, 58, 237, 0.2);
 }
 
 /* Kod jednorazowy czyta sie znak po znaku - monospace i rozstrzelenie
