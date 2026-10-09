@@ -43,6 +43,24 @@ noise:
   - akadns.net
   - akamaiedge.net
   - akamaitechnologies.com
+  # Uslugi Apple na CUDZYCH CDN-ach, nazwane od strefy Apple (2026-10-09).
+  # Na lezacym iPadzie dziecka, obudzonym podlaczeniem kabla, App Store
+  # (sf-api-token-service.itunes.apple.com.edgekey.net) i iCloud otworzyly sesje
+  # „aktywny — edgekey.net, cloudflare.com", a odswiezenie Netflixa w tle
+  # dostalo push aplikacji. Wpisy waskie: samo edgekey.net / cloudflare.com
+  # zostaje nieznane, bo jada po nich tez gry i strony.
+  - apple.com.edgekey.net
+  - apple.com.edgesuite.net
+  # iCloud Private Relay i tokeny prywatnosci Apple (Privacy Pass) — Cloudflare
+  # jako operator przekaznika, ruch czysto systemowy.
+  - apple-relay.cloudflare.com
+  - pat-issuer.cloudflare.com
+  # Sprawdzanie lacznosci (portal logowania) przez Cloudflare: 13 zapytan
+  # z obu iPadow w tydzien, ostatnie o 05:22 — iPady lezaly.
+  - cp10.cloudflare.com
+  # Wlasny serwer MDM (kidwatch-mdm). iPad laczy sie z nim przy kazdym pushu
+  # i odswiezeniu stanu (co kilka godzin), niezaleznie od dziecka.
+  - mdm.renacode.com
   # --- czas, certyfikaty, wykrywanie portali logowania
   - ntp.org
   - digicert.com
@@ -141,6 +159,15 @@ shared:
   - xutils.io
   - aliyuncs.com
   - anzu-us.com
+  # --- kolejne SDK reklamowe i analityka z gier dzieci (2026-10-09)
+  - vervegroupinc.net
+  - advertising.a2z.com
+  # --- telemetria Microsoftu (1DS) z Minecrafta: onedscolprd*.cloudapp.azure.com
+  #     i self.events.data.microsoft.com. Wspolna dla wielu aplikacji Microsoftu
+  #     i calego Azure, wiec przedluza, ale nie nazywa i nie otwiera.
+  - events.data.microsoft.com
+  - trafficmanager.net
+  - cloudapp.azure.com
   # --- okna zgod RODO w grach (Didomi) i biblioteki ladowane przez WebView
   - privacy-center.org
   - jquery.com
@@ -182,6 +209,8 @@ apps:
   "Minecraft":
     - minecraft.net
     - minecraftservices.com
+    # Bedrock: sklep, uprawnienia i gra wieloosobowa (2026-10-07)
+    - minecraft-services.net
     - mojang.com
     - playfabapi.com
 
