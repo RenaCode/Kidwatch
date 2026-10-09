@@ -11,6 +11,8 @@ ustawia je chart, sekrety przychodza z Secretow:
   KIDWATCH_MDM_APNS_CERT    certyfikat push .pem z identity.apple.com (opcjonalny)
   KIDWATCH_MDM_APNS_KEY     klucz push.key (opcjonalny, razem z certyfikatem)
   KIDWATCH_MDM_ADMIN_TOKEN  token API dla Kidwatch (wymagany)
+  KIDWATCH_MDM_SIGN_CERT    tls.crt do podpisu profilu zapisu (opcjonalny)
+  KIDWATCH_MDM_SIGN_KEY     tls.key do podpisu profilu zapisu (opcjonalny)
   KIDWATCH_MDM_PORT / KIDWATCH_MDM_ADMIN_PORT   domyslnie 8080 / 8081
 """
 
@@ -65,7 +67,13 @@ def build_service():
     else:
         pusher = NoPusher()
         log.warning("brak certyfikatu APNs — zapis iPadow zablokowany, pushe wylaczone")
+    from .signing import build as build_signer
+
+    signer = build_signer(_env("KIDWATCH_MDM_SIGN_CERT"), _env("KIDWATCH_MDM_SIGN_KEY"))
+    if signer is None:
+        log.warning('brak certyfikatu podpisu — profil zapisu bedzie „Niezweryfikowany"')
     return MDMService(
+        signer=signer,
         store=Store(data / "kidwatch-mdm.db"),
         ca=ca,
         policy=policy,

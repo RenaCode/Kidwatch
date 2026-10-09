@@ -59,6 +59,13 @@ spec:
               value: /secrets/apns/push.pem
             - name: KIDWATCH_MDM_APNS_KEY
               value: /secrets/apns/push.key
+            # Podpis profilu zapisu certyfikatem TLS z cert-managera (iOS:
+            # „Zweryfikowany"). Katalog BEZ subPath — kubelet podmienia pliki
+            # po odnowieniu certyfikatu, a serwer czyta je przy kazdym podpisie.
+            - name: KIDWATCH_MDM_SIGN_CERT
+              value: /secrets/tls/tls.crt
+            - name: KIDWATCH_MDM_SIGN_KEY
+              value: /secrets/tls/tls.key
           ports:
             - name: mdm
               containerPort: {{ .Values.ports.mdm }}
@@ -100,6 +107,9 @@ spec:
             - name: policy
               mountPath: /secrets/policy
               readOnly: true
+            - name: tls
+              mountPath: /secrets/tls
+              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -120,3 +130,10 @@ spec:
           secret:
             secretName: {{ .Values.policySecret }}
             defaultMode: 0400
+        # Ten sam Sekret, ktory cert-manager wystawia dla Ingressu. Opcjonalny:
+        # przed pierwszym wystawieniem serwer startuje i podaje profil bez podpisu.
+        - name: tls
+          secret:
+            secretName: {{ .Values.ingress.tlsSecret }}
+            defaultMode: 0400
+            optional: true
