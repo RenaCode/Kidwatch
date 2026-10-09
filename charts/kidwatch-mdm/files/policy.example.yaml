@@ -31,7 +31,7 @@ devices:
   dziecko1:
     name: iPad Dziecka 1
     # DNS-over-HTTPS (iOS 27+). Na nadzorowanym iPadzie obejmuje wszystkie
-    # sieci i nie da sie go wylaczyc; bez nadzoru tylko sieci zarzadzane.
+    # sieci i nie da sie go wylaczyc; bez nadzoru serwer DNS nie wysyla wcale.
     dns_url: https://dns.nextdns.io/<profil>/iPad-Dziecka-1
   dziecko2:
     name: iPad Dziecka 2
