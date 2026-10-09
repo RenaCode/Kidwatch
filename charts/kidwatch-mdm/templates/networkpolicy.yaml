@@ -32,3 +32,45 @@ spec:
         - protocol: TCP
           port: {{ .Values.ports.admin }}
 {{- end }}
+{{- if and .Values.networkPolicy.enabled .Values.networkPolicy.egress.enabled }}
+---
+# EGRESS: serwer MDM laczy sie WYLACZNIE z DNS klastra i APNs
+# (api.push.apple.com:443). Do sieci domowej nie potrzebuje niczego, a jest
+# publicznie wystawiony — wiec zakresy domowe wyciete bez wyjatkow.
+# Odpowiedzi do Traefika i Kidwatch przechodza bez reguly (polaczenia
+# przychodzace sa sledzone, egress dotyczy tylko nowych polaczen).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kidwatch-mdm.fullname" . }}-egress
+  labels:
+    {{- include "kidwatch-mdm.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kidwatch-mdm.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # APNs: Apple publikuje zakres 17.0.0.0/8, ale nie gwarantuje go dla
+    # api.push.apple.com — dlatego caly internet na 443, bez sieci domowej.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            {{- with .Values.networkPolicy.egress.siecDomowa }}
+            except: {{- toYaml . | nindent 14 }}
+            {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}

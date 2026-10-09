@@ -26,6 +26,7 @@ from pydantic import ValidationError
 from . import profiles
 from .policy import OsUpdate
 from .service import JSON, MDMService, Response, ServiceError
+from .store import iso
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +168,15 @@ def make_admin_handler(service: MDMService, token: str):
             },
             "devices": len(store.devices()),
             "time": datetime.now(UTC).isoformat(timespec="seconds"),
+            # Identyfikator bazy i najwyzszy numer zdarzenia: Kidwatch po nich
+            # poznaje nowa albo cofnieta baze i przestawia kursor dziennika.
+            "instance": store.setting("instance"),
+            "last_event_id": store.last_event_id(),
+            # Ostatnie UDANE uzgadnianie (trwale w bazie) i blad ostatniego
+            # obiegu. Pod moze byc zdrowy, a uzgadnianie padac co obieg.
+            "started_at": iso(service.started_at),
+            "last_reconcile_ok_at": store.setting("last_reconcile_ok_at"),
+            "last_reconcile_error": service.last_reconcile_error,
         }
 
     class AdminHandler(BaseHTTPRequestHandler):

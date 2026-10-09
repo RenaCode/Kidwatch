@@ -256,3 +256,122 @@ def test_stale_count_zero_update_event_is_not_an_alarm(watcher):
     svc.store.event("os_update_failed", UDID, {"count": 1, "reason": "NoSpace"})
     notes = [n for n in w.poll(datetime.now(UTC)) if "aktualizacja" in n.title]
     assert len(notes) == 1
+
+
+# ======================================================= audyt 2026-10-09: S1, S2, S4
+def test_first_run_with_long_history_sends_nothing_later(watcher):
+    """S2: pomijana byla tylko pierwsza porcja (200), drugi obieg wysylal
+    reszte starej historii jako swieze alarmy (53 z 250)."""
+    svc, w, store = watcher
+    enroll(svc)
+    for _ in range(250):
+        svc.store.event("checkout", UDID, {"cancelled_commands": 0})
+    assert w.poll(datetime.now(UTC)) == []
+    assert int(store.get_meta(CURSOR_KEY)) == svc.store.last_event_id()
+    assert w.poll(datetime.now(UTC)) == []
+
+
+def test_first_run_on_empty_server_does_not_swallow_next_event(watcher):
+    svc, w, store = watcher
+    assert w.poll(datetime.now(UTC)) == []
+    assert store.get_meta(CURSOR_KEY) == "0"
+    svc.store.event("checkout", UDID, {"cancelled_commands": 0})
+    assert [n.title.split(": ", 1)[1] for n in w.poll(datetime.now(UTC))] == ["profil MDM zdjety"]
+
+
+def _fresh_server(svc, w, path):
+    """Ten sam serwer MDM po odtworzeniu na nowym wolumenie: pusta baza."""
+    fresh = MDMService(
+        store=MdmStore(path),
+        ca=svc.ca,
+        policy=svc.policy,
+        public_url="https://mdm.example.com",
+        pusher=FakePusher(),
+    )
+    admin = mdm_server.start(mdm_server.make_admin_handler(fresh, TOKEN), 0, "127.0.0.1")
+    w.api = MdmApi(MdmConfig(enabled=True, url=f"http://127.0.0.1:{admin.server_port}"), TOKEN)
+    return fresh, admin
+
+
+def test_new_server_database_resets_cursor_and_alarms(watcher, tmp_path):
+    """S1: po nowej bazie MDM numeracja od 1, a kursor Kidwatch zostawal na
+    starym numerze — „profil MDM zdjety" milczalby tygodniami."""
+    svc, w, store = watcher
+    enroll(svc)
+    w.poll(datetime.now(UTC))
+    store.set_meta(CURSOR_KEY, "5000")
+    fresh, admin = _fresh_server(svc, w, tmp_path / "nowa.db")
+    try:
+        fresh.store.event("enrollment_created", detail={"label": "dziecko1"})
+        notes = w.poll(datetime.now(UTC))
+        assert [n.title for n in notes] == ["MDM: baza serwera nowa"]
+        assert store.get_meta(CURSOR_KEY) == "1"
+        assert store.get_meta("mdm:instance") == fresh.store.setting("instance")
+        # Kolejne zdarzenie juz dochodzi.
+        fresh.store.event("checkout", UDID, {"cancelled_commands": 0})
+        titles = [n.title.split(": ", 1)[1] for n in w.poll(datetime.now(UTC))]
+        assert titles == ["profil MDM zdjety"]
+    finally:
+        admin.shutdown()
+
+
+def test_restored_backup_with_lower_ids_resets_cursor(watcher):
+    svc, w, store = watcher
+    enroll(svc)
+    w.poll(datetime.now(UTC))
+    head = svc.store.last_event_id()
+    store.set_meta(CURSOR_KEY, str(head + 100))  # baza cofnieta do starszej kopii
+    notes = w.poll(datetime.now(UTC))
+    assert [n.title for n in notes] == ["MDM: baza serwera odtworzona"]
+    assert store.get_meta(CURSOR_KEY) == str(head)
+    svc.store.event("checkout", UDID, {"cancelled_commands": 0})
+    assert [n.title.split(": ", 1)[1] for n in w.poll(datetime.now(UTC))] == ["profil MDM zdjety"]
+
+
+def test_upgrade_adopts_instance_without_losing_events(watcher):
+    """Wdrozenie poprawki: Kidwatch ma kursor, ale jeszcze nie zna instancji.
+    Nie wolno wtedy przeskoczyc zdarzen ani alarmowac o nowej bazie."""
+    svc, w, store = watcher
+    enroll(svc)
+    store.set_meta(CURSOR_KEY, str(svc.store.last_event_id()))
+    svc.store.event("checkout", UDID, {"cancelled_commands": 0})
+    assert [n.title.split(": ", 1)[1] for n in w.poll(datetime.now(UTC))] == ["profil MDM zdjety"]
+    assert store.get_meta("mdm:instance") == svc.store.setting("instance")
+
+
+def test_health_reports_instance_head_and_reconcile(mdm):
+    svc, url = mdm
+    api = MdmApi(MdmConfig(enabled=True, url=url), TOKEN)
+    enroll(svc)
+    svc.reconcile()
+    h = api.health()
+    assert h["instance"] == svc.store.setting("instance")
+    assert h["last_event_id"] == svc.store.last_event_id() > 0
+    assert h["last_reconcile_ok_at"] == svc.store.setting("last_reconcile_ok_at")
+    assert h["last_reconcile_error"] is None and h["started_at"]
+
+
+def test_failing_reconcile_alarms_once_a_day(watcher):
+    """S4: uzgadnianie padajace co obieg bylo niewidoczne — pod zdrowy,
+    /api/health bez czasu ostatniego udanego obiegu, czujka cicha."""
+    svc, w, _ = watcher
+    enroll(svc)
+    now = datetime.now(UTC)
+    svc.store.set_setting("last_reconcile_ok_at", iso(now - timedelta(minutes=10)))
+    w.poll(now)
+    assert [n for n in w.poll(now) if "uzgadnianie" in n.title] == []
+
+    svc.store.set_setting("last_reconcile_ok_at", iso(now - timedelta(hours=2)))
+    svc.last_reconcile_error = "RuntimeError: zla polityka"
+    notes = [n for n in w.poll(now) if "uzgadnianie" in n.title]
+    assert len(notes) == 1
+    assert notes[0].title == "MDM: uzgadnianie nie dziala od 2 h"
+    assert "zla polityka" in notes[0].text
+    assert notes[0].dedup_key == f"mdm-reconcile:{now.date().isoformat()}"
+
+
+def test_never_reconciled_server_alarms_after_grace(watcher):
+    svc, w, _ = watcher
+    now = datetime.now(UTC)
+    svc.started_at = now - timedelta(hours=1)
+    assert [n for n in w.poll(now) if "uzgadnianie" in n.title]

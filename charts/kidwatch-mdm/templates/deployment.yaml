@@ -78,7 +78,10 @@ spec:
             periodSeconds: 10
           livenessProbe:
             # Tetno petli uzgadniania: serwer HTTP moze odpowiadac, a petla
-            # stac — wtedy nikt nie wysyla pushy i nie pilnuje polityki.
+            # zawisnac — wtedy nikt nie wysyla pushy i nie pilnuje polityki.
+            # Petla, ktora zyje, ale jej uzgadnianie PADA, nie zatrzymuje
+            # tetna (restart nie naprawi zlej polityki): to widac w
+            # /api/health (last_reconcile_ok_at) i alarmuje czujka Kidwatch.
             exec:
               command:
                 - python

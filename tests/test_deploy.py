@@ -555,3 +555,44 @@ def test_timeout_bramki_dluzszy_niz_najgorszy_czas_bramki():
 
     # sendText 15 s + zapasowy mail 15 s + status 3 s (K-12).
     assert BramkaConfig().timeout_seconds == 40.0
+
+
+# ================================================ audyt 2026-10-09: egress MDM
+MDM_CHART = ROOT / "charts" / "kidwatch-mdm"
+
+
+def _mdm_policies(*sets: str) -> dict[str, dict]:
+    args = [a for kv in sets for a in ("--set", kv)]
+    out = subprocess.run(
+        ["helm", "template", "kidwatch-mdm", str(MDM_CHART), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    docs = [d for d in yaml.safe_load_all(out) if d]
+    return {d["metadata"]["name"]: d for d in docs if d["kind"] == "NetworkPolicy"}
+
+
+@pytestmark_helm
+def test_mdm_egress_tylko_dns_i_443_bez_sieci_domowej():
+    """Audyt infra S-1: kidwatch-mdm byl jedynym publicznym podem bez blokady
+    sieci domowej. Potrzebuje tylko DNS i APNs (api.push.apple.com:443)."""
+    pol = _mdm_policies("networkPolicy.egress.siecDomowa={192.0.2.0/24,198.51.100.0/24}")
+    spec = pol["kidwatch-mdm-egress"]["spec"]
+    assert spec["policyTypes"] == ["Egress"] and "ingress" not in spec
+    assert spec["podSelector"] == pol["kidwatch-mdm"]["spec"]["podSelector"]
+    dns, swiat = spec["egress"]
+    assert dns["to"][0]["podSelector"]["matchLabels"] == {"k8s-app": "kube-dns"}
+    assert {(x["protocol"], x["port"]) for x in dns["ports"]} == {("UDP", 53), ("TCP", 53)}
+    blok = {"cidr": "0.0.0.0/0", "except": ["192.0.2.0/24", "198.51.100.0/24"]}
+    assert swiat == {"to": [{"ipBlock": blok}], "ports": [{"protocol": "TCP", "port": 443}]}
+
+
+@pytestmark_helm
+def test_mdm_egress_domyslnie_bez_adresow_i_z_flaga_wycofania():
+    spec = _mdm_policies()["kidwatch-mdm-egress"]["spec"]
+    assert spec["egress"][1]["to"] == [{"ipBlock": {"cidr": "0.0.0.0/0"}}]
+    assert "192.168." not in (MDM_CHART / "values.yaml").read_text(encoding="utf-8")
+    assert list(_mdm_policies("networkPolicy.egress.enabled=false")) == ["kidwatch-mdm"]
+    assert _mdm_policies("networkPolicy.enabled=false") == {}
+

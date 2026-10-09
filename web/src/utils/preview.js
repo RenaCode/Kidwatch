@@ -80,6 +80,25 @@ function notifications(params) {
   return { items, has_more: false };
 }
 
+const MDM = {
+  available: true,
+  health: { apns: { configured: true, days_left: 214, topic: 'com.apple.mgmt.External.podglad' } },
+  devices: [
+    { udid: 'PODGLAD-0001', name: 'iPad Jan', product: 'iPad13,18', os_version: '27.0',
+      supervised: true, last_seen_at: at(4), checked_out_at: null, ddm_synced: true, serial: 'PODGLAD1' },
+    { udid: 'PODGLAD-0002', name: 'iPad Anna', product: 'iPad14,1', os_version: '26.4',
+      supervised: false, last_seen_at: at(300), checked_out_at: null, ddm_synced: false,
+      push_error: '410 Unregistered', push_error_at: at(60), serial: 'PODGLAD2' },
+  ],
+  os_update: { effective: null, override: null },
+  events: [
+    { id: 1, at: at(600), udid: 'PODGLAD-0001', kind: 'enrolled', detail: '{}' },
+    { id: 2, at: at(500), udid: 'PODGLAD-0001', kind: 'os_update_failed', detail: '{"count": 0}' },
+    { id: 3, at: at(400), udid: 'PODGLAD-0002', kind: 'supervision_changed', detail: '{"supervised": false}' },
+    { id: 4, at: at(90), udid: 'PODGLAD-0001', kind: 'apps_installed', detail: '{"apps": []}' },
+  ],
+};
+
 export function previewResponse(path, method) {
   const url = new URL(path, 'http://podglad');
   const p = url.searchParams;
@@ -91,6 +110,7 @@ export function previewResponse(path, method) {
     case '/api/notifications': return notifications(p);
     case '/api/tv/pause': return { available: true, name: 'Telewizor', max_days: 30, active: null, request: null };
     case '/api/tv/aplikacja': return { available: false };
+    case '/api/mdm': return MDM;
     default: throw new ApiError(404, 'brak danych w podglądzie');
   }
 }

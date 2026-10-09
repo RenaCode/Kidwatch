@@ -13,6 +13,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import { TvPauseBanner } from './components/TvPause';
 import { get, post, qs, useApi, setSessionExpiredHandler } from './utils/api';
 import { localToday } from './utils/format';
+import { isCriticalNote } from './utils/mdm';
 
 // Pulpit renderuje Panel sam (potrzebuje pauzy TV i nawigacji), reszta
 // dostaje wspolne propsy. `short`: etykieta w dolnym pasku telefonu.
@@ -262,7 +263,7 @@ function Panel({ user, onSignOut, onUserChanged }) {
   const notes = notesToday.data ? {
     count: notesToday.data.items.length,
     more: notesToday.data.has_more,
-    critical: notesToday.data.items.some((n) => n.kind === 'watchdog' || n.kind === 'dns_profile'),
+    critical: notesToday.data.items.some(isCriticalNote),
   } : null;
 
   const current = SECTIONS.find((s) => s.key === section) || SECTIONS[0];
