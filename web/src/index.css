@@ -130,6 +130,13 @@ body::after  { bottom: 10%; right: 8%; background: var(--color-blue); }
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-glow);
   padding: 20px;
+  transition: var(--transition-smooth);
+}
+.glass-card:hover {
+  background: var(--bg-card-hover);
+  border-color: rgba(255, 255, 255, 0.14);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-glow), 0 12px 32px rgba(124, 58, 237, 0.12);
 }
 .glass-card.tight { padding: 16px; }
 
