@@ -75,6 +75,14 @@ spec:
               value: /data/tmp
             - name: TZ
               value: {{ .Values.timezone | quote }}
+            # Token API serwera MDM (charts/kidwatch-mdm, Sekret wspolny z nim).
+            # Opcjonalny: bez niego integracja MDM po prostu sie nie wlacza.
+            - name: MDM_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.mdmAdminSecret }}
+                  key: token
+                  optional: true
           envFrom:
             - secretRef:
                 name: {{ .Values.secretName }}

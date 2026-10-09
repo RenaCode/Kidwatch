@@ -639,6 +639,31 @@ class GameTimeConfig(_Base):
         return sorted(set(self.services) - NEXTDNS_SERVICES)
 
 
+class MdmConfig(_Base):
+    """Wlasny serwer MDM (kidwatch-mdm, osobny pod): alarmy i zakladka panelu.
+
+    Token API idzie z MDM_ADMIN_TOKEN (Sekret kidwatch-mdm-admin) — ten sam,
+    ktory dostaje serwer MDM. Bez tokenu integracja sie nie uruchamia.
+    """
+
+    enabled: bool = False
+    #: Service admina w klastrze (port 8081, niewystawiony przez Ingress).
+    url: str = "http://kidwatch-mdm-admin:8081"
+    poll_seconds: float = Field(default=60.0, ge=10.0)
+    timeout_seconds: float = Field(default=10.0, ge=1.0)
+    #: iPad bez kontaktu z MDM dluzej niz tyle = alarm (raz na dobe).
+    #: Zapisany iPad laczy sie przy kazdym pushu, a uzgadnianie budzi go co
+    #: kilka godzin, wiec doba ciszy znaczy reset, brak sieci albo zdjety profil.
+    silent_alert_hours: float = Field(default=24.0, ge=1.0)
+    #: Ostrzezenie o wygasajacym certyfikacie APNs na tyle dni przed koncem.
+    #: Po wygasnieciu zaden iPad nie dostanie komendy, a odnowienie musi byc
+    #: z tego samego Apple ID.
+    cert_warn_days: int = Field(default=30, ge=1)
+
+    def token(self) -> str | None:
+        return os.environ.get("MDM_ADMIN_TOKEN", "").strip() or None
+
+
 class StoreConfig(_Base):
     path: str = "kidwatch.db"
     retention_days: int = Field(default=30, ge=0)
@@ -712,6 +737,7 @@ class Config(_Base):
     tv: TvConfig = Field(default_factory=TvConfig)
     unifi: UnifiConfig = Field(default_factory=UnifiConfig)
     game_time: GameTimeConfig = Field(default_factory=GameTimeConfig)
+    mdm: MdmConfig = Field(default_factory=MdmConfig)
     app_map_path: str = "app_map.yaml"
 
     @field_validator("timezone")

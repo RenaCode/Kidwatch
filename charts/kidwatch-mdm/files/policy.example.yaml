@@ -1,0 +1,42 @@
+# Wzorzec polityki kidwatch-mdm. PRAWDZIWA polityka idzie do Sekretu
+# kidwatch-mdm-policy (repo jest publiczne: adresy NextDNS i etykiety dzieci
+# nie moga tu trafic). Walidacja: klucze sprawdzane schematem Apple przy
+# starcie serwera — literowka zatrzymuje start zamiast cicho nie dzialac.
+
+org: RenaCode
+
+# Nadpisania DOKLADANE do domyslnych ograniczen (src/kidwatch_mdm/policy.py,
+# DEFAULT_RESTRICTIONS): blokada VPN i Private Relay, zakaz wymazania iPada
+# i instalacji profili, wymuszony automatyczny czas. Wszystkie dzialaja TYLKO
+# na nadzorowanym iPadzie.
+restrictions: {}
+#   allowDeviceNameModification: false
+
+# Aplikacje ukryte i nieuruchamialne (bundle ID), np. przegladarki
+# z wbudowanym proxy, ktore omijaja DNS bez tworzenia VPN.
+blocked_apps: []
+#   - com.opera.OperaTouch
+
+# Wymuszona aktualizacja: do terminu (czas lokalny iPada) ma byc ta wersja.
+# Mozna tez ustawic z Kidwatch (PUT /api/os-update) — wtedy wygrywa API.
+# os_update:
+#   target_version: "27.1"
+#   deadline: "2026-10-20T20:00:00"
+
+# Co ile godzin odswiezac stan iPadow (informacje, profile, aplikacje).
+refresh_hours: 6
+
+# Klucz = etykieta podana przy `kidwatch-mdm enroll <etykieta>`.
+devices:
+  dziecko1:
+    name: iPad Dziecka 1
+    # DNS-over-HTTPS (iOS 27+). Na nadzorowanym iPadzie obejmuje wszystkie
+    # sieci i nie da sie go wylaczyc; bez nadzoru tylko sieci zarzadzane.
+    dns_url: https://dns.nextdns.io/<profil>/iPad-Dziecka-1
+  dziecko2:
+    name: iPad Dziecka 2
+    dns_url: https://dns.nextdns.io/<profil>/iPad-Dziecka-2
+  test:
+    # iPad testowy bez nadzoru: ograniczenia zostana zignorowane przez iOS,
+    # ale caly protokol (zapis, komendy, DDM, aplikacje) da sie sprawdzic.
+    name: iPad testowy

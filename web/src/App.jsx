@@ -7,6 +7,7 @@ import Profile from './components/Profile';
 import Usage from './components/Usage';
 import Screens from './components/Screens';
 import Trends from './components/Trends';
+import Mdm from './components/Mdm';
 import ErrorBoundary from './components/ErrorBoundary';
 import { TvPauseBanner } from './components/TvPause';
 import { get, post, qs, useApi, setSessionExpiredHandler } from './utils/api';
@@ -17,6 +18,7 @@ const SECTIONS = [
   { key: 'usage',         label: 'Użycie',        Component: Usage },
   { key: 'trends',        label: 'Trendy',        Component: Trends },
   { key: 'day',           label: 'Dzień',         Component: Day },
+  { key: 'mdm',           label: 'MDM',           Component: Mdm },
 ];
 
 /* Wybrane dziecko przezywa odswiezenie strony. localStorage w try/catch:

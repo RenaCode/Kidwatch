@@ -55,6 +55,8 @@ jobs:
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
       - run: helm lint charts/kidwatch
       - run: helm template kidwatch charts/kidwatch > /dev/null
+      - run: helm lint charts/kidwatch-mdm
+      - run: helm template kidwatch-mdm charts/kidwatch-mdm > /dev/null
 
   # Aplikacja Kidwatch TV (tv-app/): APK budowany przy kazdym pushu i PR-ze,
   # a na main wkladany do obrazu - panel instaluje go na telewizor przez ADB.
@@ -117,9 +119,40 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # Serwer MDM (Dockerfile.mdm): osobny obraz, ten sam commit co kidwatch.
+  obraz-mdm:
+    name: Obraz kidwatch-mdm do ghcr.io
+    needs: [testy]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.mdm
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.REGISTRY }}/renacode/kidwatch-mdm:sha-${{ steps.vars.outputs.sha_short }}
+            ${{ env.REGISTRY }}/renacode/kidwatch-mdm:latest
+          cache-from: type=gha,scope=mdm
+          cache-to: type=gha,mode=max,scope=mdm
+
   tag:
     name: Podbicie tagu w values.yaml
-    needs: obraz
+    needs: [obraz, obraz-mdm]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -166,9 +199,15 @@ jobs:
           grep -q 'tag: "v1\.' charts/kidwatch/values.yaml \
             || { echo "::error::sed zniszczyl tag Tailscale"; exit 1; }
 
+          # Ten sam commit = ten sam tag obrazu serwera MDM (job obraz-mdm).
+          sed -i -E "/^image:/,/^[[:space:]]*pullPolicy:/ { s|^([[:space:]]*)tag: \".*\"$|\1tag: \"$SHA\"| }" \
+            charts/kidwatch-mdm/values.yaml
+          grep -q "tag: \"$SHA\"" charts/kidwatch-mdm/values.yaml \
+            || { echo "::error::sed nie podmienil tagu obrazu kidwatch-mdm"; exit 1; }
+
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add charts/kidwatch/values.yaml
+          git add charts/kidwatch/values.yaml charts/kidwatch-mdm/values.yaml
           if git diff --cached --quiet; then
             echo "tag juz aktualny, nic do zrobienia"
             exit 0

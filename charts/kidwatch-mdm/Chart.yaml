@@ -1,0 +1,6 @@
+apiVersion: v2
+name: kidwatch-mdm
+description: Wlasny serwer MDM dla iPadow dzieci — ograniczenia, DNS i aktualizacje sterowane z Kidwatch
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

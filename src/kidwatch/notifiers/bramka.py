@@ -49,6 +49,7 @@ RODZAJE = {
     NotifyKind.NIGHT: "noc",
     NotifyKind.WEEKLY: "raport tygodnia",
     NotifyKind.GAME: "czas gry",
+    NotifyKind.MDM: "MDM",
 }
 
 #: Informacje o sesjach: jedyne, co idzie bez kategorii, czyli do rodziny
@@ -73,6 +74,8 @@ KATEGORIE = {
     NotifyKind.WATCHDOG: "czujka",
     NotifyKind.DNS_PROFILE: "czujka",
     NotifyKind.TV_PAUSE: "czujka",
+    # profil MDM zdjety, iPad cichy, certyfikat APNs wygasa
+    NotifyKind.MDM: "czujka",
     # alarmy o dzieciach: iPad w nocy, nowa/usunieta aplikacja
     NotifyKind.NIGHT: "alarm",
     NotifyKind.DEVICE_INVENTORY: "alarm",

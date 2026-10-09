@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kidwatch-mdm.fullname" . }}
+  labels:
+    {{- include "kidwatch-mdm.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "kidwatch-mdm.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: mdm
+      port: 80
+      targetPort: mdm
+---
+# Osobny Service dla API: Ingress wskazuje WYLACZNIE Service powyzej, wiec
+# port admina nie ma zadnej drogi na zewnatrz klastra.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kidwatch-mdm.fullname" . }}-admin
+  labels:
+    {{- include "kidwatch-mdm.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "kidwatch-mdm.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: admin
+      port: 8081
+      targetPort: admin
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "kidwatch-mdm.fullname" . }}-data
+  labels:
+    {{- include "kidwatch-mdm.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - {{ .Values.persistence.accessMode }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}

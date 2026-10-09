@@ -25,6 +25,7 @@ import io
 import json
 import logging
 import mimetypes
+import re
 import sqlite3
 import threading
 from datetime import UTC, date, datetime, time, timedelta
@@ -42,6 +43,7 @@ from .bramka_admin import (
 )
 from .config import Config, MissingSecretError, WatchedDevice
 from .gametime import ACTIONS, GameRequests, TooManyRequests
+from .mdm import MdmApi, MdmError, build_api
 from .panel_auth import (
     CSRF_COOKIE,
     CSRF_HEADER,
@@ -829,6 +831,12 @@ def _bramka_status(status: int) -> int:
     return 502 if status >= 500 or status in (401, 403) else status
 
 
+def _mdm_status(status: int) -> int:
+    """Kody serwera MDM przekazane dalej, poza 401/403: te dotycza tokenu
+    panelu u serwera MDM, a nie sesji przegladarki — front wylogowalby rodzica."""
+    return 502 if status in (401, 403) else status
+
+
 def _cookie(name: str, value: str, max_age: int, *, http_only: bool, secure: bool) -> str:
     parts = [f"{name}={value}", "Path=/", f"Max-Age={max_age}", "SameSite=Strict"]
     if http_only:
@@ -845,6 +853,7 @@ def make_handler(
     *,
     cookie_secure: bool = True,
     bramka: BramkaAdmin | None = None,
+    mdm: MdmApi | None = None,
 ):
     static_root = static_dir.resolve()
 
@@ -976,6 +985,8 @@ def make_handler(
                     self._change_password()
                 elif path.startswith("/api/profile/"):
                     self._profile_post(path)
+                elif path.startswith("/api/mdm/"):
+                    self._mdm_post(path)
                 else:
                     self._json(404, {"error": "nie ma takiego endpointu"})
             except AuthError as exc:
@@ -1239,6 +1250,78 @@ def make_handler(
             else:
                 self._json(404, {"error": "nie ma takiego endpointu"})
 
+        # ---------------------------------------------------------------- MDM
+        # Panel jest posrednikiem: token API serwera MDM zostaje w backendzie,
+        # a przegladarka widzi tylko zalogowana sesje panelu (+ CSRF przy akcjach).
+        def _mdm_api(self) -> MdmApi:
+            if mdm is None:
+                raise MdmError(404, "integracja MDM wylaczona (mdm.enabled albo MDM_ADMIN_TOKEN)")
+            return mdm
+
+        def _mdm_get(self, path: str) -> None:
+            try:
+                api = self._mdm_api()
+                if path == "/api/mdm":
+                    self._json(200, {
+                        "available": True,
+                        "health": api.health(),
+                        "devices": api.devices(),
+                        "os_update": api.request("GET", "/api/os-update"),
+                        "events": api.request("GET", "/api/events?last=50"),
+                    })
+                elif m := re.fullmatch(r"/api/mdm/devices/([0-9A-Fa-f-]{8,64})", path):
+                    self._json(200, api.request("GET", f"/api/devices/{m[1]}"))
+                else:
+                    self._json(404, {"error": "nie ma takiego endpointu"})
+            except MdmError as exc:
+                if mdm is None:
+                    self._json(200, {"available": False, "error": str(exc)})
+                else:
+                    self._json(_mdm_status(exc.status), {"error": str(exc)})
+
+        def _mdm_post(self, path: str) -> None:
+            session = self._authed()
+            data = self._read_json()
+            udid = data.get("udid")
+            if udid is not None and (
+                not isinstance(udid, str) or not re.fullmatch(r"[0-9A-Fa-f-]{8,64}", udid)
+            ):
+                raise AuthError(400, "Niepoprawny UDID")
+            try:
+                api = self._mdm_api()
+                if path == "/api/mdm/refresh" and udid:
+                    result = api.request("POST", f"/api/devices/{udid}/refresh")
+                elif path == "/api/mdm/command" and udid:
+                    rtype = data.get("request_type")
+                    if rtype not in ("DeviceLock", "RestartDevice"):
+                        raise AuthError(400, "Dozwolone: DeviceLock, RestartDevice")
+                    body = {"request_type": rtype}
+                    if rtype == "DeviceLock" and data.get("Message"):
+                        body["Message"] = self._str(data, "Message", 200)
+                    result = api.request("POST", f"/api/devices/{udid}/commands", body)
+                elif path == "/api/mdm/enroll":
+                    label = self._str(data, "label", 32)
+                    result = api.request("POST", "/api/enrollments", {"label": label})
+                elif path == "/api/mdm/os-update":
+                    if data.get("clear"):
+                        body = {"clear": True}
+                    elif data.get("disabled"):
+                        body = {"disabled": True}
+                    else:
+                        body = {
+                            "target_version": self._str(data, "target_version", 16),
+                            "deadline": self._str(data, "deadline", 19),
+                        }
+                    result = api.request("PUT", "/api/os-update", body)
+                else:
+                    self._json(404, {"error": "nie ma takiego endpointu"})
+                    return
+            except MdmError as exc:
+                self._json(_mdm_status(exc.status), {"error": str(exc)})
+                return
+            log.info("panel: %s -> %s %s", session.login, path, udid or "")
+            self._json(200, result)
+
         def _logout(self) -> None:
             session = self._session()
             if session is None:
@@ -1297,6 +1380,9 @@ def make_handler(
                 return
             if path == "/api/tv/aplikacja":
                 self._json(200, stan_aplikacji())
+                return
+            if path == "/api/mdm" or path.startswith("/api/mdm/"):
+                self._mdm_get(path)
                 return
             routes = {
                 "/api/screens": lambda c: queries.screens(c, params),
@@ -1445,7 +1531,7 @@ def start_panel(cfg: Config) -> ThreadingHTTPServer:
         (cfg.panel.host, cfg.panel.port),
         make_handler(
             queries, Path(cfg.panel.static_dir), auth, cookie_secure=cfg.panel.cookie_secure,
-            bramka=_bramka_admin(cfg),
+            bramka=_bramka_admin(cfg), mdm=build_api(cfg.mdm),
         ),
     )
     server.daemon_threads = True

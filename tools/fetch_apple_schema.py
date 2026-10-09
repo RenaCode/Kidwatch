@@ -32,11 +32,37 @@ PROFILES = {
     "com.apple.dnsSettings.managed": f"{BASE}/mdm/profiles/com.apple.dnsSettings.managed.yaml",
     "com.apple.applicationaccess": f"{BASE}/mdm/profiles/com.apple.applicationaccess.yaml",
     "TopLevel": f"{BASE}/mdm/profiles/TopLevel.yaml",
+    # kidwatch-mdm: profil zapisu do MDM i tozsamosc urzadzenia w nim.
+    "com.apple.mdm": f"{BASE}/mdm/profiles/com.apple.mdm.yaml",
+    "com.apple.security.pkcs12": f"{BASE}/mdm/profiles/com.apple.security.pkcs12.yaml",
 }
 DECLARATIONS = {
     "com.apple.configuration.network.dns-settings": (
         f"{BASE}/declarative/declarations/configurations/network.dns-settings.yaml"
     ),
+    # kidwatch-mdm: deklaracje DDM wysylane przez serwer.
+    "com.apple.activation.simple": f"{BASE}/declarative/declarations/activations/simple.yaml",
+    "com.apple.configuration.management.status-subscriptions": (
+        f"{BASE}/declarative/declarations/configurations/management.status-subscriptions.yaml"
+    ),
+    "com.apple.configuration.softwareupdate.enforcement.specific": (
+        f"{BASE}/declarative/declarations/configurations/softwareupdate.enforcement.specific.yaml"
+    ),
+    "com.apple.configuration.softwareupdate.settings": (
+        f"{BASE}/declarative/declarations/configurations/softwareupdate.settings.yaml"
+    ),
+}
+#: Komendy MDM, ktore kidwatch-mdm wysyla — walidowane tak samo jak profile.
+COMMANDS = {
+    "DeviceInformation": f"{BASE}/mdm/commands/information.device.yaml",
+    "SecurityInfo": f"{BASE}/mdm/commands/information.security.yaml",
+    "ProfileList": f"{BASE}/mdm/commands/profile.list.yaml",
+    "InstallProfile": f"{BASE}/mdm/commands/profile.install.yaml",
+    "RemoveProfile": f"{BASE}/mdm/commands/profile.remove.yaml",
+    "InstalledApplicationList": f"{BASE}/mdm/commands/application.installed.list.yaml",
+    "DeclarativeManagement": f"{BASE}/mdm/commands/declarativemanagement.yaml",
+    "DeviceLock": f"{BASE}/mdm/commands/device.lock.yaml",
+    "RestartDevice": f"{BASE}/mdm/commands/device.restart.yaml",
 }
 
 
@@ -96,6 +122,7 @@ def main() -> int:
         ),
         "profiles": {},
         "declarations": {},
+        "commands": {},
     }
     for name, url in PROFILES.items():
         index["profiles"][name] = _distill_document(fetch(url))
@@ -103,6 +130,9 @@ def main() -> int:
     for name, url in DECLARATIONS.items():
         index["declarations"][name] = _distill_document(fetch(url))
         print(f"  {name}: {len(index['declarations'][name]['keys'])} kluczy")
+    for name, url in COMMANDS.items():
+        index["commands"][name] = _distill_document(fetch(url))
+        print(f"  {name}: {len(index['commands'][name]['keys'])} kluczy")
 
     OUT.write_text(json.dumps(index, indent=1, ensure_ascii=False, sort_keys=True) + "\n", "utf-8")
     print(f"zapisano {OUT} ({OUT.stat().st_size // 1024} KB)")

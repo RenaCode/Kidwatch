@@ -1,0 +1,82 @@
+# JEDEN pod: SQLite ma jednego pisarza, a kolejka komend nie moze byc
+# obslugiwana z dwoch miejsc naraz (ten sam iPad dostalby komende dwa razy).
+replicaCount: 1
+revisionHistoryLimit: 3
+
+imagePullSecrets:
+  - name: ghcr-pull
+
+image:
+  repository: ghcr.io/renacode/kidwatch-mdm
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+resources:
+  limits:
+    memory: 256Mi
+  requests:
+    cpu: 10m
+    memory: 96Mi
+
+persistence:
+  # Baza: urzadzenia, tokeny push, kolejka komend, stan profili. Utrata =
+  # kazdy iPad trzeba zapisac od nowa, wiec wolumen przezywa `helm uninstall`.
+  size: 1Gi
+  storageClass: ""
+  accessMode: ReadWriteOnce
+
+# Adres, pod ktorym iPady widza serwer. Wchodzi do profilu zapisu jako
+# ServerURL/CheckInURL i NIE MOZE sie zmienic po zapisie (schemat Apple).
+publicUrl: https://mdm.renacode.com
+
+ingress:
+  enabled: true
+  className: traefik
+  host: mdm.renacode.com
+  tlsSecret: kidwatch-mdm-tls-cert
+  clusterIssuer: letsencrypt-prod
+
+# ---------------------------------------------------------------- SEKRETY
+# Nic z ponizszego nie lezy w repo (repo jest publiczne). Zakladasz recznie:
+#
+# 1) CA tozsamosci urzadzen — RAZ, potem tylko kopia zapasowa:
+#      kidwatch-mdm init-ca --dir ./mdm-ca
+#      kubectl -n default create secret generic kidwatch-mdm-ca \
+#        --from-file=ca.crt=./mdm-ca/ca.crt --from-file=ca.key=./mdm-ca/ca.key
+#    Utrata ca.key = wszystkie iPady do ponownego zapisu.
+caSecret: kidwatch-mdm-ca
+#
+# 2) Certyfikat push APNs (kidwatch-mdm apns ..., docs/mdm.md):
+#      kubectl -n default create secret generic kidwatch-mdm-apns \
+#        --from-file=push.pem=<pobrany z identity.apple.com>.pem \
+#        --from-file=push.key=$HOME/.kidwatch-mdm/apns/push.key
+#    Brak sekretu = serwer startuje, ale odmawia zapisu iPadow.
+apnsSecret: kidwatch-mdm-apns
+#
+# 3) Token API (ten sam wpisujesz w konfiguracji Kidwatch):
+#      kubectl -n default create secret generic kidwatch-mdm-admin \
+#        --from-literal=token=$(openssl rand -hex 32)
+adminSecret: kidwatch-mdm-admin
+#
+# 4) Polityka z prawdziwymi adresami NextDNS i etykietami dzieci
+#    (wzorzec: files/policy.example.yaml):
+#      kubectl -n default create secret generic kidwatch-mdm-policy \
+#        --from-file=policy.yaml=./policy.yaml
+policySecret: kidwatch-mdm-policy
+
+ports:
+  mdm: 8080
+  admin: 8081
+
+# ------------------------------------------------------------ NETWORKPOLICY
+# Port MDM: tylko Traefik (iPady przez Ingress). Port admina: tylko pod
+# Kidwatch z tej samej przestrzeni nazw. Wycofanie: `enabled: false`.
+networkPolicy:
+  enabled: true
+  traefik:
+    namespace: kube-system
+    podLabels:
+      app.kubernetes.io/name: traefik
+  adminClients:
+    podLabels:
+      app.kubernetes.io/name: kidwatch

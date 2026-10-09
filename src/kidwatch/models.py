@@ -87,6 +87,8 @@ class NotifyKind(StrEnum):
     NIGHT = "night"
     WEEKLY = "weekly"
     GAME = "game"
+    # --- wlasny serwer MDM (mdm.py): profil zdjety, iPad cichy, certyfikat
+    MDM = "mdm"
 
 
 #: Rodzaje pochodzace z odczytu urzadzen. Maja wlasny budzet godzinowy.
