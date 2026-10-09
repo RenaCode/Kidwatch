@@ -35,13 +35,39 @@ function saveChild(child) {
   } catch { /* bez pamieci wyboru - trudno */ }
 }
 
+/* Podglad UI bez backendu - WYLACZNIE w `npm run dev` (import.meta.env.DEV).
+   W buildzie produkcyjnym Vite podstawia false i caly kod podgladu znika:
+   na produkcji nie ma przycisku, falszywego konta ani zmyslonych danych. */
+function readPreview() {
+  if (!import.meta.env.DEV) return false;
+  try {
+    return window.location.search.includes('preview')
+      || window.localStorage.getItem('kidwatch_preview') === 'true';
+  } catch { return false; }
+}
+const PREVIEW_META = {
+  children: ['Jan', 'Anna'],
+  devices: [
+    { name: 'iPad Jan', child: 'Jan', icon: 'tablet' },
+    { name: 'iPad Anna', child: 'Anna', icon: 'tablet' },
+    { name: 'Telewizor', child: null, icon: 'tv' },
+  ],
+};
+
 export default function App() {
   // 'checking' zapobiega mignieciu ekranu logowania u zalogowanego uzytkownika
   // przy odswiezeniu strony - dopiero odpowiedz /api/auth/me rozstrzyga.
   const [authState, setAuthState] = useState('checking');
   const [user, setUser] = useState(null);
 
+  const isPreview = import.meta.env.DEV && readPreview();
+
   const checkSession = useCallback(async () => {
+    if (isPreview) {
+      setUser({ login: 'admin', role: 'admin', totp_enabled: true, backup_codes_left: 5 });
+      setAuthState('in');
+      return;
+    }
     try {
       setUser(await get('/api/auth/me'));
       setAuthState('in');
@@ -49,7 +75,7 @@ export default function App() {
       setUser(null);
       setAuthState('out');
     }
-  }, []);
+  }, [isPreview]);
 
   useEffect(() => { checkSession(); }, [checkSession]);
 
@@ -129,11 +155,13 @@ function Panel({ user, onSignOut, onUserChanged }) {
 
   // Zapamietane dziecko, ktorego nie ma juz w konfiguracji, wraca do
   // "Wszyscy" - inaczej kazdy widok dostawalby 400 az do recznego klikniecia.
+  const activeMeta = meta.data || (import.meta.env.DEV && readPreview() ? PREVIEW_META : { children: [], devices: [] });
+
   useEffect(() => {
-    if (child && meta.data && !meta.data.children.includes(child)) setChild('');
+    if (child && activeMeta.children && !activeMeta.children.includes(child)) setChild('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meta.data, child]);
-  const known = !child || meta.data?.children.includes(child);
+  }, [activeMeta, child]);
+  const known = !child || activeMeta.children.includes(child);
 
   const devices = useApi(known ? `/api/devices${qs({ child })}` : null, [], { refreshMs: 30000 });
   // Pauza monitoringu TV osobno od kart: baner ma byc takze przy wybranym
@@ -141,7 +169,7 @@ function Panel({ user, onSignOut, onUserChanged }) {
   const tvPause = useApi('/api/tv/pause', [], { refreshMs: 30000 });
   const tvPauseChanged = () => { tvPause.reload(); devices.reload(); };
   const Active = SECTIONS.find((s) => s.key === section)?.Component || Notifications;
-  const children = meta.data?.children || [];
+  const children = activeMeta.children || [];
 
   return (
     <div className="app-container">
