@@ -12,7 +12,7 @@ czysty Python — bez binarki `adb` w obrazie):
 Co `usage_poll_minutes` (15) dodatkowo `dumpsys usagestats -c` — patrz
 "Dokladny czas z usagestats" nizej.
 
-`media_session` to to samo, z czego korzysta pilot i Google Home: kazda
+`media_session` to to samo, z czego korzysta Google Home: kazda
 aplikacja z odtwarzaczem publikuje sesje z pakietem, stanem odtwarzania
 (PlaybackState: 3 = gra, 2 = pauza) i opisem MediaDescription
 "tytul, podtytul, opis". YouTube podaje tytul i kanal ("Myjka okien | Fiksiki

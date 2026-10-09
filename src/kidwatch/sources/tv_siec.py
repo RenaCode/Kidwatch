@@ -180,9 +180,8 @@ class HybridProbe(TvProbe):
         if not app.sparowana:
             return None
         try:
-            # Bez pierwszego planu: liczy sie tylko sesja, ktora GRA. Zatrzymane
-            # wideo nie jest ogladaniem (pilot Google TV, ktory podawal pierwszy
-            # plan, usuniety 2026-10-09).
+            # Aplikacja na TV nie zna pierwszego planu: liczy sie tylko sesja,
+            # ktora GRA. Zatrzymane wideo nie jest ogladaniem.
             snap = await app.snapshot(None)
         except TvUnavailable as exc:
             if self._aplikacja_ok is not False:

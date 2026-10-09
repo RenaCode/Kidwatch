@@ -74,7 +74,7 @@ def test_json_na_snapshot_jak_z_dumpsys():
 
 
 def test_pauza_liczy_sie_tylko_ze_znanym_pierwszym_planem():
-    """Bez pierwszego planu (pilot Google TV usuniety) pauza nie jest ogladaniem."""
+    """Bez znanego pierwszego planu pauza nie jest ogladaniem."""
     s = stan(sesje=[{"pakiet": YT, "stan": 2, "tytul": "X"}])
     assert snapshot_z_json(s).playing({}) is None
     assert snapshot_z_json(s, foreground=YT).playing({}).title == "X"
@@ -119,7 +119,7 @@ async def test_aplikacja_ma_pierwszenstwo_i_daje_tytul(store, tmp_path):
     notes = await watcher(store, app).poll(T0)
     assert notes[0].kind is NotifyKind.TV_START
     assert notes[0].title == "TV salon: start — Fiksiki: Myjka okien (YouTube)"
-    assert "ruchu" not in notes[0].text and "pilota" not in notes[0].text
+    assert "ruchu" not in notes[0].text
 
 
 async def test_aplikacja_nie_odpowiada_to_odczyt_zastepczy(store, tmp_path):
