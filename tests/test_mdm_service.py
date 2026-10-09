@@ -81,9 +81,18 @@ class FakePusher:
         return None
 
 
+def unwrap_profile(data: bytes) -> bytes:
+    """Profil podpisany (CMS SignedData) albo goly plist — jak iOS przy instalacji."""
+    if data.lstrip().startswith(b"<?xml") or data.startswith(b"bplist"):
+        return data
+    from asn1crypto import cms
+
+    return cms.ContentInfo.load(data)["content"]["encap_content_info"]["content"].native
+
+
 class FakeIpad:
     def __init__(self, profile_bytes: bytes, udid: str = "00008030-0000AAAA0000BBBB") -> None:
-        profile = plistlib.loads(profile_bytes)
+        profile = plistlib.loads(unwrap_profile(profile_bytes))
         ident = next(
             p for p in profile["PayloadContent"] if p["PayloadType"] == "com.apple.security.pkcs12"
         )

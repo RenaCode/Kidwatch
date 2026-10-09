@@ -30,6 +30,7 @@ from . import profiles
 from .apns import NoPusher, Pusher
 from .pki import CA, SignatureError, fingerprint, verify_mdm_signature
 from .policy import Policy
+from .signing import ProfileSigner
 from .store import Store, from_iso, iso, now_utc
 
 log = logging.getLogger(__name__)
@@ -95,6 +96,7 @@ class MDMService:
         public_url: str,
         pusher: Pusher | None = None,
         enrollment_ttl: timedelta = timedelta(hours=24),
+        signer: ProfileSigner | None = None,
     ) -> None:
         self.store = store
         self.ca = ca
@@ -102,6 +104,7 @@ class MDMService:
         self.public_url = public_url.rstrip("/")
         self.pusher: Pusher = pusher or NoPusher()
         self.enrollment_ttl = enrollment_ttl
+        self.signer = signer
         #: Pushe odkladane poza watek odpowiedzi: iPad, ktoremu odpowiadamy na
         #: TokenUpdate, nie powinien dostac pusha w trakcie tej samej wymiany.
         self._kick_lock = threading.Lock()
@@ -141,9 +144,19 @@ class MDMService:
             device_name=dev.name,
         )
         self.store.record_identity(token, prof.cert_fingerprint, now)
+        data = prof.data
+        if self.signer is not None:
+            try:
+                data = self.signer.sign(prof.data)
+            except (OSError, ValueError) as exc:
+                # Podpis zmienia tylko etykiete w iOS („Zweryfikowany"); zapis
+                # dziala i bez niego. Brak podpisu nie moze zablokowac zapisu
+                # iPada, ale ma byc widoczny w logu i w dzienniku zdarzen.
+                log.error("profil zapisu NIEPODPISANY: %s", exc)
+                self.store.event("profile_unsigned", detail=str(exc))
         return Response(
             200,
-            prof.data,
+            data,
             MOBILECONFIG,
             {"Content-Disposition": f'attachment; filename="kidwatch-{row["label"]}.mobileconfig"'},
         )
