@@ -520,3 +520,22 @@ def test_last_seen_updates(svc):
     svc.store.update_device(ipad.udid, last_seen_at=iso(now_utc() - timedelta(days=2)))
     svc.connect(*ipad.msg(Status="Idle"))
     assert svc.store.device(ipad.udid)["last_seen_at"] > iso(now_utc() - timedelta(minutes=1))
+
+
+@pytest.mark.parametrize(
+    ("failure", "alarm"),
+    [
+        ({"count": 0}, False),  # tak raportuje iPad bez zadnej awarii (iPadOS 27, 2026-10-09)
+        ({"count": 2, "reason": "InsufficientStorage", "timestamp": "2026-10-09T09:00:00Z"}, True),
+    ],
+)
+def test_os_update_alarm_only_on_real_failures(svc, failure, alarm):
+    ipad = enroll(svc)
+    report = {"StatusItems": {"softwareupdate": {"failure-reason": failure}}, "Errors": []}
+    svc.checkin(
+        *ipad.msg(
+            MessageType="DeclarativeManagement", Endpoint="status", Data=json.dumps(report).encode()
+        )
+    )
+    kinds = [e["kind"] for e in svc.store.events()]
+    assert ("os_update_failed" in kinds) is alarm

@@ -450,8 +450,11 @@ class MDMService:
         )
         if report.get("Errors"):
             self.store.event("ddm_status_errors", device["udid"], report["Errors"])
+        # failure-reason przychodzi ZAWSZE, takze bez awarii: {"count": 0}
+        # (schemat: count = 0, gdy nie bylo porazek). Alarm tylko przy count > 0,
+        # inaczej kazdy raport statusu bylby „nieudana aktualizacja".
         failure = (items.get("softwareupdate") or {}).get("failure-reason")
-        if failure:
+        if isinstance(failure, dict) and (failure.get("count") or 0) > 0:
             self.store.event("os_update_failed", device["udid"], failure)
 
     # =========================================================== uzgadnianie
