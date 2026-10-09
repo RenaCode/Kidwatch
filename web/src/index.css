@@ -931,3 +931,10 @@ select.input-field option { background: var(--bg-dark); color: var(--text-main);
     transition-duration: 0.01ms !important; scroll-behavior: auto !important;
   }
 }
+
+/* ------------------------------------------------------------------ MDM */
+.mdm-stack { display: flex; flex-direction: column; gap: 16px; }
+.mdm-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.mdm-device, .mdm-form { display: flex; flex-direction: column; gap: 12px; font-size: 0.85rem; }
+.mdm-form .card-title { margin-bottom: 0; }
+.mdm-event { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 0.82rem; }

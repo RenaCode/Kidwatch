@@ -654,6 +654,9 @@ class MdmConfig(_Base):
     #: Po wygasnieciu zaden iPad nie dostanie komendy, a odnowienie musi byc
     #: z tego samego Apple ID.
     cert_warn_days: int = Field(default=30, ge=1)
+    #: Brak udanego uzgadniania na serwerze MDM dluzej niz tyle = alarm (raz
+    #: na dobe). Obieg co 5 min, ponowienie po bledzie co minute.
+    reconcile_alert_minutes: int = Field(default=30, ge=10)
 
     def token(self) -> str | None:
         return os.environ.get("MDM_ADMIN_TOKEN", "").strip() or None

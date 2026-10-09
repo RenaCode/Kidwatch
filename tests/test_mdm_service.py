@@ -541,3 +541,118 @@ def test_os_update_alarm_only_on_real_failures(svc, failure, alarm):
     )
     kinds = [e["kind"] for e in svc.store.events()]
     assert ("os_update_failed" in kinds) is alarm
+
+
+# ================================================= audyt 2026-10-09: S3, S4, N6
+def _stuck_not_now(svc) -> FakeIpad:
+    """iPad z zablokowanym ekranem: kazda komenda konczy sie NotNow."""
+    ipad = enroll(svc)
+    svc.store.query("UPDATE commands SET status='cancelled'")
+    svc.reconcile()  # profil ograniczen + DDM do kolejki
+    resp = svc.connect(*ipad.msg(Status="Idle"))
+    while resp.body:
+        cmd = plistlib.loads(resp.body)["CommandUUID"]
+        resp = svc.connect(*ipad.msg(Status="NotNow", CommandUUID=cmd))
+    return ipad
+
+
+def test_not_now_queue_is_pushed_with_growing_gap(svc):
+    """Produkcja 09.10: komendy w NotNow od 09:12, push co obieg (5 min) bez
+    konca — 288 pushy na dobe do jednego iPada."""
+    _stuck_not_now(svc)
+    t0 = now_utc()
+    times = []
+    for i in range(1, 24 * 12 + 1):  # doba obiegow co 5 min
+        t = t0 + timedelta(minutes=5 * i)
+        if svc.reconcile(now=t)["pushed"]:
+            times.append(t)
+    assert 15 <= len(times) <= 30, len(times)
+    # Pierwsze pol godziny bez zmian: zablokowany na chwile iPad dostaje push
+    # w kazdym obiegu.
+    assert len([t for t in times if t - t0 <= timedelta(minutes=30)]) >= 5
+    # Po kilkunastu godzinach ciszy odstep rosnie do MAX_PUSH_GAP — ale push
+    # nadal idzie, wiec komenda wykona sie, gdy iPad bedzie wolny.
+    gaps = [b - a for a, b in zip(times, times[1:], strict=False)]
+    assert gaps[-1] == timedelta(hours=4)
+    assert times[-1] > t0 + timedelta(hours=20)
+
+
+def test_new_command_resets_push_backoff(svc):
+    ipad = _stuck_not_now(svc)
+    t0 = now_utc()
+    for i in range(1, 12 * 12):  # 12 h zastoju
+        svc.reconcile(now=t0 + timedelta(minutes=5 * i))
+    late = t0 + timedelta(hours=12, minutes=1)
+    svc.store.update_device(ipad.udid, last_push_at=iso(late - timedelta(minutes=5)))
+    assert svc.reconcile(now=late)["pushed"] == 0  # w odstepie 4 h
+    # Nowa komenda to postep kolejki — budzimy od razu.
+    svc.store.enqueue(ipad.udid, "SecurityInfo", {})
+    svc.store.query(
+        "UPDATE commands SET created_at=? WHERE status='queued'", (iso(late),)
+    )
+    assert svc.reconcile(now=late + timedelta(minutes=5))["pushed"] == 1
+
+
+def test_push_gap_ladder():
+    from kidwatch_mdm.service import MAX_PUSH_GAP, push_gap
+
+    assert push_gap(timedelta(minutes=10)) == timedelta(0)
+    assert push_gap(timedelta(hours=1)) == timedelta(minutes=15)
+    assert push_gap(timedelta(hours=5)) == timedelta(hours=1)
+    assert push_gap(timedelta(days=3)) == MAX_PUSH_GAP
+
+
+def test_reconcile_records_last_success(svc):
+    enroll(svc)
+    assert svc.store.setting("last_reconcile_ok_at") is None
+    when = now_utc()
+    svc.reconcile(now=when)
+    assert svc.store.setting("last_reconcile_ok_at") == iso(when)
+
+
+def test_failing_reconcile_is_recorded_and_retried_not_spammed(svc, monkeypatch):
+    """Audyt S4: wyjatek w uzgadnianiu byl tylko logowany, a obieg ponawiany
+    co sekunde. Teraz blad trafia do /api/health, ponowienie za minute."""
+    from kidwatch_mdm import __main__ as cli
+
+    calls = []
+
+    def boom(now=None):
+        calls.append(1)
+        raise RuntimeError("zla polityka")
+
+    monkeypatch.setattr(svc, "reconcile", boom)
+    cli.loop_step(svc, 1000.0)
+    assert svc.last_reconcile_error == "RuntimeError: zla polityka"
+    assert svc.next_reconcile == 1000.0 + cli.RETRY_SECONDS
+    for second in range(1, 30):
+        cli.loop_step(svc, 1000.0 + second)
+    assert len(calls) == 1
+    assert svc.store.setting("last_reconcile_ok_at") is None
+
+    monkeypatch.undo()
+    cli.loop_step(svc, 1000.0 + cli.RETRY_SECONDS)
+    assert svc.last_reconcile_error is None
+    assert svc.store.setting("last_reconcile_ok_at") is not None
+    assert svc.next_reconcile == 1000.0 + cli.RETRY_SECONDS + cli.RECONCILE_SECONDS
+
+
+def test_ipad_exchanges_are_logged_at_info_without_udid(svc, caplog):
+    """Audyt N6: polaczenia iPadow tylko na DEBUG — w logu produkcji widac bylo
+    24 pushe i ani slowa, czy iPad sie odezwal."""
+    ipad = enroll(svc)
+    svc.store.query("UPDATE commands SET status='cancelled'")
+    cmd = svc.store.enqueue(ipad.udid, "SecurityInfo", {})
+    with caplog.at_level("INFO", logger="kidwatch_mdm.service"):
+        svc.connect(*ipad.msg(Status="Idle"))
+        svc.connect(*ipad.msg(Status="NotNow", CommandUUID=cmd))
+    lines = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
+    assert "connect dziecko1: Idle -> SecurityInfo" in lines
+    assert "connect dziecko1: NotNow (SecurityInfo) -> koniec kolejki" in lines
+    assert not [line for line in lines if ipad.udid in line or "MAGIC" in line]
+
+
+def test_database_instance_is_stable_and_unique(tmp_path):
+    first = Store(tmp_path / "a.db").setting("instance")
+    assert first and Store(tmp_path / "a.db").setting("instance") == first
+    assert Store(tmp_path / "b.db").setting("instance") != first

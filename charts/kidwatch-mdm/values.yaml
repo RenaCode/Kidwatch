@@ -80,3 +80,16 @@ networkPolicy:
   adminClients:
     podLabels:
       app.kubernetes.io/name: kidwatch
+  # EGRESS (audyt 2026-10-09): tylko DNS klastra i TCP 443 do internetu
+  # (APNs). Pod jest wystawiony publicznie, wiec nie moze siegac do sieci
+  # domowej za tunelem — i nie potrzebuje z niej niczego (bez listy wyjatkow).
+  #
+  # ADRESY SA PUSTE CELOWO - repo jest publiczne. Prawdziwe zakresy domowe
+  # wstrzykuje wdrozenie (Argo CD `helm.valuesObject` w prywatnym repo
+  # infrastruktury), tak jak dla chartu kidwatch.
+  #
+  # Szybkie wycofanie samego egress: `egress.enabled: false`.
+  egress:
+    enabled: true
+    # Zakresy niedostepne dla poda (LAN domowy i siec tunelu), CIDR.
+    siecDomowa: []

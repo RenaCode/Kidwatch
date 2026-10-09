@@ -32,6 +32,8 @@ from . import apns_cert
 DEFAULT_APNS_DIR = Path.home() / ".kidwatch-mdm" / "apns"
 #: Co ile uzgadniac stan iPadow z polityka. Zmiana z API wymusza obieg od razu.
 RECONCILE_SECONDS = 300
+#: Ponowienie po nieudanym uzgadnianiu.
+RETRY_SECONDS = 60
 
 log = logging.getLogger("kidwatch_mdm")
 
@@ -82,6 +84,33 @@ def build_service():
     )
 
 
+def loop_step(service, now: float) -> None:
+    """Jeden krok petli: pushe odlozone i — gdy pora — uzgadnianie.
+
+    Termin nastepnego obiegu laduje w `service.next_reconcile`. Po bledzie
+    ponowienie za RETRY_SECONDS, nie w nastepnej sekundzie: trwaly blad
+    dawal traceback co sekunde i zalewal log.
+    """
+    try:
+        service.flush_kicks()
+    except Exception:
+        log.exception("blad wysylki pushy")
+    if now < service.next_reconcile:
+        return
+    try:
+        stats = service.reconcile()
+    except Exception as exc:
+        # Petla nie moze umrzec od jednego bledu — wtedy serwer HTTP dalej
+        # odpowiada, a nikt nie uzgadnia stanu i nie wysyla pushy.
+        log.exception("blad petli uzgadniania")
+        service.last_reconcile_error = f"{type(exc).__name__}: {exc}"[:300]
+        service.next_reconcile = now + RETRY_SECONDS
+        return
+    log.info("uzgadnianie: %s", stats)
+    service.last_reconcile_error = None
+    service.next_reconcile = now + RECONCILE_SECONDS
+
+
 def cmd_run(args) -> int:
     from . import server
 
@@ -99,19 +128,12 @@ def cmd_run(args) -> int:
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     heartbeat = _env("KIDWATCH_MDM_HEARTBEAT")
-    next_reconcile = 0.0
     while not stop.is_set():
-        now = time.monotonic()
-        try:
-            service.flush_kicks()
-            if now >= next_reconcile:
-                stats = service.reconcile()
-                log.info("uzgadnianie: %s", stats)
-                next_reconcile = now + RECONCILE_SECONDS
-        except Exception:
-            # Petla nie moze umrzec od jednego bledu — wtedy serwer HTTP dalej
-            # odpowiada, a nikt nie uzgadnia stanu i nie wysyla pushy.
-            log.exception("blad petli uzgadniania")
+        loop_step(service, time.monotonic())
+        # Tetno = petla zyje (nie zawisla). Czy uzgadnianie sie UDAJE, mowi
+        # last_reconcile_ok_at w /api/health — pilnuje tego czujka Kidwatch.
+        # Restart poda nie naprawi zlej polityki ani bledu w kodzie, a co
+        # kwadrans zrywalby polaczenia iPadow.
         if heartbeat:
             Path(heartbeat).touch()
         stop.wait(1.0)

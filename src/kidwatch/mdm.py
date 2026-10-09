@@ -30,6 +30,8 @@ from .store import Store
 log = logging.getLogger(__name__)
 
 CURSOR_KEY = "mdm:events"
+#: Identyfikator bazy serwera MDM, do ktorej odnosi sie kursor.
+INSTANCE_KEY = "mdm:instance"
 
 
 class MdmError(RuntimeError):
@@ -69,6 +71,11 @@ class MdmApi:
 
     def events(self, since: int) -> list[dict]:
         return self.request("GET", f"/api/events?since={int(since)}")
+
+    def last_event_id(self) -> int:
+        """Najwyzszy numer zdarzenia — dla serwera bez `last_event_id` w health."""
+        rows = self.request("GET", "/api/events?last=1")
+        return max((int(r["id"]) for r in rows), default=0)
 
     def close(self) -> None:
         self._client.close()
@@ -192,32 +199,90 @@ class MdmWatcher:
     # a baze Kidwatch dotyka WYLACZNIE z watku petli. Polaczenie SQLite nie
     # wolno uzyc w innym watku niz ten, ktory je otworzyl — pierwsza wersja
     # robila wszystko w to_thread i padala przy kazdym odczycie (2026-10-09).
-    def cursor(self) -> int:
-        return int(self.store.get_meta(CURSOR_KEY) or 0)
+    def cursor(self) -> int | None:
+        """Kursor dziennika; None = Kidwatch jeszcze nigdy nie czytal serwera."""
+        raw = self.store.get_meta(CURSOR_KEY)
+        return None if raw is None else int(raw)
 
-    def fetch(self, since: int) -> dict:
+    def fetch(self, since: int | None, instance: str | None = None) -> dict:
+        health = self.api.health()
+        head = health.get("last_event_id")
+        server = health.get("instance")
+        # Kiedy kursor nic nie znaczy i trzeba zaczac od biezacego konca:
+        #   first    — pierwsze uruchomienie: historia serwera to nie alarmy,
+        #              a pominiecie tylko pierwszej porcji (200) puszczalo reszte;
+        #   instance — nowa baza serwera (nowy PVC, ponowny init): numeracja
+        #              od 1, stary kursor wyciszalby wszystko na tygodnie;
+        #   rewind   — ta sama baza odtworzona z kopii: max(id) ponizej kursora.
+        reset = None
+        if since is None:
+            reset = "first"
+        elif instance and server and server != instance:
+            reset = "instance"
+        elif head is not None and int(head) < since:
+            reset = "rewind"
+        if reset and head is None:
+            head = self.api.last_event_id()
         return {
             "devices": self.api.devices(),
-            "events": self.api.events(since),
-            "health": self.api.health(),
-            "since": since,
+            "events": [] if reset else self.api.events(since),
+            "health": health,
+            "since": since or 0,
+            "reset": reset,
+            "head": int(head or 0),
         }
 
     def process(self, data: dict, now: datetime) -> list[Notification]:
         devices = data["devices"]
         by_udid = {d["udid"]: d for d in devices}
-        out = self._events(by_udid, data["events"], data["since"], now)
+        out = self._reset(data, now)
+        out += self._events(by_udid, data["events"], data["since"], now)
         out += self._silent(devices, now)
         out += self._certificate(data["health"], now)
+        out += self._reconcile(data["health"], now)
+        server = data["health"].get("instance")
+        if server and server != self.store.get_meta(INSTANCE_KEY):
+            self.store.set_meta(INSTANCE_KEY, server)
         return out
 
     def poll(self, now: datetime) -> list[Notification]:
         """Wszystko w biezacym watku (CLI, testy)."""
-        return self.process(self.fetch(self.cursor()), now)
+        return self.process(self.fetch(self.cursor(), self.store.get_meta(INSTANCE_KEY)), now)
 
     async def poll_async(self, now: datetime) -> list[Notification]:
-        data = await asyncio.to_thread(self.fetch, self.cursor())
+        data = await asyncio.to_thread(
+            self.fetch, self.cursor(), self.store.get_meta(INSTANCE_KEY)
+        )
         return self.process(data, now)
+
+    def _reset(self, data: dict, now: datetime) -> list[Notification]:
+        reset = data.get("reset")
+        if not reset:
+            return []
+        self.store.set_meta(CURSOR_KEY, str(data["head"]))
+        if reset == "first":
+            return []
+        log.warning(
+            "mdm: %s bazy serwera — kursor %s -> %s",
+            "nowa instancja" if reset == "instance" else "cofniecie",
+            data["since"],
+            data["head"],
+        )
+        return [
+            Notification(
+                kind=NotifyKind.MDM,
+                title="MDM: baza serwera " + ("nowa" if reset == "instance" else "odtworzona"),
+                text=(
+                    "Serwer MDM ma inna baze niz przy ostatnim odczycie (nowy wolumen, "
+                    "ponowna instalacja albo kopia zapasowa). Zdarzenia sprzed tej chwili "
+                    "pominiete — sprawdz w zakladce MDM, czy iPady sa zapisane."
+                ),
+                dedup_key=f"mdm-reset:{data['health'].get('instance')}:{data['head']}",
+                ts=now,
+                priority=4,
+                tags=("mdm",),
+            )
+        ]
 
     def _name(self, device: dict | None, udid: str | None) -> str:
         if device:
@@ -228,13 +293,9 @@ class MdmWatcher:
         self, by_udid: dict[str, dict], events: list[dict], since: int, now: datetime
     ) -> list[Notification]:
         out: list[Notification] = []
-        first_run = since == 0
         last = since
         for event in events:
             last = max(last, int(event["id"]))
-            if first_run:
-                # Pierwsze uruchomienie: nie wysylamy calej historii serwera.
-                continue
             described = _describe(
                 event, self._name(by_udid.get(event.get("udid")), event.get("udid"))
             )
@@ -255,7 +316,7 @@ class MdmWatcher:
                     tags=("mdm",),
                 )
             )
-        if last != since or first_run:
+        if last != since:
             self.store.set_meta(CURSOR_KEY, str(last))
         return out
 
@@ -312,6 +373,38 @@ class MdmWatcher:
                 dedup_key=f"mdm-cert:{bucket}",
                 ts=now,
                 priority=5 if days <= 7 else 4,
+                tags=("mdm",),
+            )
+        ]
+
+
+    def _reconcile(self, health: dict, now: datetime) -> list[Notification]:
+        """Uzgadnianie serwera padajace przy kazdym obiegu: pod zdrowy, a nikt
+        nie wgrywa profili, DDM ani nie budzi iPadow."""
+        if "last_reconcile_ok_at" not in health:
+            return []  # serwer sprzed tego pola
+        ok = health.get("last_reconcile_ok_at") or health.get("started_at")
+        if not ok:
+            return []
+        stalled = now - datetime.fromisoformat(ok)
+        if stalled < timedelta(minutes=self.cfg.reconcile_alert_minutes):
+            return []
+        minutes = int(stalled.total_seconds() // 60)
+        since = f"{minutes // 60} h" if minutes >= 60 else f"{minutes} min"
+        error = health.get("last_reconcile_error")
+        return [
+            Notification(
+                kind=NotifyKind.MDM,
+                title=f"MDM: uzgadnianie nie dziala od {since}",
+                text=(
+                    "Serwer MDM odpowiada, ale nie uzgadnia stanu iPadow: profile, DDM i "
+                    "pushe stoja. "
+                    + (f"Ostatni blad: {error}" if error else "Sprawdz log kidwatch-mdm.")
+                ),
+                # Raz na dobe — trwaly blad nie moze dawac alarmu co minute.
+                dedup_key=f"mdm-reconcile:{now.date().isoformat()}",
+                ts=now,
+                priority=4,
                 tags=("mdm",),
             )
         ]

@@ -160,6 +160,14 @@ class Store:
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        # Identyfikator TEJ bazy: nowa baza (nowy PVC, ponowny init) = nowy
+        # identyfikator. Kidwatch po nim poznaje, ze numeracja zdarzen ruszyla
+        # od 1 i jego kursor nic tu nie znaczy. Kopia odtworzona z backupu
+        # zachowuje identyfikator — ja zdradza cofniety max(id).
+        self.conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('instance', ?)",
+            (json.dumps(str(uuid.uuid4())),),
+        )
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
@@ -242,6 +250,10 @@ class Store:
             "SELECT * FROM events WHERE id > ? ORDER BY id LIMIT ?", (since_id, limit)
         )
 
+    def last_event_id(self) -> int:
+        row = self.one("SELECT MAX(id) AS id FROM events")
+        return int(row["id"] or 0)
+
     # -------------------------------------------------------------- komendy
     def enqueue(self, udid: str, request_type: str, body: dict, *, origin: str = "api") -> str:
         cmd_uuid = str(uuid.uuid4()).upper()
@@ -262,6 +274,21 @@ class Store:
             (udid, request_type),
         )
         return row is not None
+
+    def last_progress_at(self, udid: str) -> datetime | None:
+        """Ostatni postep kolejki: odpowiedz na komende albo nowa komenda.
+
+        NotNow i Idle bez odpowiedzi to nie postep — iPad tylko sie odezwal.
+        """
+        row = self.one(
+            "SELECT MAX(t) AS t FROM ("
+            " SELECT MAX(done_at) AS t FROM commands WHERE udid = :u"
+            " AND status IN ('acknowledged', 'error', 'format_error')"
+            " UNION ALL SELECT MAX(created_at) FROM commands WHERE udid = :u"
+            " AND status IN ('queued', 'sent', 'not_now'))",
+            {"u": udid},
+        )
+        return from_iso(row["t"]) if row else None
 
     def requeue_not_now(self, udid: str) -> None:
         """Idle otwiera nowa sesje: odlozone NotNow wracaja do kolejki."""

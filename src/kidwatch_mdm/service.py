@@ -68,6 +68,27 @@ REFRESH_COMMANDS = ("DeviceInformation", "SecurityInfo", "ProfileList", "Install
 #: uzgadniania nie powinna zasypywac go co obieg.
 MIN_PUSH_INTERVAL = timedelta(seconds=30)
 
+#: Ile czekac miedzy pushami uzgadniania, gdy kolejka stoi: (czas od ostatniego
+#: postepu, odstep). iPad z zablokowanym ekranem odpowiada NotNow i — wg Apple —
+#: sam polaczy sie ponownie, gdy bedzie mogl wykonac komende. Push w kazdym
+#: obiegu nic wtedy nie daje poza bateria i ryzykiem dlawienia przez APNs
+#: (2026-10-09: iPad budzony co 5 min przez 5 h). Rzadki push zostaje jako
+#: siatka bezpieczenstwa na wypadek zgubionego polaczenia.
+PUSH_BACKOFF = (
+    (timedelta(minutes=30), timedelta(0)),
+    (timedelta(hours=2), timedelta(minutes=15)),
+    (timedelta(hours=12), timedelta(hours=1)),
+)
+MAX_PUSH_GAP = timedelta(hours=4)
+
+
+def push_gap(stalled: timedelta) -> timedelta:
+    """Odstep miedzy pushami po `stalled` bez postepu kolejki."""
+    for limit, gap in PUSH_BACKOFF:
+        if stalled < limit:
+            return gap
+    return MAX_PUSH_GAP
+
 
 @dataclass
 class Response:
@@ -109,6 +130,10 @@ class MDMService:
         #: TokenUpdate, nie powinien dostac pusha w trakcie tej samej wymiany.
         self._kick_lock = threading.Lock()
         self._kicks: set[str] = set()
+        #: Stan petli uzgadniania (ustawia __main__.loop_step) do /api/health.
+        self.started_at = now_utc()
+        self.next_reconcile = 0.0
+        self.last_reconcile_error: str | None = None
 
     # ================================================================ zapis
     def create_enrollment(self, label: str) -> dict[str, str]:
@@ -201,6 +226,7 @@ class MDMService:
             return self._authenticate(message, fp)
         device = self._device_for(message, fp)
         udid = device["udid"]
+        log.info("checkin %s: %s %s", device["label"], kind, message.get("Endpoint") or "")
         self.store.update_device(udid, last_seen_at=iso(now_utc()))
         if kind == "TokenUpdate":
             return self._token_update(device, message)
@@ -305,6 +331,7 @@ class MDMService:
         self.store.update_device(udid, last_seen_at=iso(now_utc()))
         status = message.get("Status")
         cmd_uuid = message.get("CommandUUID")
+        row = None
 
         if status == "Idle":
             self.store.requeue_not_now(udid)
@@ -333,6 +360,15 @@ class MDMService:
                 raise ServiceError(400, f"nieznany Status {status!r}")
 
         nxt = self.store.next_command(udid)
+        # Jedna linia na wymiane: bez tego w logu widac tylko pushe, a nie to,
+        # czy iPad w ogole sie laczy i co odpowiada. Etykieta, bez UDID i tresci.
+        log.info(
+            "connect %s: %s%s -> %s",
+            device["label"],
+            status,
+            f" ({row['request_type']})" if cmd_uuid and status != "Idle" and row else "",
+            nxt.command["Command"]["RequestType"] if nxt else "koniec kolejki",
+        )
         if nxt is None:
             return Response(200, b"")
         return Response(200, plistlib.dumps(nxt.command))
@@ -525,9 +561,20 @@ class MDMService:
                 )
             )
             stats["enqueued"] += after - before
-            if after and self.push(udid, now=now):
+            if after and self._push_due(device, now) and self.push(udid, now=now):
                 stats["pushed"] += 1
+        # Trwale w bazie: liveness restartuje pod, a czujka Kidwatch ma widziec,
+        # ze uzgadnianie nie przeszlo od godziny, takze po restarcie.
+        self.store.set_setting("last_reconcile_ok_at", iso(now))
         return stats
+
+    def _push_due(self, device, now: datetime) -> bool:
+        last = from_iso(device["last_push_at"])
+        if last is None:
+            return True
+        progress = self.store.last_progress_at(device["udid"])
+        gap = push_gap(now - progress) if progress else timedelta(0)
+        return now - last >= gap
 
     # ================================================================== push
     def kick(self, udid: str) -> None:
