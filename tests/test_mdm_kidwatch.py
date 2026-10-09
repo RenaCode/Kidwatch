@@ -214,3 +214,35 @@ def test_panel_without_mdm_says_unavailable(tmp_path, monkeypatch):
         assert status == 200 and data["available"] is False
     finally:
         server.shutdown()
+
+
+async def test_loop_uses_store_only_from_loop_thread(mdm, tmp_path):
+    """Regresja: produkcyjna petla (mdm_loop) z PRAWDZIWYM Store Kidwatch,
+    otwartym w watku petli. Pierwsza wersja wolala poll w to_thread i kazdy
+    odczyt padal na „SQLite objects created in a thread can only be used in
+    that same thread" — testy wolaly poll wprost i tego nie widzialy."""
+    from kidwatch.mdm import mdm_loop
+
+    svc, url = mdm
+    cfg = MdmConfig(enabled=True, url=url)
+    store = Store(tmp_path / "petla.db")
+    enroll(svc)
+
+    class Zbieracz:
+        def __init__(self):
+            self.notes = []
+
+        async def send_all(self, notes):
+            self.notes += notes
+
+    async def nie_czekaj(_):
+        return None
+
+    sent = Zbieracz()
+    watcher = MdmWatcher(MdmApi(cfg, TOKEN), store, cfg)
+    await mdm_loop(watcher, sent, 60, sleep=nie_czekaj, max_iterations=1)
+    assert int(store.get_meta(CURSOR_KEY)) > 0  # pierwszy obieg doszedl do bazy
+    svc.store.event("apps_installed", UDID, {"apps": [{"id": "x.y", "name": "Gra"}]})
+    await mdm_loop(watcher, sent, 60, sleep=nie_czekaj, max_iterations=1)
+    assert [n.text for n in sent.notes] == ["Gra"]
+    store.close()

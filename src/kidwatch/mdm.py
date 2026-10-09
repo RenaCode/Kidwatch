@@ -183,25 +183,50 @@ class MdmWatcher:
         self.store = store
         self.cfg = cfg
 
-    def poll(self, now: datetime) -> list[Notification]:
-        devices = self.api.devices()
+    # Podzial na fetch (tylko HTTP) i process (baza): mdm_loop wola fetch
+    # w watku pomocniczym, zeby wolny serwer MDM nie trzymal petli asyncio,
+    # a baze Kidwatch dotyka WYLACZNIE z watku petli. Polaczenie SQLite nie
+    # wolno uzyc w innym watku niz ten, ktory je otworzyl — pierwsza wersja
+    # robila wszystko w to_thread i padala przy kazdym odczycie (2026-10-09).
+    def cursor(self) -> int:
+        return int(self.store.get_meta(CURSOR_KEY) or 0)
+
+    def fetch(self, since: int) -> dict:
+        return {
+            "devices": self.api.devices(),
+            "events": self.api.events(since),
+            "health": self.api.health(),
+            "since": since,
+        }
+
+    def process(self, data: dict, now: datetime) -> list[Notification]:
+        devices = data["devices"]
         by_udid = {d["udid"]: d for d in devices}
-        out = self._events(by_udid, now)
+        out = self._events(by_udid, data["events"], data["since"], now)
         out += self._silent(devices, now)
-        out += self._certificate(self.api.health(), now)
+        out += self._certificate(data["health"], now)
         return out
+
+    def poll(self, now: datetime) -> list[Notification]:
+        """Wszystko w biezacym watku (CLI, testy)."""
+        return self.process(self.fetch(self.cursor()), now)
+
+    async def poll_async(self, now: datetime) -> list[Notification]:
+        data = await asyncio.to_thread(self.fetch, self.cursor())
+        return self.process(data, now)
 
     def _name(self, device: dict | None, udid: str | None) -> str:
         if device:
             return device.get("name") or device.get("label") or udid or "iPad"
         return udid or "MDM"
 
-    def _events(self, by_udid: dict[str, dict], now: datetime) -> list[Notification]:
-        since = int(self.store.get_meta(CURSOR_KEY) or 0)
+    def _events(
+        self, by_udid: dict[str, dict], events: list[dict], since: int, now: datetime
+    ) -> list[Notification]:
         out: list[Notification] = []
         first_run = since == 0
         last = since
-        for event in self.api.events(since):
+        for event in events:
             last = max(last, int(event["id"]))
             if first_run:
                 # Pierwsze uruchomienie: nie wysylamy calej historii serwera.
@@ -301,7 +326,7 @@ async def mdm_loop(
     while max_iterations is None or iteration < max_iterations:
         iteration += 1
         try:
-            notes = await asyncio.to_thread(watcher.poll, datetime.now(UTC))
+            notes = await watcher.poll_async(datetime.now(UTC))
             if last_error is not None:
                 log.info("mdm: serwer znowu odpowiada")
                 last_error = None
