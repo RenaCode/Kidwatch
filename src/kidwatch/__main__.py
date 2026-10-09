@@ -110,6 +110,7 @@ def render(note: Notification) -> str:
         NotifyKind.WEEKLY: "[TYDZ]  ",
         NotifyKind.GAME: "[GRA]   ",
         NotifyKind.TV_PAUSE: "[PAUZA] ",
+        NotifyKind.MDM: "[MDM]   ",
     }.get(note.kind, f"[{note.kind}]")
     body = note.text.replace("\n", "\n          ")
     return f"{icon} {note.title}\n          {body}"
@@ -224,6 +225,17 @@ async def cmd_run(args) -> int:
                  cfg.unifi.url, [d[0] for d in unifi.devices])
         tasks.insert(2, asyncio.create_task(
             unifi_loop(unifi, dispatcher, cfg.unifi.poll_seconds), name="unifi"
+        ))
+
+    # Serwer MDM to osobny pod z wlasna baza — tu tylko czujka po jego API.
+    from .mdm import MdmWatcher, build_api, mdm_loop  # noqa: PLC0415
+
+    mdm_api = build_api(cfg.mdm)
+    if mdm_api is not None:
+        log.info("czujka MDM wlaczona: %s, co %.0f s", cfg.mdm.url, cfg.mdm.poll_seconds)
+        tasks.insert(2, asyncio.create_task(
+            mdm_loop(MdmWatcher(mdm_api, store, cfg.mdm), dispatcher, cfg.mdm.poll_seconds),
+            name="mdm",
         ))
 
     game = build_game_time(cfg, store, dispatcher) if cfg.game_time.enabled else None

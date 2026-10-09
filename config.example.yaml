@@ -93,6 +93,17 @@ tv:
   # w pilot_dir (puste = tv-pilot obok bazy, na wolumenie).
   pilot: true
 
+# ------------------------------------------------ wlasny serwer MDM (osobny pod)
+# Zakladka MDM w panelu i czujka: profil zdjety, iPad bez kontaktu, nowa
+# aplikacja, certyfikat APNs przed wygasnieciem. Token: MDM_ADMIN_TOKEN
+# (Sekret kidwatch-mdm-admin). Instrukcja: docs/mdm.md.
+mdm:
+  enabled: false
+  url: http://kidwatch-mdm-admin:8081
+  poll_seconds: 60
+  silent_alert_hours: 24        # iPad bez kontaktu z MDM dluzej = alarm (raz na dobe)
+  cert_warn_days: 30            # ostrzezenie przed wygasnieciem certyfikatu APNs
+
 # -------------------------------------------------------- UniFi (opcja)
 # Klucz API w zmiennej UNIFI_API_KEY. Odcisk certyfikatu UDM:
 #   openssl s_client -connect 192.168.0.1:443 </dev/null 2>/dev/null \

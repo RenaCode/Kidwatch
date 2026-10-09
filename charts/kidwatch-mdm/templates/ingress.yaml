@@ -1,0 +1,31 @@
+{{- if .Values.ingress.enabled -}}
+# Na zewnatrz wychodzi tylko /mdm (checkin, connect, enroll). iPady mowia
+# wylacznie HTTPS — routera na `web` z przekierowaniem nie ma, bo iOS i tak
+# nie poszedlby za przekierowaniem w protokole MDM.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "kidwatch-mdm.fullname" . }}
+  labels:
+    {{- include "kidwatch-mdm.labels" . | nindent 4 }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.clusterIssuer }}
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tlsSecret }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /mdm/
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "kidwatch-mdm.fullname" . }}
+                port:
+                  name: mdm
+{{- end }}

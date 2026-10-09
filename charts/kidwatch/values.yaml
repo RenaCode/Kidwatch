@@ -79,6 +79,11 @@ secretName: kidwatch-secrets
 #     --from-file=$HOME/.pymobiledevice3/<UDID_1>.plist \
 #     --from-file=$HOME/.pymobiledevice3/<UDID_2>.plist
 pairingSecret: kidwatch-pairing
+
+# Token API wlasnego serwera MDM (charts/kidwatch-mdm). Ten sam Sekret
+# montuje serwer MDM; `mdm.enabled: true` w config.yaml wlacza zakladke MDM
+# w panelu i czujke (profil zdjety, iPad cichy, certyfikat APNs).
+mdmAdminSecret: kidwatch-mdm-admin
 # Odczyt iPadow (`device_read` w config.yaml). Wylaczony, bo iOS przyjmuje
 # lockdown tylko z sieci lokalnej (patrz Tailscale nizej). Dopiero `true`
 # montuje rekordy parowania w /pairing: zawieraja klucz prywatny hosta

@@ -1,8 +1,949 @@
 {
- "_pobrano": "2026-09-27",
+ "_pobrano": "2026-10-09",
  "_uwaga": "Plik GENEROWANY przez tools/fetch_apple_schema.py. Nie edytuj recznie — to kopia specyfikacji Apple, a nie nasza konfiguracja.",
  "_zrodlo": "https://github.com/apple/device-management @ release",
+ "commands": {
+  "DeclarativeManagement": {
+   "ios": {
+    "allowed_enrollments": null,
+    "allowmanualinstall": null,
+    "deprecated": null,
+    "introduced": "15.0",
+    "supervised": false
+   },
+   "keys": {
+    "Data": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "data"
+    }
+   },
+   "title": "Declarative Management Command"
+  },
+  "DeviceInformation": {
+   "ios": {
+    "allowed_enrollments": null,
+    "allowmanualinstall": null,
+    "deprecated": null,
+    "introduced": "4.0",
+    "supervised": false
+   },
+   "keys": {
+    "DeviceAttestationNonce": {
+     "introduced_ios": "16.0",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "data"
+    },
+    "Queries": {
+     "introduced_ios": null,
+     "presence": "required",
+     "subkeys": {
+      "QueriesItem": {
+       "introduced_ios": null,
+       "presence": null,
+       "subkeys": {
+        "AccessibilitySettings": {
+         "introduced_ios": "16.0",
+         "presence": "optional",
+         "supervised_ios": true,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "ActiveManagedUsers": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "AppAnalyticsEnabled": {
+         "introduced_ios": "9.3",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "AutoSetupAdminAccounts": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "AvailableDeviceCapacity": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "AwaitingConfiguration": {
+         "introduced_ios": "9.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "BatteryLevel": {
+         "introduced_ios": "5.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "BluetoothMAC": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "BuildVersion": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "CarrierSettingsVersion": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "CellularTechnology": {
+         "introduced_ios": "4.2.6",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "CurrentCarrierNetwork": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "CurrentMCC": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "CurrentMNC": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "DataRoamingEnabled": {
+         "introduced_ios": "5.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "DeviceCapacity": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "DeviceID": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "DeviceName": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "DevicePropertiesAttestation": {
+         "introduced_ios": "16.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "DiagnosticSubmissionEnabled": {
+         "introduced_ios": "9.3",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "EACSPreflight": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "EASDeviceIdentifier": {
+         "introduced_ios": "7.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "EstimatedResidentUsers": {
+         "introduced_ios": "14.0",
+         "presence": "optional",
+         "supervised_ios": true,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "EthernetMAC": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "HasBattery": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "HostName": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "ICCID": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "IMEI": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "IsActivationLockEnabled": {
+         "introduced_ios": "7.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "IsActivationLockSupported": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "IsAppleSilicon": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "IsCloudBackupEnabled": {
+         "introduced_ios": "7.1",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "IsDeviceLocatorServiceEnabled": {
+         "introduced_ios": "7.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "IsDoNotDisturbInEffect": {
+         "introduced_ios": "7.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "IsMDMLostModeEnabled": {
+         "introduced_ios": "9.3",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "IsMultiUser": {
+         "introduced_ios": "9.3",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "IsNetworkTethered": {
+         "introduced_ios": "10.3",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "IsRoaming": {
+         "introduced_ios": "4.2",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "IsSupervised": {
+         "introduced_ios": "6.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "LastCloudBackupDate": {
+         "introduced_ios": "8.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "LocalHostName": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "MDMOptions": {
+         "introduced_ios": "7.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "MEID": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "ManagedAppleIDDefaultDomains": {
+         "introduced_ios": "16.0",
+         "presence": "optional",
+         "supervised_ios": true,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "MaximumResidentUsers": {
+         "introduced_ios": "9.3",
+         "presence": "optional",
+         "supervised_ios": true,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "Model": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "ModelName": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "ModelNumber": {
+         "introduced_ios": "16.4",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "ModemFirmwareVersion": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "OSUpdateSettings": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "OSVersion": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "OnlineAuthenticationGracePeriod": {
+         "introduced_ios": "16.0",
+         "presence": "optional",
+         "supervised_ios": true,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "OrganizationInfo": {
+         "introduced_ios": "7.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "PINRequiredForDeviceLock": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "PINRequiredForEraseDevice": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "PersonalHotspotEnabled": {
+         "introduced_ios": "7.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "PhoneNumber": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "ProductName": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "ProvisioningUDID": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "PushToken": {
+         "introduced_ios": "9.3",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "QuotaSize": {
+         "introduced_ios": "13.4",
+         "presence": "optional",
+         "supervised_ios": true,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "ResidentUsers": {
+         "introduced_ios": "13.4",
+         "presence": "optional",
+         "supervised_ios": true,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "SIMCarrierNetwork": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "SerialNumber": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "ServiceSubscriptions": {
+         "introduced_ios": "12.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "SkipLanguageAndLocaleSetupForNewUsers": {
+         "introduced_ios": "16.2",
+         "presence": "optional",
+         "supervised_ios": true,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "SoftwareUpdateDeviceID": {
+         "introduced_ios": "15.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "SoftwareUpdateSettings": {
+         "introduced_ios": "14.5",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "SubscriberCarrierNetwork": {
+         "introduced_ios": "5.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "SubscriberMCC": {
+         "introduced_ios": "4.2.6",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "SubscriberMNC": {
+         "introduced_ios": "4.2.6",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "SupplementalBuildVersion": {
+         "introduced_ios": "16.1",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "SupplementalOSVersionExtra": {
+         "introduced_ios": "16.1",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "SupportsLOMDevice": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "SupportsiOSAppInstalls": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "SystemIntegrityProtectionEnabled": {
+         "introduced_ios": "n/a",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "TemporarySessionOnly": {
+         "introduced_ios": "14.5",
+         "presence": "optional",
+         "supervised_ios": true,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "TemporarySessionTimeout": {
+         "introduced_ios": "14.5",
+         "presence": "optional",
+         "supervised_ios": true,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "TimeZone": {
+         "introduced_ios": "14.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "UDID": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "UserSessionTimeout": {
+         "introduced_ios": "14.5",
+         "presence": "optional",
+         "supervised_ios": true,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "VoiceRoamingEnabled": {
+         "introduced_ios": "5.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "WiFiMAC": {
+         "introduced_ios": null,
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "iTunesStoreAccountHash": {
+         "introduced_ios": "8.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "iTunesStoreAccountIsActive": {
+         "introduced_ios": "7.0",
+         "presence": "optional",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        }
+       },
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "string"
+      }
+     },
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "array"
+    }
+   },
+   "title": "Device Information Command"
+  },
+  "DeviceLock": {
+   "ios": {
+    "allowed_enrollments": null,
+    "allowmanualinstall": null,
+    "deprecated": null,
+    "introduced": "4.0",
+    "supervised": false
+   },
+   "keys": {
+    "Message": {
+     "introduced_ios": "7.0",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    },
+    "PIN": {
+     "introduced_ios": "n/a",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    },
+    "PhoneNumber": {
+     "introduced_ios": "7.0",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    }
+   },
+   "title": "Device Lock Command"
+  },
+  "InstallProfile": {
+   "ios": {
+    "allowed_enrollments": null,
+    "allowmanualinstall": null,
+    "deprecated": null,
+    "introduced": "4.0",
+    "supervised": false
+   },
+   "keys": {
+    "Payload": {
+     "introduced_ios": null,
+     "presence": "required",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "data"
+    }
+   },
+   "title": "Install Profile Command"
+  },
+  "InstalledApplicationList": {
+   "ios": {
+    "allowed_enrollments": null,
+    "allowmanualinstall": null,
+    "deprecated": null,
+    "introduced": "5.0",
+    "supervised": false
+   },
+   "keys": {
+    "Identifiers": {
+     "introduced_ios": "7.0",
+     "presence": "optional",
+     "subkeys": {
+      "IdentifiersItem": {
+       "introduced_ios": null,
+       "presence": null,
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "string"
+      }
+     },
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "array"
+    },
+    "Items": {
+     "introduced_ios": "14.0",
+     "presence": "optional",
+     "subkeys": {
+      "ItemsItem": {
+       "allowed": [
+        "AdHocCodeSigned",
+        "AppStoreVendable",
+        "BetaApp",
+        "BundleSize",
+        "DeviceBasedVPP",
+        "DistributorIdentifier",
+        "DynamicSize",
+        "ExternalVersionIdentifier",
+        "HasUpdateAvailable",
+        "Identifier",
+        "Installing",
+        "IsAppClip",
+        "IsValidated",
+        "Name",
+        "ShortVersion",
+        "Version"
+       ],
+       "introduced_ios": null,
+       "presence": null,
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "string"
+      }
+     },
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "array"
+    },
+    "ManagedAppsOnly": {
+     "introduced_ios": "7.0",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "boolean"
+    }
+   },
+   "title": "Installed Application List Command"
+  },
+  "ProfileList": {
+   "ios": {
+    "allowed_enrollments": null,
+    "allowmanualinstall": null,
+    "deprecated": null,
+    "introduced": "4.0",
+    "supervised": false
+   },
+   "keys": {
+    "ManagedOnly": {
+     "introduced_ios": "13.0",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "boolean"
+    }
+   },
+   "title": "Profile List Command"
+  },
+  "RemoveProfile": {
+   "ios": {
+    "allowed_enrollments": null,
+    "allowmanualinstall": null,
+    "deprecated": null,
+    "introduced": "4.0",
+    "supervised": false
+   },
+   "keys": {
+    "Identifier": {
+     "introduced_ios": null,
+     "presence": "required",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    }
+   },
+   "title": "Remove Profile Command"
+  },
+  "RestartDevice": {
+   "ios": {
+    "allowed_enrollments": null,
+    "allowmanualinstall": null,
+    "deprecated": null,
+    "introduced": "10.3",
+    "supervised": true
+   },
+   "keys": {
+    "KextPaths": {
+     "introduced_ios": "n/a",
+     "presence": "optional",
+     "subkeys": {
+      "KextPathsItem": {
+       "introduced_ios": null,
+       "presence": null,
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "string"
+      }
+     },
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "array"
+    },
+    "NotifyUser": {
+     "introduced_ios": "n/a",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "boolean"
+    },
+    "RebuildKernelCache": {
+     "introduced_ios": "n/a",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "boolean"
+    }
+   },
+   "title": "Restart Device Command"
+  },
+  "SecurityInfo": {
+   "ios": {
+    "allowed_enrollments": null,
+    "allowmanualinstall": null,
+    "deprecated": null,
+    "introduced": "4.0",
+    "supervised": false
+   },
+   "keys": {},
+   "title": "Security Info Command"
+  }
+ },
  "declarations": {
+  "com.apple.activation.simple": {
+   "ios": {
+    "allowed_enrollments": null,
+    "allowmanualinstall": null,
+    "deprecated": null,
+    "introduced": "15.0",
+    "supervised": null
+   },
+   "keys": {
+    "Predicate": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    },
+    "StandardConfigurations": {
+     "introduced_ios": null,
+     "presence": "required",
+     "subkeys": {
+      "StandardConfigurationsItems": {
+       "introduced_ios": null,
+       "presence": null,
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "string"
+      }
+     },
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "array"
+    }
+   },
+   "title": "Activation:Simple"
+  },
+  "com.apple.configuration.management.status-subscriptions": {
+   "ios": {
+    "allowed_enrollments": [
+     "supervised",
+     "device",
+     "user"
+    ],
+    "allowmanualinstall": null,
+    "deprecated": null,
+    "introduced": "15.0",
+    "supervised": null
+   },
+   "keys": {
+    "StatusItems": {
+     "introduced_ios": null,
+     "presence": "required",
+     "subkeys": {
+      "StatusItem": {
+       "introduced_ios": null,
+       "presence": null,
+       "subkeys": {
+        "Name": {
+         "introduced_ios": null,
+         "presence": "required",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        }
+       },
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "dictionary"
+      }
+     },
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "array"
+    }
+   },
+   "title": "Management:Status Subscriptions"
+  },
   "com.apple.configuration.network.dns-settings": {
    "ios": {
     "allowed_enrollments": [
@@ -254,6 +1195,271 @@
     }
    },
    "title": "Network:DNS Settings"
+  },
+  "com.apple.configuration.softwareupdate.enforcement.specific": {
+   "ios": {
+    "allowed_enrollments": [
+     "supervised",
+     "device"
+    ],
+    "allowmanualinstall": null,
+    "deprecated": null,
+    "introduced": "17.0",
+    "supervised": null
+   },
+   "keys": {
+    "DetailsURL": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    },
+    "TargetBuildVersion": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    },
+    "TargetLocalDateTime": {
+     "introduced_ios": null,
+     "presence": "required",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    },
+    "TargetOSVersion": {
+     "introduced_ios": null,
+     "presence": "required",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    }
+   },
+   "title": "Software Update:Enforcement:Specific"
+  },
+  "com.apple.configuration.softwareupdate.settings": {
+   "ios": {
+    "allowed_enrollments": [
+     "supervised",
+     "device"
+    ],
+    "allowmanualinstall": null,
+    "deprecated": null,
+    "introduced": "18.0",
+    "supervised": null
+   },
+   "keys": {
+    "AllowStandardUserOSUpdates": {
+     "introduced_ios": "n/a",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "boolean"
+    },
+    "AutomaticActions": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "subkeys": {
+      "Download": {
+       "allowed": [
+        "Allowed",
+        "AlwaysOn",
+        "AlwaysOff"
+       ],
+       "introduced_ios": null,
+       "presence": "optional",
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "string"
+      },
+      "InstallOSUpdates": {
+       "allowed": [
+        "Allowed",
+        "AlwaysOn",
+        "AlwaysOff"
+       ],
+       "introduced_ios": null,
+       "presence": "optional",
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "string"
+      },
+      "InstallSecurityUpdate": {
+       "allowed": [
+        "Allowed",
+        "AlwaysOn",
+        "AlwaysOff"
+       ],
+       "introduced_ios": null,
+       "presence": "optional",
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "string"
+      }
+     },
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "dictionary"
+    },
+    "Beta": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "subkeys": {
+      "OfferPrograms": {
+       "introduced_ios": null,
+       "presence": "optional",
+       "subkeys": {
+        "Program": {
+         "introduced_ios": null,
+         "presence": "required",
+         "subkeys": {
+          "Description": {
+           "introduced_ios": null,
+           "presence": "required",
+           "supervised_ios": null,
+           "supervised_macos": null,
+           "type": "string"
+          },
+          "Token": {
+           "introduced_ios": null,
+           "presence": "required",
+           "supervised_ios": null,
+           "supervised_macos": null,
+           "type": "string"
+          }
+         },
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "dictionary"
+        }
+       },
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "array"
+      },
+      "ProgramEnrollment": {
+       "allowed": [
+        "Allowed",
+        "AlwaysOn",
+        "AlwaysOff"
+       ],
+       "introduced_ios": null,
+       "presence": "optional",
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "string"
+      },
+      "RequireProgram": {
+       "introduced_ios": null,
+       "presence": "optional",
+       "subkeys": {
+        "Description": {
+         "introduced_ios": null,
+         "presence": "required",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        },
+        "Token": {
+         "introduced_ios": null,
+         "presence": "required",
+         "supervised_ios": null,
+         "supervised_macos": null,
+         "type": "string"
+        }
+       },
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "dictionary"
+      }
+     },
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "dictionary"
+    },
+    "Deferrals": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "subkeys": {
+      "CombinedPeriodInDays": {
+       "introduced_ios": null,
+       "presence": "optional",
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "integer"
+      },
+      "MajorPeriodInDays": {
+       "introduced_ios": "n/a",
+       "presence": "optional",
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "integer"
+      },
+      "MinorPeriodInDays": {
+       "introduced_ios": "n/a",
+       "presence": "optional",
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "integer"
+      },
+      "SystemPeriodInDays": {
+       "introduced_ios": "n/a",
+       "presence": "optional",
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "integer"
+      }
+     },
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "dictionary"
+    },
+    "Notifications": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "boolean"
+    },
+    "RapidSecurityResponse": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "subkeys": {
+      "Enable": {
+       "introduced_ios": null,
+       "presence": "optional",
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "boolean"
+      },
+      "EnableRollback": {
+       "introduced_ios": null,
+       "presence": "optional",
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "boolean"
+      }
+     },
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "dictionary"
+    },
+    "RecommendedCadence": {
+     "allowed": [
+      "All",
+      "Oldest",
+      "Newest"
+     ],
+     "introduced_ios": null,
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    }
+   },
+   "title": "Software Update:Settings"
   }
  },
  "profiles": {
@@ -2265,6 +3471,220 @@
     }
    },
    "title": "DNS Settings"
+  },
+  "com.apple.mdm": {
+   "ios": {
+    "allowed_enrollments": null,
+    "allowmanualinstall": true,
+    "deprecated": null,
+    "introduced": "4.0",
+    "supervised": false
+   },
+   "keys": {
+    "AccessRights": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "integer"
+    },
+    "AssignedManagedAppleID": {
+     "introduced_ios": "15.0",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    },
+    "CheckInURL": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    },
+    "CheckInURLPinningCertificateUUIDs": {
+     "introduced_ios": "13.4",
+     "presence": "optional",
+     "subkeys": {
+      "CheckInURLPinningCertificateUUIDsItem": {
+       "introduced_ios": null,
+       "presence": "required",
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "string"
+      }
+     },
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "array"
+    },
+    "CheckOutWhenRemoved": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "boolean"
+    },
+    "EnrollmentMode": {
+     "allowed": [
+      "BYOD",
+      "ADDE"
+     ],
+     "introduced_ios": "15.0",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    },
+    "IdentityCertificateUUID": {
+     "introduced_ios": null,
+     "presence": "required",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    },
+    "ManagedAppleID": {
+     "introduced_ios": "13.1",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    },
+    "PinningRevocationCheckRequired": {
+     "introduced_ios": "13.4",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "boolean"
+    },
+    "PromptUserToAllowBootstrapTokenForAuthentication": {
+     "introduced_ios": "n/a",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "boolean"
+    },
+    "RequiredAppIDForMDM": {
+     "introduced_ios": "15.1",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "integer"
+    },
+    "ServerCapabilities": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "subkeys": {
+      "ServerCapabilitiesItems": {
+       "allowed": [
+        "com.apple.mdm.per-user-connections",
+        "com.apple.mdm.bootstraptoken",
+        "com.apple.mdm.token"
+       ],
+       "introduced_ios": null,
+       "presence": null,
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "string"
+      }
+     },
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "array"
+    },
+    "ServerURL": {
+     "introduced_ios": null,
+     "presence": "required",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    },
+    "ServerURLPinningCertificateUUIDs": {
+     "introduced_ios": "13.4",
+     "presence": "optional",
+     "subkeys": {
+      "ServerURLPinningCertificateUUIDsItem": {
+       "introduced_ios": null,
+       "presence": "required",
+       "supervised_ios": null,
+       "supervised_macos": null,
+       "type": "string"
+      }
+     },
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "array"
+    },
+    "SignMessage": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "boolean"
+    },
+    "Topic": {
+     "introduced_ios": null,
+     "presence": "required",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    },
+    "UseDevelopmentAPNS": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "boolean"
+    }
+   },
+   "title": "MDM"
+  },
+  "com.apple.security.pkcs12": {
+   "ios": {
+    "allowed_enrollments": null,
+    "allowmanualinstall": true,
+    "deprecated": null,
+    "introduced": "4.0",
+    "supervised": false
+   },
+   "keys": {
+    "AllowAllAppsAccess": {
+     "introduced_ios": "n/a",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "boolean"
+    },
+    "KeyIsExtractable": {
+     "introduced_ios": "n/a",
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "boolean"
+    },
+    "Password": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    },
+    "PayloadCertificateFileName": {
+     "introduced_ios": null,
+     "presence": "optional",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "string"
+    },
+    "PayloadContent": {
+     "introduced_ios": null,
+     "presence": "required",
+     "supervised_ios": null,
+     "supervised_macos": null,
+     "type": "data"
+    }
+   },
+   "title": "Certificate (PKCS #12)"
   }
  }
 }

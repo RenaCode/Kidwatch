@@ -251,6 +251,17 @@ unifi:
   window_minutes: 15
   alarm_mb: 20                  # tyle MB w oknie przy zerze zapytan DNS = alarm
 
+# ------------------------------------------------ wlasny serwer MDM (osobny pod)
+# Zakladka MDM w panelu i czujka: profil zdjety, iPad bez kontaktu, nowa
+# aplikacja, certyfikat APNs przed wygasnieciem. Token: MDM_ADMIN_TOKEN
+# (Sekret kidwatch-mdm-admin). Instrukcja: docs/mdm.md.
+mdm:
+  enabled: false
+  url: http://kidwatch-mdm-admin:8081
+  poll_seconds: 60
+  silent_alert_hours: 24        # iPad bez kontaktu z MDM dluzej = alarm (raz na dobe)
+  cert_warn_days: 30            # ostrzezenie przed wygasnieciem certyfikatu APNs
+
 # ----------------------------------------------------------------- panel WWW
 # Serwer w procesie `run`. 0.0.0.0, bo ruch przychodzi z Traefika przez
 # Service. Logowanie robi sam panel; konta i sesje leza w /data/panel-auth.db

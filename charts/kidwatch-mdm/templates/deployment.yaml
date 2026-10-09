@@ -1,0 +1,122 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kidwatch-mdm.fullname" . }}
+  labels:
+    {{- include "kidwatch-mdm.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  strategy:
+    # Dwa pody naraz = dwa procesy wydajace te same komendy z jednej bazy.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "kidwatch-mdm.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kidwatch-mdm.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Proces nie rozmawia z API klastra.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kidwatch-mdm
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["run"]
+          env:
+            - name: KIDWATCH_MDM_PUBLIC_URL
+              value: {{ .Values.publicUrl | quote }}
+            - name: KIDWATCH_MDM_CA_DIR
+              value: /secrets/ca
+            - name: KIDWATCH_MDM_POLICY
+              value: /secrets/policy/policy.yaml
+            - name: KIDWATCH_MDM_PORT
+              value: {{ .Values.ports.mdm | quote }}
+            - name: KIDWATCH_MDM_ADMIN_PORT
+              value: {{ .Values.ports.admin | quote }}
+            - name: KIDWATCH_MDM_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.adminSecret }}
+                  key: token
+            # Certyfikat push jest opcjonalny: bez niego serwer dziala, tylko
+            # odmawia zapisu iPadow. Sciezki ustawiamy zawsze; proces sprawdza,
+            # czy pliki istnieja (optional: true na wolumenie).
+            - name: KIDWATCH_MDM_APNS_CERT
+              value: /secrets/apns/push.pem
+            - name: KIDWATCH_MDM_APNS_KEY
+              value: /secrets/apns/push.key
+          ports:
+            - name: mdm
+              containerPort: {{ .Values.ports.mdm }}
+            - name: admin
+              containerPort: {{ .Values.ports.admin }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: mdm
+            periodSeconds: 10
+          livenessProbe:
+            # Tetno petli uzgadniania: serwer HTTP moze odpowiadac, a petla
+            # stac — wtedy nikt nie wysyla pushy i nie pilnuje polityki.
+            exec:
+              command:
+                - python
+                - -c
+                - "import os,sys,time; p=os.environ['KIDWATCH_MDM_HEARTBEAT']; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 120 else 1)"
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            - name: ca
+              mountPath: /secrets/ca
+              readOnly: true
+            - name: apns
+              mountPath: /secrets/apns
+              readOnly: true
+            - name: policy
+              mountPath: /secrets/policy
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "kidwatch-mdm.fullname" . }}-data
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: ca
+          secret:
+            secretName: {{ .Values.caSecret }}
+            defaultMode: 0400
+        - name: apns
+          secret:
+            secretName: {{ .Values.apnsSecret }}
+            defaultMode: 0400
+            optional: true
+        - name: policy
+          secret:
+            secretName: {{ .Values.policySecret }}
+            defaultMode: 0400
