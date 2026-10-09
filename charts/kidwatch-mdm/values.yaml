@@ -8,7 +8,7 @@ imagePullSecrets:
 
 image:
   repository: ghcr.io/renacode/kidwatch-mdm
-  tag: "sha-0f1f805"
+  tag: "sha-d587c09"
   pullPolicy: IfNotPresent
 
 resources:
