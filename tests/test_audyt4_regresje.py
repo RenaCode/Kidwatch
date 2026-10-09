@@ -252,7 +252,8 @@ def test_odtworzenie_dnia_z_tikiem_co_30_s():
         out += engine.tick(nxt)
         nxt += timedelta(seconds=30)
 
-    starts = [n for n in out if n.kind is NotifyKind.SESSION_START]
+    # Start w nocy ma rodzaj NIGHT (alarm), ale to nadal start sesji.
+    starts = [n for n in out if n.dedup_key.startswith("start:")]
     ends = [n for n in out if n.kind is NotifyKind.SESSION_END]
     assert len(starts) == len(ends) == 7
     assert len({n.dedup_key for n in out}) == len(out)

@@ -12,6 +12,7 @@ from kidwatch.__main__ import main, parse_week
 from kidwatch.config import Config
 from kidwatch.engine import Engine, report_week, week_label
 from kidwatch.models import NotifyKind
+from kidwatch.notifiers.bramka import kategoria
 from kidwatch.store import Store, to_iso
 
 MOON = "\U0001F319"
@@ -30,7 +31,10 @@ def test_start_w_nocy_to_jeden_push_z_obecnoscia(engine):
     notes = engine.handle(ev(t, "www.youtube.com"))
     assert len(notes) == 1
     n = notes[0]
-    assert n.kind is NotifyKind.SESSION_START
+    # Alarm, nie informacja o sesji: trasa kidwatch:alarm, rodzina go nie
+    # dostaje (audyt 2026-10-09, S5 — wczesniej SESSION_START, trasa rodziny).
+    assert n.kind is NotifyKind.NIGHT
+    assert kategoria(n.kind) == "alarm"
     assert n.title == f"{MOON} Kuba uzywa iPada w nocy"
     assert n.text == "23:12, YouTube, w domu"
     assert n.priority == 5
@@ -91,7 +95,8 @@ def test_wlasne_okno_nocy_niezalezne_od_cichych_godzin(classifier):
     eng = Engine(cfg, Store(":memory:"), classifier)
     assert "w nocy" not in eng.handle(ev(local(2026, 9, 27, 22, 30), "www.youtube.com"))[0].title
     notes = eng.handle(ev(local(2026, 9, 28, 3, 0), "www.youtube.com", device="ipad-zosi"))
-    [n] = [x for x in notes if x.kind is NotifyKind.SESSION_START]
+    [n] = [x for x in notes if x.dedup_key.startswith("start:")]
+    assert n.kind is NotifyKind.NIGHT
     assert n.title == f"{MOON} Zosia uzywa iPada w nocy"
     assert n.priority == 5
 

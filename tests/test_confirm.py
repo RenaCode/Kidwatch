@@ -193,6 +193,7 @@ def test_alarm_nocny_dopiero_po_potwierdzeniu(eng):
     t2 = local(2026, 10, 3, 1, 0)
     events = [(t2 + timedelta(seconds=20 * i), "r1.googlevideo.com") for i in range(10)]
     out = run(eng, events, t2 + timedelta(minutes=3))
-    [start] = [n for n in out if n.kind is NotifyKind.SESSION_START]
+    [start] = [n for n in out if n.dedup_key.startswith("start:")]
+    assert start.kind is NotifyKind.NIGHT
     assert start.title == "\U0001F319 Kuba uzywa iPada w nocy"
     assert start.text.startswith("01:00")

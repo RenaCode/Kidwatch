@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -24,6 +25,19 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 3
+
+#: Odrzucenia, ktore dotycza TEJ wiadomosci, nie kanalu: zla tresc (400),
+#: za duze cialo (413), niepoprawne pola (422). Ten sam wpis nie przejdzie
+#: nigdy, wiec kolejka porzuca go od razu zamiast wstrzymywac wszystko za nim
+#: na dobe. 401/403/404 (zly token, zly adres) to blad konfiguracji kanalu —
+#: po poprawce wpis wyjdzie, wiec czeka w kolejce jak przy awarii.
+PERMANENT_STATUSES = frozenset({400, 413, 422})
+
+#: Dispatcher ustawia tu liste przed wywolaniem kanalu; with_retry dopisuje
+#: kod trwalego odrzucenia. Kanaly dalej zwracaja zwykle bool.
+_REJECTED: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
+    "kidwatch_rejected", default=None
+)
 
 
 class Notifier(Protocol):
@@ -58,6 +72,9 @@ async def with_retry(
             # zla nazwa tematu. Ponawianie tylko zjadaloby limity.
             if 400 <= status < 500 and status not in (408, 429):
                 log.error("%s: odrzucone z kodem %s — nie ponawiam", what, status)
+                rejected = _REJECTED.get()
+                if rejected is not None and status in PERMANENT_STATUSES:
+                    rejected.append(status)
                 return False
             log.warning("%s: kod %s (proba %d/%d)", what, status, attempt, attempts)
         except httpx.HTTPError as exc:
@@ -87,8 +104,18 @@ class Dispatcher:
     async def send(self, note: Notification, *, record: bool = True) -> dict[str, bool]:
         """`record=False` pomija historie panelu — Outbox zapisuje tam tylko
         wynik koncowy, nie kazda nieudana probe."""
+        results, _ = await self.send_detailed(note, record=record)
+        return results
+
+    async def send_detailed(
+        self, note: Notification, *, record: bool = True
+    ) -> tuple[dict[str, bool], set[str]]:
+        """Jak `send`, plus kanaly, ktore odrzucily TE wiadomosc trwale."""
         results: dict[str, bool] = {}
+        rejected: set[str] = set()
         for notifier in self.notifiers:
+            codes: list[int] = []
+            token = _REJECTED.set(codes)
             try:
                 results[notifier.name] = await notifier.send(note)
             except asyncio.CancelledError:
@@ -97,9 +124,13 @@ class Dispatcher:
                 # Kanal nie moze wywrocic petli glownej ani zablokowac pozostalych.
                 log.exception("kanal %s wysypal sie na powiadomieniu", notifier.name)
                 results[notifier.name] = False
+            finally:
+                _REJECTED.reset(token)
+            if codes and not results[notifier.name]:
+                rejected.add(notifier.name)
         if record:
             self.record(note, results)
-        return results
+        return results, rejected
 
     def record(self, note: Notification, results: dict[str, bool]) -> None:
         if self.store is None:
@@ -210,7 +241,7 @@ class Outbox:
                 break
             attempt = item.attempts + 1
             self.store.outbox_attempt(item.id, next_at=now + outbox_backoff(attempt))
-            results = await self.dispatcher.send(item.note, record=False)
+            results, rejected = await self.dispatcher.send_detailed(item.note, record=False)
             # Bez zadnego kanalu nie ma na co czekac (start ostrzega w logu).
             if not results or any(results.values()):
                 self.dispatcher.record(item.note, results)
@@ -218,6 +249,13 @@ class Outbox:
                 done += 1
                 continue
             failed = ", ".join(sorted(results))
+            if rejected == set(results):
+                # Kazdy kanal odrzucil TRESC (400/413/422): ponawianie nic nie da,
+                # a czekajacy wpis wstrzymywalby cala kolejke na dobe (audyt
+                # 2026-10-09, N7). Porzucamy od razu, z alarmem czujki.
+                self._abandon(item, reason=f"odrzucone trwale ({failed})")
+                lost.append(item)
+                continue
             self.store.outbox_failed(item.id, f"zaden kanal nie przyjal ({failed})")
             log.warning(
                 "kolejka: %s nie wyszlo (proba %d, kanaly: %s) — ponowie za %s",
@@ -234,11 +272,11 @@ class Outbox:
             or item.attempts >= OUTBOX_MAX_ATTEMPTS
         )
 
-    def _abandon(self, item: OutboxItem) -> None:
+    def _abandon(self, item: OutboxItem, reason: str | None = None) -> None:
         log.warning(
             "kolejka: porzucam %s po %d probach (w kolejce od %s, ostatni blad: %s)",
             item.note.dedup_key, item.attempts, item.created_at.isoformat(),
-            item.last_error,
+            reason or item.last_error,
         )
         # Panel ma pokazac, ze tego push nie dostal nikt.
         self.dispatcher.record(item.note, {n.name: False for n in self.notifiers})
@@ -265,7 +303,8 @@ class Outbox:
                     kind=NotifyKind.WATCHDOG,
                     title="kidwatch nie dostarczyl powiadomien",
                     text=(
-                        f"Nie doszly mimo ponawiania przez dobe: {len(lost)}.\n"
+                        f"Nie doszly (po dobie ponawiania albo odrzucone przez "
+                        f"bramke): {len(lost)}.\n"
                         f"{titles}{more}\n"
                         f"Sprawdz bramke i kanaly; szczegoly w logu kidwatch."
                     ),

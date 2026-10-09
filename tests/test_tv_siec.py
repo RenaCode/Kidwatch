@@ -17,14 +17,14 @@ from kidwatch.sources.tv_siec import STREAMING, HybridProbe, LicznikRuchu
 from kidwatch.sources.unifi import UnifiError
 from kidwatch.store import Store
 
-TV_IP = "192.168.3.219"
+TV_IP = "192.0.2.219"
 T0 = datetime(2026, 10, 7, 17, 0, tzinfo=UTC)
 MB = 1_000_000
 
 
 class MartweAdb:
     async def shell(self, command: str) -> str:
-        raise TvUnavailable("TcpTimeoutException: Reading from 192.168.3.219:5555 timed out")
+        raise TvUnavailable("TcpTimeoutException: Reading from 192.0.2.219:5555 timed out")
 
     async def aclose(self) -> None:
         pass
@@ -42,7 +42,7 @@ class Kontroler:
         if self.pada:
             raise UnifiError("kontroler w restarcie")
         if self.bajty is None:
-            return [{"ip": "192.168.3.50", "tx_bytes": 1, "rx_bytes": 1}]
+            return [{"ip": "192.0.2.50", "tx_bytes": 1, "rx_bytes": 1}]
         if self.wired:
             return [{"ip": TV_IP, "wired-tx_bytes": 0, "wired-rx_bytes": self.bajty}]
         return [{"ip": TV_IP, "tx_bytes": 0, "rx_bytes": self.bajty}]
@@ -268,7 +268,7 @@ def test_zapytania_sony_nie_trafiaja_do_logu_httpx(caplog):
 
     with caplog.at_level(logging.INFO, logger="httpx"):
         lg = logging.getLogger("httpx")
-        lg.info('HTTP Request: POST http://192.168.3.219/sony/system "HTTP/1.1 200 OK"')
+        lg.info('HTTP Request: POST http://192.0.2.219/sony/system "HTTP/1.1 200 OK"')
         lg.info('HTTP Request: POST http://bramka/v1/wyslij "HTTP/1.0 200 OK"')
     assert [r.getMessage() for r in caplog.records] == [
         'HTTP Request: POST http://bramka/v1/wyslij "HTTP/1.0 200 OK"']

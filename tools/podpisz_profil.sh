@@ -11,9 +11,9 @@
 # z uprawnieniami administratora, laduje w katalogu tymczasowym 0700 i znika
 # razem z nim po podpisie - nie przechodzi przez konto `claude` ani przez czat.
 #
-#   python3 tools/gen_profile.py --name "iPad Franka" \
-#       --doh-url "https://dns.nextdns.io/<ID>/iPad-Franek" --out profil/franek.mobileconfig
-#   sudo tools/podpisz_profil.sh profil/franek.mobileconfig profil/franek-podpisany.mobileconfig
+#   python3 tools/gen_profile.py --name "iPad Dziecka" \
+#       --doh-url "https://dns.nextdns.io/<ID>/iPad-Dziecko1" --out profil/dziecko1.mobileconfig
+#   sudo tools/podpisz_profil.sh profil/dziecko1.mobileconfig profil/dziecko1-podpisany.mobileconfig
 #
 # Certyfikat Let's Encrypt zyje 90 dni. Liczy sie waznosc W CHWILI INSTALACJI
 # na iPadzie - zainstalowany profil zostaje, ale plik podpisany dawno temu
