@@ -55,8 +55,9 @@ class AppError(RuntimeError):
 
 def snapshot_z_json(dane: dict, foreground: str | None = None) -> TvSnapshot:
     """Odpowiedz /stan -> ten sam TvSnapshot, ktory dawal `dumpsys` przez ADB.
-    `foreground` (pakiet z pilota) rozroznia pauze na pierwszym planie od
-    sesji wiszacej w tle - aplikacja na TV pierwszego planu nie zna."""
+    `foreground` (pakiet na pierwszym planie, jesli ktos go zna) rozroznia
+    pauze na ekranie od sesji wiszacej w tle - aplikacja na TV pierwszego planu
+    nie zna, wiec bez niego liczy sie tylko sesja, ktora GRA."""
     sesje = []
     for s in dane.get("sesje") or []:
         if not isinstance(s, dict) or not s.get("pakiet"):
@@ -118,7 +119,7 @@ class AplikacjaTv:
     # ------------------------------------------------------------------ odczyt
     async def snapshot(self, foreground: str | None = None) -> TvSnapshot:
         """TvUnavailable, gdy aplikacji nie ma, nie odpowiada albo token
-        odrzucony - wtedy HybridProbe idzie dalej (ADB, pilot, Sony, ruch)."""
+        odrzucony - wtedy HybridProbe idzie dalej (ADB, Sony, ruch)."""
         self.loop = asyncio.get_running_loop()
         token = self._token()
         if token is None:

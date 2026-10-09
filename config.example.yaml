@@ -87,11 +87,6 @@ tv:
   # (kanal, program z EPG) i HDMI z kluczem PSK w TV_SONY_PSK (kidwatch-secrets).
   # Na TV: Siec -> Siec domowa -> Sterowanie IP -> "Normalne i klucz wstepny".
   sony: true
-  # Pilot Google TV (Android TV Remote v2, porty 6466/6467; sources/tv_pilot.py):
-  # zasilanie i aplikacja bez ADB i bez opcji programisty. Parowanie raz,
-  # w panelu: Ustawienia -> Telewizor ("Sparuj pilota TV" + kod z ekranu). Certyfikat
-  # w pilot_dir (puste = tv-pilot obok bazy, na wolumenie).
-  pilot: true
 
 # ------------------------------------------------ wlasny serwer MDM (osobny pod)
 # Zakladka MDM w panelu i czujka: profil zdjety, iPad bez kontaktu, nowa

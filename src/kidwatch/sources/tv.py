@@ -713,8 +713,6 @@ class TvWatcher:
             text += " · wykryte z ruchu sieci (bez tytułu)"
         elif self._zrodlo == "sony":
             text += " · z API telewizora"
-        elif self._zrodlo == "pilot":
-            text += " · z pilota Google TV (bez tytułu)"
         return self._emit(Notification(
             kind=NotifyKind.TV_START,
             title=title,

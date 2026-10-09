@@ -73,7 +73,8 @@ def test_json_na_snapshot_jak_z_dumpsys():
     assert snapshot_z_json(stan(ekran=False)).playing({}) is None
 
 
-def test_pauza_liczy_sie_tylko_z_pierwszym_planem_z_pilota():
+def test_pauza_liczy_sie_tylko_ze_znanym_pierwszym_planem():
+    """Bez pierwszego planu (pilot Google TV usuniety) pauza nie jest ogladaniem."""
     s = stan(sesje=[{"pakiet": YT, "stan": 2, "tytul": "X"}])
     assert snapshot_z_json(s).playing({}) is None
     assert snapshot_z_json(s, foreground=YT).playing({}).title == "X"

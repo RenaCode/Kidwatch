@@ -199,10 +199,7 @@ async def cmd_run(args) -> int:
 
     # Telewizor: ta sama petla co iPady (nieosiagalny = normalny stan, alarm
     # po wielu godzinach), z wlasnym rytmem i progiem.
-    pilot = build_tv_pilot(cfg) if cfg.tv.enabled else None
-    if pilot is not None:
-        tasks.insert(2, asyncio.create_task(_pilot_bez_awarii(pilot), name="tv-pilot"))
-    tv = build_tv_watcher(cfg, store, pilot) if cfg.tv.enabled else None
+    tv = build_tv_watcher(cfg, store) if cfg.tv.enabled else None
     if tv is not None:
         log.info("czujnik TV wlaczony: %s (%s), co %.0f s",
                  cfg.tv.name, cfg.tv.host, cfg.tv.poll_seconds)
@@ -496,33 +493,7 @@ async def cmd_web(args) -> int:
 
 
 # ======================================================================= device
-def build_tv_pilot(cfg):
-    """Pilot Google TV albo None (tv.pilot: false). Rejestrowany w
-    `tv_pilot.AKTYWNY`, zeby panel mogl go sparowac."""
-    from .sources import tv_pilot  # noqa: PLC0415
-
-    if not cfg.tv.pilot:
-        return None
-    katalog = cfg.tv.pilot_dir or str(Path(cfg.store.path).expanduser().parent / "tv-pilot")
-    pilot = tv_pilot.PilotTv(cfg.tv.host, katalog)
-    tv_pilot.AKTYWNY = pilot
-    log.info("%s: pilot Google TV (%s:6466), certyfikat w %s - %s", cfg.tv.name,
-             cfg.tv.host, katalog, "sparowany" if pilot.sparowany else "do sparowania w panelu")
-    return pilot
-
-
-async def _pilot_bez_awarii(pilot) -> None:
-    """Blad pilota nie moze zatrzymac serwisu - to tylko jedno ze zrodel TV."""
-    try:
-        await pilot.uruchom()
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        log.exception("pilot TV: zadanie padlo - TV czytany bez pilota")
-        await asyncio.Event().wait()
-
-
-def build_tv_watcher(cfg, store, pilot=None):
+def build_tv_watcher(cfg, store):
     """Obserwator telewizora albo None (z bledem w logu), gdy brak klucza ADB.
 
     Brak klucza nie zabija procesu — jak przy rekordach parowania iPadow:
@@ -546,7 +517,7 @@ def build_tv_watcher(cfg, store, pilot=None):
         shell = BrakAdb(str(exc))
     aplikacja = build_tv_app(cfg, shell)
     probe = TvProbe(shell)
-    hybryda = build_tv_traffic(cfg, store, probe, pilot, aplikacja)
+    hybryda = build_tv_traffic(cfg, store, probe, aplikacja)
     return TvWatcher(
         hybryda or probe,
         cfg.tv.name,
@@ -577,7 +548,7 @@ def build_tv_app(cfg, shell):
     return app
 
 
-def build_tv_traffic(cfg, store, probe, pilot=None, aplikacja=None):
+def build_tv_traffic(cfg, store, probe, aplikacja=None):
     """Hybryda ADB + Sony REST + ruch sieci (sources/tv_siec.py, sony.py) albo
     None, gdy oba zapasy sa wylaczone - wtedy telewizor czyta samo ADB."""
     from .sources.sony import SonyClient  # noqa: PLC0415
@@ -595,7 +566,7 @@ def build_tv_traffic(cfg, store, probe, pilot=None, aplikacja=None):
     sony = None
     if cfg.tv.sony:
         sony = SonyClient(cfg.tv.host, cfg.tv.sony_psk(), timeout=cfg.tv.timeout_seconds)
-    if licznik is None and sony is None and pilot is None and aplikacja is None:
+    if licznik is None and sony is None and aplikacja is None:
         log.info("%s: odczyt zapasowy wylaczony (brak UniFi i tv.sony: false)", cfg.tv.name)
         return None
     czesci = []
@@ -604,8 +575,6 @@ def build_tv_traffic(cfg, store, probe, pilot=None, aplikacja=None):
                       else "Sony REST (tylko zasilanie, brak TV_SONY_PSK)")
     if aplikacja is not None:
         czesci.insert(0, "aplikacja Kidwatch TV")
-    if pilot is not None:
-        czesci.append("pilot Google TV")
     if licznik:
         czesci.append(f"ruch UniFi (prog {cfg.tv.traffic_min_mb:.0f} MB / "
                       f"{cfg.tv.traffic_window_minutes:.0f} min)")
@@ -614,7 +583,7 @@ def build_tv_traffic(cfg, store, probe, pilot=None, aplikacja=None):
     log.info("%s: odczyt zapasowy: %s", cfg.tv.name, ", ".join(czesci))
     return HybridProbe(probe, licznik, store, prog_mb=cfg.tv.traffic_min_mb,
                        nextdns_ids=cfg.tv.nextdns_ids, device_name=cfg.tv.name, sony=sony,
-                       pilot=pilot, apps=cfg.tv.apps, aplikacja=aplikacja)
+                       apps=cfg.tv.apps, aplikacja=aplikacja)
 
 
 def build_game_time(cfg: Config, store: Store, dispatcher):
