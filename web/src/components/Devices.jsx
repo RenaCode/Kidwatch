@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { post } from '../utils/api';
 import { ago, hhmm, minutes } from '../utils/format';
+import Icon from './Icons';
 
 const GAME_STATE = {
   blocked: { label: 'gry zablokowane', badge: 'warn' },
@@ -36,20 +37,21 @@ function GameControl({ child, game, onChanged }) {
   };
 
   return (
-    <div className="row-body" style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+    <div className="game-control">
+      <div className="game-status">
         <span className={`badge ${state.badge}`}>
-          🎮 {state.label}{game.mode === 'bonus' && game.bonus_until ? ` do ${hhmm(game.bonus_until)}` : ''}
+          <Icon name="gamepad" size={14} />
+          {state.label}{game.mode === 'bonus' && game.bonus_until ? ` do ${hhmm(game.bonus_until)}` : ''}
         </span>
         <span className="dim" title={game.confirmed_at || ''}>
           {game.confirmed_at ? `potwierdzone w NextDNS ${ago(game.confirmed_at)}` : 'jeszcze nie odczytane z NextDNS'}
         </span>
         {pending && <span className="badge loading-pulse">wysyłanie…</span>}
       </div>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button className="btn-ghost" disabled={pending} onClick={() => act('block')}>Zablokuj gry</button>
-        <button className="btn-ghost" disabled={pending} onClick={() => act('allow')}>Odblokuj</button>
-        <button className="btn-ghost" disabled={pending} onClick={() => act('bonus')}>
+      <div className="segmented" role="group" aria-label={`Czas gry: ${child}`}>
+        <button disabled={pending} onClick={() => act('block')}>Zablokuj gry</button>
+        <button disabled={pending} onClick={() => act('allow')}>Odblokuj</button>
+        <button disabled={pending} onClick={() => act('bonus')}>
           +{game.default_bonus_minutes} min
         </button>
       </div>
@@ -69,69 +71,99 @@ function GameControl({ child, game, onChanged }) {
 // odczyt wprost z urzadzenia. "Brak odczytu" przy spiacym iPadzie albo
 // wylaczonym telewizorze jest normalne. Telewizor (child: null) pokazuje
 // zamiast dziecka co leci; iPad - czy jest w domowym Wi-Fi (UniFi).
-export default function Devices({ devices, onChanged, tvPause, onTvPauseChanged }) {
-  if (!devices) return <div className="empty loading-pulse">Wczytywanie urządzeń…</div>;
+function DeviceCard({ d, onChanged }) {
+  const [open, setOpen] = useState(false);
+  const tv = d.kind === 'tv';
+  const live = !!d.session;
+  const detailsId = `dev-details-${d.name.replace(/\W+/g, '-')}`;
   return (
-    <div className="grid grid-2">
-      {devices.map((d) => (
-        <div key={d.name} className="glass-card device-card">
-          <div className="card-title">
-            <span>
-              {d.kind === 'tv' ? '📺 ' : ''}{d.child ?? d.name}{' '}
-              {d.child && <span className="hint">· {d.name}</span>}
-            </span>
-            <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {/* Brak informacji (UniFi wylaczone albo dawno bez odczytu) to
-                  brak odznaki - nie zgadujemy "poza domem". */}
-              {d.presence && (
-                <span className={`badge ${d.presence.home ? 'info' : ''}`}
-                      title={`od ${hhmm(d.presence.since)}${d.presence.essid ? ` · ${d.presence.essid}` : ''}`}>
-                  {d.presence.home ? 'w domu' : 'poza domem'}
-                </span>
-              )}
-              {d.session
-                ? <span className="badge ok"><span className="live-dot" /> {d.kind === 'tv' ? 'gra' : 'aktywny'} od {hhmm(d.session.started_at)}</span>
-                : <span className="badge">{d.kind === 'tv' ? 'nic nie gra' : 'bezczynny'}</span>}
-            </span>
+    <article className={`glass-card device-card ${live ? 'live' : ''}`}>
+      <div className="dev-head">
+        <span className="dev-icon"><Icon name={tv ? 'tv' : 'tablet'} size={26} /></span>
+        <div className="dev-id">
+          <h3 className="dev-name">
+            {d.child ?? d.name}
+            {d.child && <span className="dev-sub"> · {d.name}</span>}
+          </h3>
+          <span className={`dev-status ${live ? 'on' : ''}`}>
+            <span className={live ? 'live-dot' : 'idle-dot'} />
+            {live
+              ? `${tv ? 'gra' : 'aktywny'} od ${hhmm(d.session.started_at)}`
+              : (tv ? 'nic nie gra' : 'bezczynny')}
+          </span>
+        </div>
+      </div>
+
+      <div className="dev-figure">
+        <span className="dev-time">{d.today ? minutes(d.today.minutes) : '—'}</span>
+        <span className="dev-time-label">
+          dziś{d.today ? ` · ${d.today.sessions} ${d.today.sessions === 1 ? 'sesja' : 'sesji'}` : ''}
+        </span>
+        {/* W miejscu baterii z makiety: obecnosc w domowym Wi-Fi. Brak
+            informacji (UniFi wylaczone albo dawno bez odczytu) to brak
+            odznaki - nie zgadujemy "poza domem". */}
+        {d.presence && (
+          <span className={`badge presence ${d.presence.home ? 'info' : ''}`}
+                title={`od ${hhmm(d.presence.since)}${d.presence.essid ? ` · ${d.presence.essid}` : ''}`}>
+            <Icon name="home" size={13} />{d.presence.home ? 'w domu' : 'poza domem'}
+          </span>
+        )}
+      </div>
+
+      {d.now_playing && (
+        <div className="row-body now-playing">
+          <strong>{d.now_playing.title || d.now_playing.app}</strong>
+          {d.now_playing.channel && <span className="dim"> · {d.now_playing.channel}</span>}
+          {d.now_playing.title && <span className="dim"> · {d.now_playing.app}</span>}
+          <span className="dim"> · od {hhmm(d.now_playing.since)}</span>
+        </div>
+      )}
+      {d.game && <GameControl child={d.child} game={d.game} onChanged={onChanged} />}
+
+      {open && (
+        <div className="dev-details" id={detailsId}>
+          <div className="stat">
+            <span className="stat-label">Ostatnia aktywność</span>
+            <span className="stat-value sm">{d.session ? ago(d.session.last_activity_at) : '—'}</span>
           </div>
-          {d.now_playing && (
-            <div className="row-body" style={{ marginBottom: 12 }}>
-              <strong>{d.now_playing.title || d.now_playing.app}</strong>
-              {d.now_playing.channel && <span className="dim"> · {d.now_playing.channel}</span>}
-              {d.now_playing.title && <span className="dim"> · {d.now_playing.app}</span>}
-              <span className="dim"> · od {hhmm(d.now_playing.since)}</span>
+          <div className="stat">
+            <span className="stat-label">Ostatni push</span>
+            <span className="stat-value sm">{ago(d.last_notification?.ts)}</span>
+            {d.last_notification && <span className="stat-sub">{d.last_notification.title}</span>}
+          </div>
+          {/* Odczyt wprost z urzadzenia tylko tam, gdzie jest wlaczony -
+              "Odczyt z iPada: nigdy" przy wylaczonej warstwie nic nie mowi. */}
+          {d.reads_device ? (
+            <div className="stat">
+              <span className="stat-label">Odczyt z {tv ? 'TV' : 'iPada'}</span>
+              <span className="stat-value sm">{ago(d.last_device_read)}</span>
+            </div>
+          ) : (
+            <div className="stat">
+              <span className="stat-label">Najwięcej dziś</span>
+              <span className="stat-value sm">{d.today?.top_app ? d.today.top_app.app : '—'}</span>
+              {d.today?.top_app && <span className="stat-sub">~{minutes(d.today.top_app.minutes)}</span>}
             </div>
           )}
-          {d.game && <GameControl child={d.child} game={d.game} onChanged={onChanged} />}
-          <div className="grid grid-3">
-            <div className="stat">
-              <span className="stat-label">Ostatnia aktywność</span>
-              <span className="stat-value sm">{d.session ? ago(d.session.last_activity_at) : '—'}</span>
-            </div>
-            <div className="stat">
-              <span className="stat-label">Ostatni push</span>
-              <span className="stat-value sm">{ago(d.last_notification?.ts)}</span>
-              {d.last_notification && <span className="stat-sub">{d.last_notification.title}</span>}
-            </div>
-            {/* Odczyt wprost z urzadzenia tylko tam, gdzie jest wlaczony -
-                "Odczyt z iPada: nigdy" przy wylaczonej warstwie nic nie mowi. */}
-            {d.reads_device ? (
-              <div className="stat">
-                <span className="stat-label">Odczyt z {d.kind === 'tv' ? 'TV' : 'iPada'}</span>
-                <span className="stat-value sm">{ago(d.last_device_read)}</span>
-              </div>
-            ) : (
-              <div className="stat">
-                <span className="stat-label">Dziś</span>
-                <span className="stat-value sm">{d.today ? minutes(d.today.minutes) : '—'}</span>
-                {d.today?.top_app && (
-                  <span className="stat-sub">najwięcej: {d.today.top_app.app} ~{minutes(d.today.top_app.minutes)}</span>
-                )}
-              </div>
-            )}
-          </div>
         </div>
-      ))}
+      )}
+
+      <button className="dev-more" aria-expanded={open} aria-controls={detailsId}
+              aria-label={`${open ? 'Zwiń' : 'Pokaż'} szczegóły: ${d.name}`}
+              onClick={() => setOpen((v) => !v)}>
+        <Icon name="more" size={18} />
+      </button>
+    </article>
+  );
+}
+
+// Karty w siatce - na telefonie jedna kolumna, od 720 px dwie.
+export default function Devices({ devices, onChanged }) {
+  if (!devices) return <div className="empty loading-pulse">Wczytywanie urządzeń…</div>;
+  if (!devices.length) return <div className="empty">Brak urządzeń dla tego wyboru.</div>;
+  return (
+    <div className="device-grid">
+      {devices.map((d) => <DeviceCard key={d.name} d={d} onChanged={onChanged} />)}
     </div>
   );
 }

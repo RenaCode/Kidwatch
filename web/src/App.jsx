@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Login from './components/Login';
-import Devices from './components/Devices';
 import Day from './components/Day';
 import Notifications from './components/Notifications';
 import Profile from './components/Profile';
@@ -8,18 +7,27 @@ import Usage from './components/Usage';
 import Screens from './components/Screens';
 import Trends from './components/Trends';
 import Mdm from './components/Mdm';
+import Dashboard from './components/Dashboard';
+import Icon from './components/Icons';
 import ErrorBoundary from './components/ErrorBoundary';
 import { TvPauseBanner } from './components/TvPause';
 import { get, post, qs, useApi, setSessionExpiredHandler } from './utils/api';
+import { localToday } from './utils/format';
 
+// Pulpit renderuje Panel sam (potrzebuje pauzy TV i nawigacji), reszta
+// dostaje wspolne propsy. `short`: etykieta w dolnym pasku telefonu.
 const SECTIONS = [
-  { key: 'notifications', label: 'Powiadomienia', Component: Notifications },
-  { key: 'screens',       label: 'Wszystkie ekrany', Component: Screens },
-  { key: 'usage',         label: 'Użycie',        Component: Usage },
-  { key: 'trends',        label: 'Trendy',        Component: Trends },
-  { key: 'day',           label: 'Dzień',         Component: Day },
-  { key: 'mdm',           label: 'MDM',           Component: Mdm },
+  { key: 'pulpit',        label: 'Pulpit',           icon: 'pulpit',  Component: null },
+  { key: 'notifications', label: 'Powiadomienia',    icon: 'bell',    Component: Notifications, short: 'Powiad.' },
+  { key: 'screens',       label: 'Wszystkie ekrany', icon: 'screens', Component: Screens, short: 'Ekrany' },
+  { key: 'usage',         label: 'Użycie',           icon: 'usage',   Component: Usage },
+  { key: 'trends',        label: 'Trendy',           icon: 'trends',  Component: Trends },
+  { key: 'day',           label: 'Dzień',            icon: 'day',     Component: Day },
+  { key: 'mdm',           label: 'MDM',              icon: 'mdm',     Component: Mdm },
 ];
+// Na telefonie w dolnym pasku miesci sie piec pozycji: cztery sekcje
+// i "Wiecej" z reszta (oraz Ustawieniami).
+const BOTTOM = ['pulpit', 'notifications', 'screens', 'usage'];
 
 /* Wybrane dziecko przezywa odswiezenie strony. localStorage w try/catch:
    tryb prywatny Safari i zablokowane dane witryny rzucaja przy samym
@@ -105,28 +113,23 @@ export default function App() {
 // zielona = wlaczone, pomaranczowa = wylaczone albo malo kodow zapasowych.
 function AccountMenu({ user, onProfile, onSignOut }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-  useEffect(() => {
-    if (!open) return undefined;
-    const close = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('mousedown', close);
-    document.addEventListener('touchstart', close);
-    document.addEventListener('keydown', esc);
-    return () => {
-      document.removeEventListener('mousedown', close);
-      document.removeEventListener('touchstart', close);
-      document.removeEventListener('keydown', esc);
-    };
-  }, [open]);
+  const close = useCallback(() => setOpen(false), []);
+  const ref = useDismiss(open, close);
   const secure = user?.totp_enabled && user.backup_codes_left > 2;
   return (
     <div className="account" ref={ref}>
       <button className="account-btn" aria-haspopup="menu" aria-expanded={open}
-              title={`${user?.login} · ${user?.totp_enabled ? '2FA włączone' : 'bez 2FA'}`}
+              aria-label={`Konto ${user?.login}, ${user?.totp_enabled ? '2FA włączone' : 'bez 2FA'}`}
               onClick={() => setOpen((v) => !v)}>
-        <span className="avatar">{(user?.login || '?').slice(0, 1).toUpperCase()}</span>
-        <span className={`account-dot ${secure ? 'ok' : 'warn'}`} />
+        <span className="avatar-wrap">
+          <span className="avatar">{(user?.login || '?').slice(0, 1).toUpperCase()}</span>
+          <span className={`account-dot ${secure ? 'ok' : 'warn'}`} />
+        </span>
+        <span className="account-id">
+          <strong>{user?.login}</strong>
+          <span>{user?.role === 'admin' ? 'administrator' : (user?.role || '')}</span>
+        </span>
+        <Icon name="chevron" size={16} className="account-chev" />
       </button>
       {open && (
         <div className="account-menu" role="menu">
@@ -144,10 +147,94 @@ function AccountMenu({ user, onProfile, onSignOut }) {
   );
 }
 
+// Zamykanie wysuwanego menu: klik poza nim albo Escape.
+function useDismiss(open, close) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const outside = (e) => { if (ref.current && !ref.current.contains(e.target)) close(); };
+    const esc = (e) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('mousedown', outside);
+    document.addEventListener('touchstart', outside);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('mousedown', outside);
+      document.removeEventListener('touchstart', outside);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [open, close]);
+  return ref;
+}
+
+function ChildTabs({ items, child, onPick, className = '' }) {
+  return (
+    <div className={`child-tabs ${className}`} role="tablist" aria-label="Dziecko">
+      {items.map((c) => (
+        <button key={c || '*'} role="tab" aria-selected={child === c}
+                className={`child-tab ${child === c ? 'active' : ''}`}
+                onClick={() => onPick(c)}>
+          {c ? <span className="child-initial" aria-hidden="true">{c.slice(0, 1).toUpperCase()}</span> : null}
+          {c || 'Wszyscy'}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Dolny pasek telefonu: cztery sekcje i "Wiecej" (reszta + Ustawienia).
+function BottomNav({ section, profile, go, openProfile }) {
+  const [open, setOpen] = useState(false);
+  const close = useCallback(() => setOpen(false), []);
+  const ref = useDismiss(open, close);
+  const rest = SECTIONS.filter((s) => !BOTTOM.includes(s.key));
+  const restActive = profile || rest.some((s) => s.key === section);
+  return (
+    <nav className="bottom-nav" aria-label="Sekcje" ref={ref}>
+      {BOTTOM.map((k) => {
+        const s = SECTIONS.find((x) => x.key === k);
+        const active = !profile && section === k;
+        return (
+          <button key={k} className={`bottom-item ${active ? 'active' : ''}`}
+                  aria-current={active ? 'page' : undefined} onClick={() => go(k)}>
+            <Icon name={s.icon} size={22} />
+            <span>{s.short || s.label}</span>
+          </button>
+        );
+      })}
+      <button className={`bottom-item ${restActive ? 'active' : ''}`} aria-haspopup="menu"
+              aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <Icon name="more" size={22} />
+        <span>Więcej</span>
+      </button>
+      {open && (
+        <div className="bottom-sheet" role="menu">
+          {rest.map((s) => (
+            <button key={s.key} role="menuitem"
+                    className={!profile && section === s.key ? 'active' : ''}
+                    onClick={() => { close(); go(s.key); }}>
+              <Icon name={s.icon} size={20} />{s.label}
+            </button>
+          ))}
+          <button role="menuitem" className={profile ? 'active' : ''}
+                  onClick={() => { close(); openProfile(); }}>
+            <Icon name="settings" size={20} />Ustawienia
+          </button>
+        </div>
+      )}
+    </nav>
+  );
+}
+
+function greeting(now = new Date()) {
+  const h = now.getHours();
+  if (h < 5 || h >= 18) return 'Dobry wieczór';
+  return 'Dzień dobry';
+}
+
 // Osobny komponent, zeby odswiezanie co 30 s startowalo dopiero po zalogowaniu
 // i znikalo razem z panelem - bez warunkow w hookach App.
 function Panel({ user, onSignOut, onUserChanged }) {
-  const [section, setSection] = useState('notifications');
+  const [section, setSection] = useState('pulpit');
   const [profile, setProfile] = useState(false);
   const meta = useApi('/api/meta');
   const [child, setChildState] = useState(readChild);
@@ -168,80 +255,122 @@ function Panel({ user, onSignOut, onUserChanged }) {
   // dziecku, gdy karty telewizora nie widac.
   const tvPause = useApi('/api/tv/pause', [], { refreshMs: 30000 });
   const tvPauseChanged = () => { tvPause.reload(); devices.reload(); };
-  const Active = SECTIONS.find((s) => s.key === section)?.Component || Notifications;
+  // Licznik przy dzwonku: powiadomienia z dzisiaj (do 100). Alarm czujki
+  // albo zdjety profil DNS barwi plakietke na czerwono.
+  const notesToday = useApi(known ? `/api/notifications${qs({ child, day: localToday(), limit: 100 })}` : null,
+                            [], { refreshMs: 60000 });
+  const notes = notesToday.data ? {
+    count: notesToday.data.items.length,
+    more: notesToday.data.has_more,
+    critical: notesToday.data.items.some((n) => n.kind === 'watchdog' || n.kind === 'dns_profile'),
+  } : null;
+
+  const current = SECTIONS.find((s) => s.key === section) || SECTIONS[0];
+  const Active = current.Component;
   const children = activeMeta.children || [];
+  const showChildren = children.length > 1 || meta.data?.devices.some((d) => d.child == null);
+  const childItems = ['', ...children];
+  const go = (key) => { setSection(key); setProfile(false); window.scrollTo?.(0, 0); };
+  const openProfile = () => { setProfile(true); window.scrollTo?.(0, 0); };
+  const today = new Date().toLocaleDateString('pl-PL', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const apiState = devices.error ? 'bad' : devices.data ? 'ok' : 'wait';
 
   return (
-    <div className="app-container">
-      <header className="app-header compact">
-        <div className="logo-container">
-          <div className="logo-icon">👀</div>
-          <div className="hide-narrow">
-            <div className="logo-text">Kidwatch</div>
-            <div style={{ display: 'flex', gap: 6, marginTop: 3 }}>
-              <span className={`logo-badge ${devices.error ? 'bad' : ''}`}
-                    title={devices.error ? `Panel nie odpowiada: ${devices.error}` : 'Odświeżane co 30 s'}>
-                {devices.error ? 'API ✗' : devices.data ? 'na żywo' : 'API …'}
-              </span>
-            </div>
-          </div>
+    <div className="shell">
+      <aside className="sidebar" aria-label="Nawigacja">
+        <div className="brand">
+          <span className="brand-mark"><Icon name="logo" size={26} /></span>
+          <span className="brand-name">Kidwatch</span>
         </div>
-
-        {/* Przelacznik dzieci: jeden rzad, przewijany w poziomie - na telefonie
-            pigulki, chip konta i przyciski rozjezdzaly sie na trzy rzedy. */}
-        {(children.length > 1 || meta.data?.devices.some((d) => d.child == null)) ? (
-          <div className="engine-tabs child-tabs" role="tablist" aria-label="Dziecko">
-            {['', ...children].map((c) => (
-              <button key={c || '*'} role="tab" aria-selected={child === c}
-                      className={`engine-tab ${child === c ? 'active' : ''}`}
-                      onClick={() => setChild(c)}>
-                {c || 'Wszyscy'}
+        {showChildren && <ChildTabs items={childItems} child={child} onPick={setChild} className="vertical" />}
+        <nav className="side-nav" aria-label="Sekcje">
+          {SECTIONS.map((s) => {
+            const active = !profile && section === s.key;
+            return (
+              <button key={s.key} className={`side-item ${active ? 'active' : ''}`}
+                      aria-current={active ? 'page' : undefined} onClick={() => go(s.key)}>
+                <Icon name={s.icon} />{s.label}
+                {s.key === 'notifications' && notes?.count > 0 && (
+                  <span className={`side-count ${notes.critical ? 'critical' : ''}`}>
+                    {notes.more ? '99+' : notes.count}
+                  </span>
+                )}
               </button>
-            ))}
-          </div>
-        ) : <div style={{ flex: 1 }} />}
-
-        <AccountMenu user={user} onProfile={() => setProfile(true)} onSignOut={onSignOut} />
-      </header>
-
-      <TvPauseBanner pause={tvPause.data} onChanged={tvPauseChanged} />
-
-      {profile && (
-        <Profile user={user} onChanged={onUserChanged} onClose={() => setProfile(false)}
-                 tvPause={tvPause.data} onTvPauseChanged={tvPauseChanged} />
-      )}
-
-      {devices.error && !devices.data && (
-        <div className="notice" style={{ marginBottom: 16 }}>
-          Nie udało się pobrać stanu: {devices.error}
-        </div>
-      )}
-
-      {!profile && <Devices devices={devices.data} onChanged={devices.reload}
-                            tvPause={tvPause.data} onTvPauseChanged={tvPauseChanged} />}
-
-      {!profile && <nav className="nav-tabs" role="tablist" style={{ marginTop: 22 }}>
-        {SECTIONS.map((s) => (
-          <button key={s.key} role="tab" aria-selected={section === s.key}
-                  className={`nav-tab ${section === s.key ? 'active' : ''}`}
-                  onClick={() => setSection(s.key)}>
-            {s.label}
+            );
+          })}
+        </nav>
+        <div className="side-foot">
+          <button className={`side-item ${profile ? 'active' : ''}`}
+                  aria-current={profile ? 'page' : undefined} onClick={openProfile}>
+            <Icon name="settings" />Ustawienia
           </button>
-        ))}
-      </nav>}
+        </div>
+      </aside>
 
-      {/* key: zmiana dziecka montuje widok od nowa - filtry i stronicowanie
-          poprzedniego dziecka nie maja sensu dla nastepnego. */}
-      {known && !profile && (
-        <ErrorBoundary key={`${section}-${child}`}>
-          <Active child={child} meta={meta.data} devices={devices.data || []} />
-        </ErrorBoundary>
-      )}
+      <div className="main">
+        <header className="topbar">
+          <span className="brand-mark mobile-only"><Icon name="logo" size={22} /></span>
+          <div className="crumbs">
+            <span className="crumb-brand hide-narrow">Kidwatch</span>
+            <h1 className="crumb-title">{profile ? 'Ustawienia' : current.label}</h1>
+            <span className="crumb-meta hide-mid">{today}</span>
+            <span className="crumb-meta hide-mid">{greeting()}, {user?.login}!</span>
+          </div>
+          <div className="top-actions">
+            <span className={`api-state ${apiState}`} role="status"
+                  title={devices.error ? `Panel nie odpowiada: ${devices.error}` : 'Odświeżane co 30 s'}>
+              <span className="api-dot" />
+              <span className="hide-narrow">{apiState === 'bad' ? 'brak połączenia' : apiState === 'ok' ? 'na żywo' : 'łączenie…'}</span>
+            </span>
+            <button className="icon-btn" onClick={() => go('notifications')}
+                    aria-label={notes ? `Powiadomienia: ${notes.more ? 'ponad ' : ''}${notes.count} dziś` : 'Powiadomienia'}>
+              <Icon name="bell" />
+              {notes?.count > 0 && (
+                <span className={`bell-badge ${notes.critical ? 'critical' : ''}`} aria-hidden="true">
+                  {notes.more ? '99+' : notes.count}
+                </span>
+              )}
+            </button>
+            <AccountMenu user={user} onProfile={openProfile} onSignOut={onSignOut} />
+          </div>
+        </header>
 
-      <footer className="app-footer">
-        Kidwatch · liczby minut to dolne oszacowanie z zapytań DNS, nie czas przed ekranem ·{' '}
-        <a href="https://renacode.com" target="_blank" rel="noopener noreferrer">RenaCode</a>
-      </footer>
+        {showChildren && <ChildTabs items={childItems} child={child} onPick={setChild} className="mobile-only" />}
+
+        <TvPauseBanner pause={tvPause.data} onChanged={tvPauseChanged} />
+
+        {devices.error && !devices.data && (
+          <div className="notice" style={{ marginBottom: 16 }}>
+            Nie udało się pobrać stanu: {devices.error}
+          </div>
+        )}
+
+        {profile && (
+          <Profile user={user} onChanged={onUserChanged} onClose={() => setProfile(false)}
+                   tvPause={tvPause.data} onTvPauseChanged={tvPauseChanged} />
+        )}
+
+        {/* key: zmiana dziecka montuje widok od nowa - filtry i stronicowanie
+            poprzedniego dziecka nie maja sensu dla nastepnego. */}
+        {known && !profile && (
+          <ErrorBoundary key={`${section}-${child}`}>
+            {Active ? (
+              <Active child={child} meta={meta.data} devices={devices.data || []} />
+            ) : (
+              <Dashboard child={child} devices={devices.data} onDevicesChanged={devices.reload}
+                         tvPause={tvPause.data} onTvPauseChanged={tvPauseChanged}
+                         notes={notes} onOpenSection={go} onOpenSettings={openProfile} />
+            )}
+          </ErrorBoundary>
+        )}
+
+        <footer className="app-footer">
+          Kidwatch · liczby minut to dolne oszacowanie z zapytań DNS, nie czas przed ekranem ·{' '}
+          <a href="https://renacode.com" target="_blank" rel="noopener noreferrer">RenaCode</a>
+        </footer>
+      </div>
+
+      <BottomNav section={section} profile={profile} go={go} openProfile={openProfile} />
     </div>
   );
 }
