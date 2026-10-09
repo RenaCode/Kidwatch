@@ -144,6 +144,10 @@ def _describe(event: dict, name: str) -> tuple[NotifyKind, int, str, str] | None
             "APNs odrzucil token urzadzenia. Pomoze ponowny zapis do MDM.",
         )
     if kind == "os_update_failed":
+        # Stare zdarzenia z serwera sprzed poprawki niosa {"count": 0} — to
+        # brak awarii, nie awaria. Kidwatch nadrabia dziennik, wiec filtr tez tu.
+        if isinstance(detail, dict) and not (detail.get("count") or 0) > 0:
+            return None
         return (
             NotifyKind.MDM,
             3,

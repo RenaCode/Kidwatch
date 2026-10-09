@@ -246,3 +246,13 @@ async def test_loop_uses_store_only_from_loop_thread(mdm, tmp_path):
     await mdm_loop(watcher, sent, 60, sleep=nie_czekaj, max_iterations=1)
     assert [n.text for n in sent.notes] == ["Gra"]
     store.close()
+
+
+def test_stale_count_zero_update_event_is_not_an_alarm(watcher):
+    svc, w, _ = watcher
+    enroll(svc)
+    w.poll(datetime.now(UTC))
+    svc.store.event("os_update_failed", UDID, {"count": 0})
+    svc.store.event("os_update_failed", UDID, {"count": 1, "reason": "NoSpace"})
+    notes = [n for n in w.poll(datetime.now(UTC)) if "aktualizacja" in n.title]
+    assert len(notes) == 1
