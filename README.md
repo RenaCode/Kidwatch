@@ -13,8 +13,12 @@ Full cluster deployment guide (in Polish):
 **At a glance**
 
 - **Data source:** DNS query logs from [NextDNS](https://nextdns.io) (live
-  stream), or AdGuard Home's query log. No app on the iPad, no MDM, no
-  jailbreak.
+  stream), or AdGuard Home's query log. No app on the iPad, no jailbreak.
+- **Own MDM server (optional, `kidwatch-mdm`):** a separate container written
+  from scratch — installed apps with alerts on new ones, device state, remote
+  screen lock, OS update enforcement, and on **supervised** iPads: VPN and
+  Private Relay blocked, DNS that can't be turned off, a profile that can't be
+  removed. See [Own MDM server](#own-mdm-server-kidwatch-mdm).
 - **Notifications:** session start and end, new apps, night use, daily and
   weekly summaries, game time, TV viewing — via ntfy, Home Assistant or the
   WhatsApp/e-mail gateway.
@@ -23,7 +27,7 @@ Full cluster deployment guide (in Polish):
 - **Optional:** Android/Google TV (ADB) and UniFi controller traffic.
 - **Self-monitoring watchdog:** alerts when kidwatch stops seeing DNS traffic.
 - **Stack:** Python 3.12 (asyncio, httpx, pydantic, SQLite), React 18 + Vite,
-  Docker, Helm chart for k3s / Argo CD.
+  Docker, Helm charts for k3s / Argo CD (`kidwatch` and `kidwatch-mdm`).
 
 Code comments, notification texts and the panel UI are in Polish; strings
 quoted below are reproduced verbatim.
@@ -41,6 +45,7 @@ Message types:
 | **Weekly report** | Sunday 19:00 | since the previous Sunday 19:00: minutes vs previous week, sessions, active days, top 5, longest session, night use, TV |
 | **Game time** (optional) | change from the panel, bonus end, schedule | `🎮 Czas gry dla <child>: +30 min (do 18:40)` |
 | **TV pause** (optional) | monitoring paused / resumed | `Monitoring TV wstrzymany do …` · `Monitoring TV wznowiony` |
+| **MDM** (optional) | MDM profile removed, supervision lost, iPad silent > 24 h, pushes rejected, APNs certificate < 30 days; new / removed app | `<iPad>: profil MDM zdjety` · `<iPad>: nowa aplikacja` |
 
 Plus the **self-monitoring watchdog** — see [Watchdog](#watchdog--the-most-important-part-without-supervision).
 
@@ -235,6 +240,14 @@ Google TV (ADB), UniFi ───────────────────
 
 If it did, a session would never end — an iPad queries Apple constantly. A
 session ends at the last **non-system** activity.
+
+A lying iPad woken up by something other than the child — plugging in a cable,
+an iCloud sync, an MDM refresh — produces minutes of real traffic. Apple
+services that sit on third-party CDNs under Apple-named hosts
+(`*.apple.com.edgekey.net`, `apple-relay.cloudflare.com`, Privacy Pass) and the
+own MDM server (`mdm.renacode.com`) are therefore noise; on 2026-10-09 they
+opened a phantom session and let a Netflix background refresh through as an
+"app" push. `tests/test_szum_wybudzenia.py` replays that real sequence.
 
 ### A restart doesn't duplicate pushes
 
@@ -683,6 +696,39 @@ Global options: `--config <path>` (default `$KIDWATCH_CONFIG` or
 
 ---
 
+## Own MDM server (kidwatch-mdm)
+
+An optional, separate container (`src/kidwatch_mdm/`, `Dockerfile.mdm`,
+`charts/kidwatch-mdm`) — an MDM server written from scratch, managed from the
+Kidwatch panel. Full setup (APNs certificate via mdmcert.download, secrets,
+Argo CD, enrolling iPads), in Polish: [`docs/mdm.md`](docs/mdm.md).
+
+| | unsupervised iPad | supervised iPad |
+|---|---|---|
+| installed apps, alert on new / removed | ✅ | ✅ |
+| state (OS, battery, storage, last contact) | ✅ | ✅ |
+| remote screen lock with a message | ✅ | ✅ |
+| alert when the MDM profile is removed | ✅ (the child can remove it) | profile can't be removed |
+| OS update enforcement with a deadline (DDM) | ✅ | ✅ + automatic installs |
+| VPN / Private Relay blocked, no wiping, no own profiles | ❌ ignored by iOS | ✅ |
+| DNS that can't be turned off | ❌ not sent (see above) | ✅ |
+
+How it works:
+
+- **Identity per device.** Each enrollment profile carries a fresh client
+  certificate from the server's own CA; every message from the iPad is signed
+  (`Mdm-Signature`) and checked: issuer, body signature, binding to the UDID.
+- **Signed enrollment profile.** Signed on the fly with the server's Let's
+  Encrypt certificate, so iOS shows it as *Verified*.
+- **Policy validated against Apple's schema** at startup — an unknown key
+  stops the server instead of silently not protecting. Keys that only work
+  under supervision are sent only after the iPad reports `IsSupervised`.
+- **Two ports.** The MDM port is exposed only under `/mdm/`; the admin API
+  (token) is reachable only from the Kidwatch pod (NetworkPolicy).
+- **Kidwatch integration** (`mdm.enabled`): an *MDM* tab in the panel
+  (proxied, CSRF-protected; the API token never reaches the browser) and the
+  alerts listed in the message table above.
+
 ## Deployment
 
 ### k3s + Argo CD
@@ -694,7 +740,8 @@ image, ntfy instead of the gateway, your own domain) is described in
 "Bez infrastruktury RenaCode". Argo CD watches `charts/kidwatch/values.yaml`,
 and CI (`.github/workflows/docker-publish.yml`) runs tests, ruff, the front-end
 tests/build and `helm lint`, then builds the image to GHCR and bumps its tag in
-that file on every push to `main`. There is no SSH or `kubectl apply`.
+that file on every push to `main` — together with the `kidwatch-mdm` image
+and `charts/kidwatch-mdm/values.yaml`. There is no SSH or `kubectl apply`.
 
 The GHCR image is private: the chart expects an `imagePullSecrets` entry
 `ghcr-pull` (set `imagePullSecrets: []` and your own `image.repository` when
@@ -782,11 +829,12 @@ Source: [`network.dns-settings.yaml`](https://github.com/apple/device-management
 (lines 242–249) and the note in `com.apple.dnsSettings.managed.yaml`
 (257–259).
 
-**Conclusion: don't set up an MDM organisation.** Apple Business Manager
-requires a legal entity and a D-U-N-S number, and MDM without supervision
-gives **worse** network coverage than a manually installed profile.
-Supervision (Apple Configurator, cable, **wiping the iPad**) is the only thing
-that adds real locks.
+**Conclusion: on an unsupervised iPad keep the manually installed DNS
+profile.** MDM without supervision gives **worse** network coverage than a
+manual profile — so the own MDM server (`kidwatch-mdm`) sends DNS **only to
+supervised iPads**; on the rest the manual NextDNS profile stays untouched.
+Supervision (Apple Configurator with a cable and **wiping the iPad**, or
+Apple Business automated enrollment) is the only thing that adds real locks.
 
 With `--supervised` the generator adds keys that **work only on a supervised
 device** — on a regular iPad iOS ignores them:
