@@ -119,6 +119,15 @@ def test_decrypt_roundtrip(reqdir, tmp_path, encoding):
     assert (reqdir / apns_cert.PUSH_REQ).read_bytes() == content
 
 
+def test_decrypt_accepts_mime_wrapped_base64(reqdir, tmp_path):
+    """Tak przychodzi prawdziwa odpowiedz mdmcert: base64 lamany co 76 znakow CRLF."""
+    raw = fake_push_request()
+    wrapped = b"\r\n".join(raw[i : i + 76] for i in range(0, len(raw), 76)) + b"\r\n"
+    mail = tmp_path / "x.p7"
+    mail.write_bytes(envelope(wrapped, reqdir / apns_cert.PKI_CERT))
+    assert apns_cert.decrypt_response(reqdir, mail) == wrapped
+
+
 def test_decrypt_rejects_content_that_is_not_a_push_request(reqdir, tmp_path):
     mail = tmp_path / "x.p7"
     mail.write_bytes(envelope(base64.b64encode(b"not a plist"), reqdir / apns_cert.PKI_CERT))

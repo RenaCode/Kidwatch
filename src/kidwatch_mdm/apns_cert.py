@@ -269,7 +269,9 @@ def decrypt_response(out: Path, encrypted: Path) -> bytes:
 def describe_push_request(content: bytes) -> dict[str, object]:
     """`push.req` to base64 z plista z kluczami PushCertRequestCSR/…CertificateChain/…Signature."""
     try:
-        plist = plistlib.loads(base64.b64decode(content.strip(), validate=True))
+        # mdmcert lamie base64 na linie CRLF (styl MIME) — bialy znak usuwamy
+        # przed walidacja, inaczej poprawny wniosek wyglada na smieci.
+        plist = plistlib.loads(base64.b64decode(b"".join(content.split()), validate=True))
     except (binascii.Error, ValueError, plistlib.InvalidFileException) as exc:
         raise CertError(
             f"odszyfrowana tresc nie jest wnioskiem push (base64 plist): {exc}"
