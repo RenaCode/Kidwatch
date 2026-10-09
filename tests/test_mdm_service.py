@@ -449,7 +449,9 @@ def test_supervised_only_keys_only_for_supervised_ipad(policy):
     def find(decls, t):
         return next(d for d in decls if d["Type"] == t)["Payload"]
 
-    assert "ProhibitDisablement" not in find(unsup, "com.apple.configuration.network.dns-settings")
+    # Bez nadzoru ZADNEJ deklaracji DNS: nie obejmie domowej sieci, a moglaby
+    # wyprzec reczny profil NextDNS, z ktorego czyta Kidwatch.
+    assert all(d["Type"] != "com.apple.configuration.network.dns-settings" for d in unsup)
     assert find(sup, "com.apple.configuration.network.dns-settings")["ProhibitDisablement"] is True
     assert "AutomaticActions" not in find(unsup, "com.apple.configuration.softwareupdate.settings")
     assert "AutomaticActions" in find(sup, "com.apple.configuration.softwareupdate.settings")

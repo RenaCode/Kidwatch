@@ -97,7 +97,7 @@ kubectl -n default exec deploy/kidwatch-mdm -- kidwatch-mdm enroll test
 
 Link otwórz w Safari na iPadzie → Ustawienia → Pobrany profil → Zainstaluj. Profil jest podpisany certyfikatem TLS `mdm.renacode.com` (Let's Encrypt, Sekret `kidwatch-mdm-tls-cert` od cert-managera), więc iOS pokaże go jako „Zweryfikowany”. Gdy certyfikatu brak, serwer poda profil bez podpisu, zapisze zdarzenie `profile_unsigned` i iOS pokaże „Niezweryfikowany” — zapis i tak zadziała.
 
-Co da się sprawdzić bez nadzoru: zapis, push, komendy, lista aplikacji (i alarm o nowej), DDM (status systemu, wymuszona aktualizacja). Czego **nie** da się: blokad (iOS je zignoruje), DNS w domowym Wi-Fi (bez nadzoru tylko sieci zarządzane), nieusuwalności profilu.
+Co da się sprawdzić bez nadzoru: zapis, push, komendy, lista aplikacji (i alarm o nowej), DDM (status systemu, wymuszona aktualizacja). Czego **nie** da się: blokad (iOS je zignoruje), DNS w domowym Wi-Fi (bez nadzoru serwer NIE wysyła DNS wcale — nie objąłby domowej sieci, a mógłby wyprzeć ręczny profil NextDNS), nieusuwalności profilu.
 
 ## Krok 5 — iPady dzieci (nadzór)
 

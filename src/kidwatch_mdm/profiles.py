@@ -195,11 +195,12 @@ def declarations(
             )
         )
 
-    if dev.dns_url:
-        # iOS 27+. Zasieg wedlug schematu: nadzorowane = WSZYSTKIE sieci,
-        # zapis urzadzenia bez nadzoru = tylko sieci zarzadzane. Na iPadzie
-        # testowym bez nadzoru DNS w domowym Wi-Fi wiec NIE zadziala — to
-        # zachowanie iOS, nie blad serwera.
+    if dev.dns_url and supervised:
+        # TYLKO pod nadzorem. Zasieg wedlug schematu: nadzorowane = WSZYSTKIE
+        # sieci, zapis urzadzenia bez nadzoru = tylko sieci zarzadzane, czyli
+        # w domu nic. A iOS uzywa jednego zestawu szyfrowanego DNS naraz, wiec
+        # deklaracja na nienadzorowanym iPadzie moglaby wyprzec reczny profil
+        # NextDNS, na ktorym stoi Kidwatch — i oslepic go zamiast pomoc.
         dns: dict[str, Any] = {
             "VisibleName": f"Kidwatch DNS — {dev.name}",
             "DNSSettings": {
@@ -207,9 +208,8 @@ def declarations(
                 "ServerURL": dev.dns_url,
                 "AllowFailover": False,
             },
+            "ProhibitDisablement": True,
         }
-        if supervised:
-            dns["ProhibitDisablement"] = True
         configs.append(_declaration("com.apple.configuration.network.dns-settings", "dns", dns))
 
     activation = _declaration(
