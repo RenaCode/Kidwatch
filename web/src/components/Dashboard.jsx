@@ -1,14 +1,17 @@
 /* Pulpit: dzisiejszy czas przed ekranem per dziecko, karty urzadzen
    i szybka kontrola telewizora. Wszystko z istniejacych endpointow -
-   /api/usage?days=1 (minuty, sesje, najczestsze aplikacje), /api/devices
-   (stan na zywo) i /api/tv/pause. Celu dziennego w danych nie ma, wiec
-   nie ma znacznika celu: pasek mierzy sie wspolna skala godzin. */
-import React from 'react';
+   /api/usage?days=1&timeline=1 (minuty, sesje, odcinki sesji i aplikacji),
+   /api/devices (stan na zywo) i /api/tv/pause. Pasek to os dnia: odcinki
+   w miejscu, w ktorym byly, ze wspolnym zakresem godzin dla calej rodziny;
+   suma dnia stoi w naglowku wiersza. */
+import React, { useMemo } from 'react';
 import { useApi, qs } from '../utils/api';
 import { minutes } from '../utils/format';
 import Devices from './Devices';
 import { TvPauseControl } from './TvPause';
 import Icon from './Icons';
+import DayBar from './DayBar';
+import { axisRange, axisTicks, rowTimeline } from '../utils/timeline';
 
 // Wiersz na dziecko (suma jego urzadzen) i osobno na kazde urzadzenie bez
 // dziecka (telewizor) - jak serie w zakladce Uzycie.
@@ -20,13 +23,11 @@ function rowsFromUsage(usage, liveDevices) {
   const rows = [];
   const add = (key, label, kind, devs) => {
     const cells = devs.map((d) => byName[d.name]).filter(Boolean);
-    const apps = {};
-    cells.forEach((c) => c.top_apps.forEach((a) => { apps[a.app] = (apps[a.app] || 0) + a.minutes; }));
     rows.push({
       key, label, kind,
       minutes: cells.reduce((a, c) => a + c.minutes, 0),
       sessions: cells.reduce((a, c) => a + c.sessions, 0),
-      apps: Object.entries(apps).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([app]) => app),
+      tl: rowTimeline(cells, today.day),
       live: devs.some((d) => live.has(d.name)),
     });
   };
@@ -44,14 +45,13 @@ function rowsFromUsage(usage, liveDevices) {
 const sessionsLabel = (n) => (n === 1 ? 'sesja' : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14)) ? 'sesje' : 'sesji');
 
 function ScreenTime({ child, devices, notes, onOpenSection }) {
-  const res = useApi(`/api/usage${qs({ days: 1, child })}`, [], { refreshMs: 60000 });
-  const rows = rowsFromUsage(res.data, devices);
-  // Wspolna skala w pelnych godzinach (min. 2 h): ten sam centymetr paska
-  // znaczy to samo u kazdego dziecka. Kreski na torze = kolejne godziny.
-  const hours = Math.max(2, Math.ceil(Math.max(0, ...rows.map((r) => r.minutes)) / 60));
-  const step = hours > 12 ? 2 : 1;
-  const ticks = [];
-  for (let h = step; h < hours; h += step) ticks.push(h);
+  const res = useApi(`/api/usage${qs({ days: 1, child, timeline: 1 })}`, [], { refreshMs: 60000 });
+  // Przeliczane tylko przy nowych danych - nie przy kazdym odswiezeniu stanu
+  // urzadzen. Wspolny zakres osi: ta sama godzina stoi w tym samym miejscu
+  // paska u kazdego dziecka.
+  const rows = useMemo(() => rowsFromUsage(res.data, devices), [res.data, devices]);
+  const range = useMemo(() => axisRange(rows.map((r) => r.tl)), [rows]);
+  const axis = useMemo(() => axisTicks(range), [range]);
 
   return (
     <section className="glass-card screen-time" aria-labelledby="st-title">
@@ -73,51 +73,33 @@ function ScreenTime({ child, devices, notes, onOpenSection }) {
         <div className="empty">Brak urządzeń dla tego wyboru.</div>
       ) : (
         <ul className="st-rows">
-          {rows.map((r) => {
-            const pct = Math.min(100, (r.minutes / (hours * 60)) * 100);
-            return (
-              <li key={r.key} className={`st-row ${r.live ? 'live' : ''} ${r.kind === 'tv' ? 'shared' : ''}`}>
-                <span className={`st-avatar ${r.kind === 'child' ? '' : 'device'}`} aria-hidden="true">
-                  {r.kind === 'child' ? r.label.slice(0, 1).toUpperCase() : <Icon name="tv" size={18} />}
-                </span>
-                <span className="st-name">
-                  <span className="st-label">{r.label}</span>
-                  {r.kind === 'tv' && <span className="st-sub">wspólny</span>}
-                </span>
-                <div className="st-bar">
-                  <div className="st-track" role="img"
-                       aria-label={`${r.label}: ${minutes(r.minutes)} dziś, skala do ${hours} h`}>
-                    {ticks.map((h) => (
-                      <span key={h} className="st-tick" style={{ left: `${(h / hours) * 100}%` }} />
-                    ))}
-                    {r.minutes > 0 && <div className="st-fill" style={{ width: `${pct}%` }} />}
-                    <span className={`st-value ${pct < 22 ? 'outside' : ''}`}
-                          style={{ left: `${pct}%` }}>
-                      {minutes(r.minutes)}
-                    </span>
-                  </div>
-                  {r.apps.length > 0 && (
-                    <div className="st-apps" aria-label="Najczęstsze aplikacje dziś">
-                      {r.apps.map((a) => <span key={a} className="st-app">{a}</span>)}
-                    </div>
-                  )}
-                </div>
-                <span className="st-sessions" title={`${r.sessions} ${sessionsLabel(r.sessions)} dziś`}>
-                  <strong>{r.sessions}</strong>
-                  <span className="dim">{sessionsLabel(r.sessions)}</span>
-                </span>
-                <span className={`st-state ${r.live ? 'on' : ''}`}
-                      title={r.live ? 'teraz aktywne' : 'teraz bezczynne'}>
-                  <span className="sr-only">{r.live ? 'teraz aktywne' : 'teraz bezczynne'}</span>
-                </span>
-              </li>
-            );
-          })}
+          {rows.map((r) => (
+            <li key={r.key} className={`st-row ${r.live ? 'live' : ''} ${r.kind === 'tv' ? 'shared' : ''}`}>
+              <span className={`st-avatar ${r.kind === 'child' ? '' : 'device'}`} aria-hidden="true">
+                {r.kind === 'child' ? r.label.slice(0, 1).toUpperCase() : <Icon name="tv" size={18} />}
+              </span>
+              <span className="st-name">
+                <span className="st-label">{r.label}</span>
+                {r.kind === 'tv' && <span className="st-sub">wspólny</span>}
+              </span>
+              <DayBar label={r.label} tl={r.tl} range={range} axis={axis} total={r.minutes} />
+              <span className="st-total" title={`${minutes(r.minutes)} dziś, ${r.sessions} ${sessionsLabel(r.sessions)}`}>
+                <strong className={r.minutes > 0 ? '' : 'zero'}>{minutes(r.minutes)}</strong>
+                <span className="dim">{r.sessions} {sessionsLabel(r.sessions)}</span>
+              </span>
+              <span className={`st-state ${r.live ? 'on' : ''}`}
+                    title={r.live ? 'teraz aktywne' : 'teraz bezczynne'}>
+                <span className="sr-only">{r.live ? 'teraz aktywne' : 'teraz bezczynne'}</span>
+              </span>
+            </li>
+          ))}
         </ul>
       )}
       <p className="hint dim footnote">
-        Skala do {hours} h, kreski co {step === 1 ? 'godzinę' : '2 godziny'}. Minuty iPadów to dolne
-        oszacowanie z zapytań DNS, telewizora - czas odtwarzania. Pod paskiem najczęstsze dziś aplikacje.
+        Pasek to oś dnia: kolorowe odcinki to aplikacje (kolory jak w legendzie), jasne tło - sesja
+        bez rozpoznanej aplikacji. Przeciągnij po pasku, żeby zobaczyć, co było o danej godzinie;
+        dotknij odcinka lub nazwy, żeby podświetlić aplikację i jej minuty. Minuty iPadów to dolne
+        oszacowanie z zapytań DNS, telewizora - czas odtwarzania.
       </p>
     </section>
   );
