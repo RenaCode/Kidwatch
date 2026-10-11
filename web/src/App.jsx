@@ -336,7 +336,10 @@ function Panel({ user, onSignOut, onUserChanged }) {
           </div>
         </header>
 
-        {showChildren && <ChildTabs items={childItems} child={child} onPick={setChild} className="mobile-only" />}
+        {/* Zakladka MDM pokazuje wszystkie iPady i wyboru dziecka nie bierze. */}
+        {showChildren && (profile || section !== 'mdm') && (
+          <ChildTabs items={childItems} child={child} onPick={setChild} className="mobile-only" />
+        )}
 
         <TvPauseBanner pause={tvPause.data} onChanged={tvPauseChanged} />
 

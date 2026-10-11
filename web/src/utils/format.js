@@ -54,7 +54,7 @@ export function ago(iso) {
   return `${Math.floor(h / 24)} d temu`;
 }
 
-export const minutes = (m) => (m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`);
+export const minutes = (m) => (m < 60 ? `${m} min` : m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`);
 
 /* Pauza monitoringu TV. Termin z <input type="datetime-local"> to czas
    lokalny bez strefy ("2026-10-10T18:00") - serwer czyta go w strefie

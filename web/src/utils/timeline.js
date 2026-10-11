@@ -2,17 +2,41 @@
    testowac. Czas to "godzina zegarowa" wzgledem polnocy dnia `day`
    (15:40 -> 15.67, 0:30 nastepnego dnia -> 24.5). Liczymy z zegara, nie
    z milisekund od polnocy: w dniu zmiany czasu podpis 15:00 ma stac pod
-   kreska 15, a nie godzine obok. */
+   kreska 15, a nie godzine obok. Zegar to strefa serwera (rodziny), nie
+   przegladarki - patrz clockHours. */
 
 export const TOP_APPS = 3;
 export const OTHER = 'inne';
 const EPS = 1e-6;
 
-export function clockHours(iso, day) {
+/* Data i godzina wprost ze znacznika serwera ("2026-10-10T15:40:00+02:00"):
+   serwer podaje je w strefie rodziny (cfg.tz), wiec to jest zegar, wedlug
+   ktorego przypisal sesje do dnia. Zegar przegladarki przesuwal odcinki
+   o roznice stref, gdy rodzic byl w innej strefie (audyt 2026-10-10, N-1). */
+const ISO_WALL = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/;
+
+function wallClock(iso) {
+  const m = ISO_WALL.exec(iso);
+  if (m) return m.slice(1).map((x) => Number(x || 0));
   const d = new Date(iso);
-  const [y, m, dd] = day.split('-').map(Number);
-  const dayShift = Math.round((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) - Date.UTC(y, m - 1, dd)) / 864e5);
-  return dayShift * 24 + d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
+  return [d.getFullYear(), d.getMonth() + 1, d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()];
+}
+
+export function clockHours(iso, day) {
+  const [y, mo, d, h, mi, s] = wallClock(iso);
+  const [dy, dm, dd] = day.split('-').map(Number);
+  const dayShift = Math.round((Date.UTC(y, mo - 1, d) - Date.UTC(dy, dm - 1, dd)) / 864e5);
+  return dayShift * 24 + h + mi / 60 + s / 3600;
+}
+
+/* Odcinek w godzinach zegarowych. Przez cofniecie zegara (ostatnia niedziela
+   pazdziernika, 3:00 -> 2:00) koniec bywa PRZED poczatkiem - wtedy szerokosc
+   z minut, nie ujemna. Godzina 2-3 wystepuje dwa razy, wiec jej odcinki
+   moga na siebie zachodzic; to swiadomy koszt osi „zegarowej". */
+function span(startIso, endIso, minutes, day) {
+  const start = clockHours(startIso, day);
+  const end = clockHours(endIso, day);
+  return { start, end: end >= start ? end : start + minutes / 60 };
 }
 
 /* "15:40"; godziny po polnocy zawijaja sie (24.5 -> "0:30"). */
@@ -26,12 +50,14 @@ export function fmtClock(h) {
 export function rowTimeline(cells, day) {
   const sessions = [];
   const runs = [];
-  cells.forEach((c) => {
-    (c.timeline?.sessions || []).forEach((s) => sessions.push({
-      start: clockHours(s.started_at, day), end: clockHours(s.ended_at, day), minutes: s.minutes,
+  // `id` jako klucz Reacta: dziecko z dwoma iPadami moze miec te sama
+  // aplikacje o tej samej minucie na obu (audyt 2026-10-10, N-3).
+  cells.forEach((c, ci) => {
+    (c.timeline?.sessions || []).forEach((s, i) => sessions.push({
+      id: `s${ci}-${i}`, ...span(s.started_at, s.ended_at, s.minutes, day), minutes: s.minutes,
     }));
-    (c.timeline?.runs || []).forEach((r) => runs.push({
-      app: r.app, start: clockHours(r.started_at, day), end: clockHours(r.ended_at, day), minutes: r.minutes,
+    (c.timeline?.runs || []).forEach((r, i) => runs.push({
+      id: `r${ci}-${i}`, app: r.app, ...span(r.started_at, r.ended_at, r.minutes, day), minutes: r.minutes,
     }));
   });
   sessions.sort((a, b) => a.start - b.start);

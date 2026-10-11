@@ -113,3 +113,42 @@ test('dotkniecie obok odcinka przeskakuje na niego', () => {
   // Za koncem: ostatnie pol minuty odcinka, nie jego otwarty koniec.
   assert.deepEqual(whatAt(tl, snapTo(tl, 15.2, 'Roblox')).apps, ['Roblox']);
 });
+
+/* Audyt 2026-10-10: N-1 (strefa przegladarki), N-2 (dzien 25 h), N-3 (klucze). */
+test('godzina ze strefy serwera, nie przegladarki', () => {
+  // Rodzina w Nowym Jorku, przegladarka (TZ testow) w Warszawie: 0:30 to 0:30.
+  assert.equal(clockHours('2026-10-10T00:30:00-04:00', '2026-10-10'), 0.5);
+  assert.equal(clockHours('2026-10-10T23:15:00-04:00', '2026-10-10'), 23.25);
+  assert.equal(clockHours('2026-10-10T15:40:00.123456+02:00', '2026-10-10'), 15 + 40 / 60);
+});
+
+test('dzien zmiany czasu (25 h): zegar, odcinki bez ujemnej szerokosci', () => {
+  const D = '2026-10-25';
+  const cell = {
+    timeline: {
+      sessions: [
+        { started_at: `${D}T00:30:00+02:00`, ended_at: `${D}T01:00:00+02:00`, minutes: 30 },
+        // 2:40 letniego -> 2:20 zimowego: 40 min, zegar cofa sie o godzine.
+        { started_at: `${D}T02:40:00+02:00`, ended_at: `${D}T02:20:00+01:00`, minutes: 40 },
+        { started_at: `${D}T23:00:00+01:00`, ended_at: `${D}T23:30:00+01:00`, minutes: 30 },
+      ],
+      runs: [{ app: 'Roblox', started_at: `${D}T02:40:00+02:00`, ended_at: `${D}T02:20:00+01:00`, minutes: 40 }],
+    },
+  };
+  const tl = rowTimeline([cell], D);
+  assert.deepEqual(tl.sessions.map((s) => s.start), [0.5, 2 + 40 / 60, 23]);
+  tl.sessions.concat(tl.runs).forEach((s) => assert.ok(s.end > s.start, JSON.stringify(s)));
+  assert.equal(tl.sessions[1].end, 2 + 40 / 60 + 40 / 60);
+  // 23:30 to koniec dnia na osi, nie 24:30 (ms od polnocy dalyby 24,5).
+  assert.equal(tl.sessions[2].end, 23.5);
+  assert.deepEqual(axisRange([tl]), { start: 0, end: 24 });
+});
+
+test('odcinki maja unikalne klucze takze przy dwoch iPadach o tej samej minucie', () => {
+  const twin = { timeline: { sessions: [{ started_at: iso('15:00'), ended_at: iso('15:10'), minutes: 10 }],
+    runs: [run('Roblox', '15:00', '15:10', 10)] } };
+  const tl = rowTimeline([twin, twin], DAY);
+  const ids = tl.sessions.concat(tl.runs).map((s) => s.id);
+  assert.equal(new Set(ids).size, 4);
+  assert.ok(ids.every(Boolean));
+});
