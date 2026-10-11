@@ -43,7 +43,7 @@ function Action({ label, onRun, disabled }) {
   );
 }
 
-function DeviceCard({ d, onChanged }) {
+function DeviceCard({ d, onChanged, canCommand }) {
   const [open, setOpen] = useState(false);
   const detail = useApi(open ? `/api/mdm/devices/${d.udid}` : null, [open]);
   const later = () => [1500, 6000, 15000].forEach((ms) => setTimeout(() => onChanged?.(), ms));
@@ -85,9 +85,14 @@ function DeviceCard({ d, onChanged }) {
       <span className="dim" title={d.last_seen_at}>Kontakt z MDM {ago(d.last_seen_at)}</span>
       {!d.checked_out_at && (
         <div className="mdm-row">
-          <Action label="Odśwież" onRun={async () => { await post('/api/mdm/refresh', { udid: d.udid }); later(); }} />
-          <Action label="Zablokuj ekran" onRun={lock} />
-          <Action label="Restart" onRun={restart} disabled={d.supervised !== true} />
+          {/* Bez uprawnienia `mdm.komendy` tylko podglad - serwer i tak odmawia. */}
+          {canCommand && (
+            <>
+              <Action label="Odśwież" onRun={async () => { await post('/api/mdm/refresh', { udid: d.udid }); later(); }} />
+              <Action label="Zablokuj ekran" onRun={lock} />
+              <Action label="Restart" onRun={restart} disabled={d.supervised !== true} />
+            </>
+          )}
           <button className="btn-ghost" aria-expanded={open} aria-controls={detailsId}
                   onClick={() => setOpen((v) => !v)}>
             {open ? 'Ukryj szczegóły' : 'Szczegóły'}
@@ -190,7 +195,7 @@ function Enroll() {
   );
 }
 
-export default function Mdm() {
+export default function Mdm({ canCommand = false }) {
   const { data, error, reload } = useApi('/api/mdm', [], { refreshMs: 30000 });
   if (error && !data) return <div className="notice">Serwer MDM: {error}</div>;
   if (!data) return <div className="loading-pulse dim">Ładowanie…</div>;
@@ -217,14 +222,16 @@ export default function Mdm() {
         ? <div className="glass-card empty">Żaden iPad nie jest jeszcze zapisany.</div>
         : (
           <div className="device-grid">
-            {data.devices.map((d) => <DeviceCard key={d.udid} d={d} onChanged={reload} />)}
+            {data.devices.map((d) => <DeviceCard key={d.udid} d={d} onChanged={reload} canCommand={canCommand} />)}
           </div>
         )}
 
-      <div className="device-grid">
-        <OsUpdate state={data.os_update} onChanged={reload} />
-        <Enroll />
-      </div>
+      {canCommand && (
+        <div className="device-grid">
+          <OsUpdate state={data.os_update} onChanged={reload} />
+          <Enroll />
+        </div>
+      )}
 
       <section className="glass-card">
         <div className="card-title"><span>Ostatnie zdarzenia</span><span className="hint">serwer MDM</span></div>

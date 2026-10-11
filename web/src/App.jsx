@@ -13,7 +13,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import { TvPauseBanner } from './components/TvPause';
 import { get, post, qs, useApi, setSessionExpiredHandler, setSsoMode } from './utils/api';
 import { signOutLabel, signOutTarget, ssoDenial } from './utils/sso';
-import { can, isViewer, sectionsFor } from './utils/rola';
+import { ALL, can, isViewer, sectionsFor } from './utils/uprawnienia';
 import { localToday } from './utils/format';
 import { isCriticalNote } from './utils/mdm';
 
@@ -77,7 +77,7 @@ export default function App() {
 
   const checkSession = useCallback(async () => {
     if (isPreview) {
-      setUser({ login: 'admin', role: 'admin', totp_enabled: true, backup_codes_left: 5 });
+      setUser({ login: 'admin', rola: 'wlasciciel', uprawnienia: ALL, totp_enabled: true, backup_codes_left: 5 });
       setAuthState('in');
       return;
     }
@@ -384,7 +384,7 @@ function Panel({ user, onSignOut, onUserChanged }) {
           <ChildTabs items={childItems} child={child} onPick={setChild} className="mobile-only" />
         )}
 
-        <TvPauseBanner pause={tvPause.data} onChanged={tvPauseChanged} />
+        <TvPauseBanner pause={tvPause.data} onChanged={tvPauseChanged} canChange={can(user, 'tv.pauza')} />
 
         {devices.error && !devices.data && (
           <div className="notice" style={{ marginBottom: 16 }}>
@@ -402,10 +402,11 @@ function Panel({ user, onSignOut, onUserChanged }) {
         {known && !profile && (
           <ErrorBoundary key={`${section}-${child}`}>
             {Active ? (
-              <Active child={child} meta={meta.data} devices={devices.data || []} />
+              <Active child={child} meta={meta.data} devices={devices.data || []}
+                      canCommand={can(user, 'mdm.komendy')} />
             ) : (
               <Dashboard child={child} devices={devices.data} onDevicesChanged={devices.reload}
-                         canGame={can(user, 'game')}
+                         canGame={can(user, 'czas_gry.zmiana')} canTvPause={can(user, 'tv.pauza')}
                          tvPause={tvPause.data} onTvPauseChanged={tvPauseChanged}
                          notes={notes} onOpenSection={go} onOpenSettings={openProfile} />
             )}

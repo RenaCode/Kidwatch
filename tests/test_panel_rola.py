@@ -1,9 +1,10 @@
-"""Rola konta panelu: `wlasciciel` albo `podglad` (panel_auth.ROLES).
+"""Rola konta panelu: `wlasciciel` albo `podglad` (uprawnienia.ROLES).
 
 `podglad` (np. osoba z rodziny w grupie Authelii `rodzina`) oglada historie,
 ekrany, uzycie i powiadomienia. Nie wysyla komend MDM, nie zmienia czasu gry,
-WhatsAppa ani aplikacji TV — serwer odmawia 403 niezaleznie od frontu. Rola
-pochodzi z bazy panelu, nigdy z naglowka SSO.
+pauzy TV, WhatsAppa ani aplikacji TV — serwer odmawia 403 niezaleznie od
+frontu. Rola pochodzi z bazy panelu, nigdy z naglowka SSO. Model uprawnien
+i kompletnosc routera: test_uprawnienia.py.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import sqlite3
 import pytest
 
 from conftest import make_config, panel_login
-from kidwatch import panel_auth
+from kidwatch import panel_auth, uprawnienia
 from kidwatch.__main__ import PANEL_ROLES, main
 from kidwatch.config import PanelConfig, StoreConfig
 from kidwatch.panel import start_panel
@@ -29,6 +30,8 @@ UDID = "00008030-000A1B2C3D4E5F6A"
 #: Kazda czynnosc administracyjna: (metoda, sciezka, cialo).
 ADMIN = [
     ("POST", "/api/game", {"child": "Dziecko", "action": "block"}),
+    ("POST", "/api/tv/pause", {"until": None}),
+    ("POST", "/api/tv/resume", {}),
     ("POST", "/api/tv/aplikacja/instaluj", {}),
     ("POST", "/api/tv/aplikacja/paruj", {"kod": "123456"}),
     ("POST", "/api/profile/whatsapp/start", {"confirm": HASLO}),
@@ -75,7 +78,7 @@ def naglowki(srv, login: str) -> dict[str, str]:
 def test_podglad_dostaje_403_na_kazda_czynnosc_administracyjna(server, method, path, body):
     status, _, payload = call(server, method, path, body, naglowki(server, "rodzic2"))
     assert status == 403, (path, payload)
-    assert "podgląd" in payload["error"]
+    assert "nie ma uprawnienia" in payload["error"]
 
 
 @pytest.mark.parametrize(("method", "path", "body"), ADMIN)
@@ -84,7 +87,7 @@ def test_wlasciciel_nie_jest_zatrzymany_rola(server, method, path, body):
     ma MDM, bramki ani TV; QR bota 403 za brak swiezego potwierdzenia), wiec
     odmowa wyzej pochodzi z roli, nie z czegos innego."""
     status, _, payload = call(server, method, path, body, naglowki(server, "rodzic1"))
-    assert "podgląd" not in (payload or {}).get("error", ""), (path, payload)
+    assert "uprawnienia" not in (payload or {}).get("error", ""), (path, payload)
     assert status != 403 or path == "/api/profile/whatsapp/qr", (path, payload)
 
 
@@ -93,23 +96,28 @@ def test_podglad_widzi_ekrany_podgladu(server, path):
     assert call(server, "GET", path, headers=naglowki(server, "rodzic2"))[0] == 200, path
 
 
-def test_podglad_moze_pauze_TV_i_wlasne_konto(server):
-    """Pauza TV dozwolona (opis w panel.py): 404 tylko dlatego, ze w tescie
-    czujnik TV jest wylaczony — nie 403. Wlasne haslo i 2FA tez."""
+def test_podglad_bez_pauzy_TV_ale_z_wlasnym_kontem(server):
+    """Pauza TV wylacza liczenie czasu i powiadomienia o telewizorze — to
+    zmiana nadzoru, nie podglad (decyzja wlasciciela, 2026-10-11). Wlasciciel
+    dostaje 404 tylko dlatego, ze w tescie czujnik TV jest wylaczony."""
     h = naglowki(server, "rodzic2")
-    assert call(server, "POST", "/api/tv/pause", {"until": None}, h)[0] == 404
-    assert call(server, "POST", "/api/tv/resume", {}, h)[0] == 404
+    for path, body in (("/api/tv/pause", {"until": None}), ("/api/tv/resume", {})):
+        status, _, payload = call(server, "POST", path, body, h)
+        assert status == 403 and "tv.pauza" in payload["error"], (path, payload)
+        assert call(server, "POST", path, body, naglowki(server, "rodzic1"))[0] == 404
     assert call(server, "POST", "/api/auth/totp/setup", {}, h)[0] == 200
     assert call(server, "POST", "/api/auth/password",
                 {"old": "zle-haslo-zle-haslo", "new": "nowe-haslo-123456"}, h)[0] == 401
     assert call(server, "POST", "/api/auth/logout", {}, h)[0] == 200
 
 
-def test_me_podaje_role(server):
+def test_me_podaje_role_i_uprawnienia(server):
     me = call(server, "GET", "/api/auth/me", headers=naglowki(server, "rodzic2"))[2]
     assert me["rola"] == "podglad"
+    assert me["uprawnienia"] == ["konto.wlasne", "podglad.historia"]
     me = call(server, "GET", "/api/auth/me", headers=naglowki(server, "rodzic1"))[2]
     assert me["rola"] == "wlasciciel"
+    assert me["uprawnienia"] == sorted(uprawnienia.UPRAWNIENIA)
 
 
 @pytest.mark.parametrize(("login", "grupa", "rola"), [
@@ -130,12 +138,15 @@ def test_rola_z_bazy_nie_z_naglowka_SSO(server, login, grupa, rola):
 
 # ======================================================================== baza
 def test_baza_sprzed_rol_istniejace_konta_to_wlasciciele(tmp_path):
+    """Baza sprzed rol i sprzed tabeli odstepstw: konto zachowuje wszystko."""
     stary = panel_auth.SCHEMA.replace(
         "    totp_last_step   INTEGER,\n"
-        "    -- 'wlasciciel' = wszystko, 'podglad' = tylko ogladanie (ROLE nizej).\n"
+        "    -- 'wlasciciel' = wszystko, 'podglad' = tylko ogladanie (uprawnienia.py).\n"
         "    rola             TEXT NOT NULL DEFAULT 'wlasciciel'\n",
         "    totp_last_step   INTEGER\n")
-    assert "rola" not in stary
+    stary = stary[:stary.index("-- Pojedyncze odstepstwa")] + stary[
+        stary.index("-- Nieudane hasla przy logowaniu"):]
+    assert "rola" not in stary and "user_uprawnienia" not in stary
     path = tmp_path / "stara.db"
     with sqlite3.connect(path) as conn:
         conn.executescript(stary)
@@ -143,7 +154,9 @@ def test_baza_sprzed_rol_istniejace_konta_to_wlasciciele(tmp_path):
                      "VALUES ('rodzic1', ?, 0)", (panel_auth.hash_password(HASLO),))
     auth = PanelAuth(path)
     assert auth.list_users()[0]["rola"] == "wlasciciel"
-    assert auth.login("rodzic1", HASLO).session.rola == "wlasciciel"
+    session = auth.login("rodzic1", HASLO).session
+    assert session.rola == "wlasciciel"
+    assert session.uprawnienia == frozenset(uprawnienia.UPRAWNIENIA)
 
 
 def test_nieznana_rola_odrzucona(tmp_path):
@@ -177,31 +190,3 @@ def test_user_add_z_rola_podglad_i_zmiana_roli(tmp_path, monkeypatch, capsys):
     assert main(["--config", str(cfg), "user-rola", "nikt", "podglad"]) == 1
     with pytest.raises(SystemExit):
         main(["--config", str(cfg), "user-add", "x", "--rola", "admin"])
-
-
-#: POST-y, ktore `podglad` moze wolac: logowanie, wlasne konto, pauza TV.
-POST_DLA_PODGLADU = {
-    "/api/auth/login", "/api/auth/mfa", "/api/auth/totp/setup", "/api/auth/totp/confirm",
-    "/api/auth/totp/disable", "/api/auth/logout", "/api/auth/password",
-    "/api/tv/pause", "/api/tv/resume",
-}
-
-
-def test_kazda_trasa_POST_jest_sklasyfikowana():
-    """Nowa trasa w do_POST musi trafic do ADMIN (z testem 403) albo swiadomie
-    do POST_DLA_PODGLADU — inaczej `podglad` dostalby ja po cichu."""
-    import inspect  # noqa: PLC0415
-    import re  # noqa: PLC0415
-
-    from kidwatch import panel  # noqa: PLC0415
-
-    zrodlo = inspect.getsource(panel)
-    cialo = zrodlo[zrodlo.index("def do_POST"):zrodlo.index("def _authed")]
-    trasy = set(re.findall(r'"(/api/[^"]*)"', cialo))
-    admin = {p for m, p, _ in ADMIN if m == "POST"}
-    prefiksy = {p for p in trasy if p.endswith("/")}
-    assert prefiksy == {"/api/profile/", "/api/mdm/"}, prefiksy
-    for prefiks in prefiksy:
-        assert any(p.startswith(prefiks) for p in admin), prefiks
-    nieznane = trasy - prefiksy - admin - POST_DLA_PODGLADU
-    assert not nieznane, f"trasa bez decyzji o roli: {nieznane}"

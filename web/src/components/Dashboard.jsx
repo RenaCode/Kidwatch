@@ -113,7 +113,7 @@ function ScreenTime({ child, devices, notes, onOpenSection }) {
 // Szybka kontrola telewizora: co leci i pauza monitoringu (ta sama akcja
 // co w Ustawieniach). Telewizora nie da sie stad wylaczyc ani zablokowac -
 // Kidwatch tylko patrzy, wiec takich przyciskow nie ma.
-function TvQuick({ pause, tvDevice, onChanged, onOpenSettings }) {
+function TvQuick({ pause, tvDevice, onChanged, onOpenSettings, canChange }) {
   const paused = !!pause.active;
   const np = tvDevice?.now_playing;
   let status = null;
@@ -132,7 +132,7 @@ function TvQuick({ pause, tvDevice, onChanged, onOpenSettings }) {
       <div className={`tv-frame ${paused ? 'paused' : ''}`} aria-hidden="true">
         <span className="tv-frame-label">TV</span>
       </div>
-      <TvPauseControl hero pause={pause} onChanged={onChanged} />
+      <TvPauseControl hero pause={pause} onChanged={onChanged} canChange={canChange} />
       <button className="btn-ghost tvq-settings" onClick={onOpenSettings}>
         <Icon name="settings" size={16} /> Ustawienia telewizora
       </button>
@@ -142,7 +142,7 @@ function TvQuick({ pause, tvDevice, onChanged, onOpenSettings }) {
 
 export default function Dashboard({
   child, devices, onDevicesChanged, tvPause, onTvPauseChanged, notes, onOpenSection, onOpenSettings,
-  canGame = true,
+  canGame = false, canTvPause = false,
 }) {
   const tvDevice = (devices || []).find((d) => d.kind === 'tv');
   const showTv = tvPause?.available;
@@ -161,7 +161,7 @@ export default function Dashboard({
           <section aria-labelledby="quick-title" className="dash-quick">
             <div className="section-head"><h2 id="quick-title">Szybka kontrola</h2></div>
             <TvQuick pause={tvPause} tvDevice={tvDevice} onChanged={onTvPauseChanged}
-                     onOpenSettings={onOpenSettings} />
+                     onOpenSettings={onOpenSettings} canChange={canTvPause} />
           </section>
         )}
       </div>

@@ -159,7 +159,7 @@ function DeviceCard({ d, onChanged, canGame }) {
 }
 
 // Karty w siatce - na telefonie jedna kolumna, od 720 px dwie.
-export default function Devices({ devices, onChanged, canGame = true }) {
+export default function Devices({ devices, onChanged, canGame = false }) {
   if (!devices) return <div className="empty loading-pulse">Wczytywanie urządzeń…</div>;
   if (!devices.length) return <div className="empty">Brak urządzeń dla tego wyboru.</div>;
   return (

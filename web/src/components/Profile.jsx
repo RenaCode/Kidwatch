@@ -6,7 +6,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { TvPauseControl } from './TvPause';
 import { TvAppControl } from './TvApp';
 import { get, post } from '../utils/api';
-import { can } from '../utils/rola';
+import { can } from '../utils/uprawnienia';
 import {
   MAX_LABEL, MAX_RECIPIENTS, SOURCES_ALL, SOURCES_FAMILY, getsEverything, newRecipient,
   partialFailure, recipientsFromState, recipientsPayload, sameRecipients, sourcesKey,
@@ -417,11 +417,11 @@ function WhatsApp() {
 
 // Telewizor: wstrzymanie monitoringu i aplikacja Kidwatch TV.
 // Do 2026-10-09 te przyciski siedzialy na karcie TV w widoku urzadzen.
-function TvSettings({ tvPause, onTvPauseChanged, canTvApp }) {
+function TvSettings({ tvPause, onTvPauseChanged, canTvPause, canTvApp }) {
   return (
     <div className="glass-card">
       <div className="card-title"><span>Telewizor</span></div>
-      <TvPauseControl pause={tvPause} onChanged={onTvPauseChanged} />
+      <TvPauseControl pause={tvPause} onChanged={onTvPauseChanged} canChange={canTvPause} />
       {canTvApp && <TvAppControl />}
     </div>
   );
@@ -439,16 +439,17 @@ export default function Profile({ user, onChanged, onClose, tvPause, onTvPauseCh
         <TwoFactor user={user} onChanged={onChanged} />
         <PasswordForm />
       </div>
-      {/* Konto `podglad`: wlasne haslo i 2FA oraz pauza TV; kanaly
-          powiadomien i aplikacja TV naleza do wlasciciela. */}
-      {can(user, 'whatsapp') && (
+      {/* Konto `podglad`: tylko wlasne haslo i 2FA. Kanaly powiadomien,
+          pauza i aplikacja TV wymagaja uprawnien (uprawnienia.js). */}
+      {can(user, 'whatsapp.konfiguracja') && (
         <>
           <div className="stat-label">Powiadomienia / WhatsApp</div>
           <WhatsApp />
         </>
       )}
       <div className="stat-label">Telewizor</div>
-      <TvSettings tvPause={tvPause} onTvPauseChanged={onTvPauseChanged} canTvApp={can(user, 'tvApp')} />
+      <TvSettings tvPause={tvPause} onTvPauseChanged={onTvPauseChanged}
+                  canTvPause={can(user, 'tv.pauza')} canTvApp={can(user, 'tv.aplikacja')} />
     </div>
   );
 }
