@@ -18,6 +18,7 @@ import pyotp
 import pytest
 
 from conftest import make_config, panel_login
+from kidwatch import panel_auth
 from kidwatch.config import PanelConfig, StoreConfig
 from kidwatch.panel import start_panel
 from kidwatch.panel_auth import AuthError, PanelAuth, box_from_env
@@ -351,12 +352,21 @@ def test_dziennik_logowania_SSO_bez_danych_wrazliwych(sso_on, caplog):
 
 
 def test_baza_sprzed_SSO_dostaje_kolumne_a_stare_sesje_zyja(tmp_path):
+    # Schemat sprzed SSO zbudowany wprost, bez DROP COLUMN — starsze SQLite
+    # (runner CI) nie umie go na tabeli z komentarzem w definicji.
+    stary = panel_auth.SCHEMA.replace(
+        "    user_agent TEXT,\n"
+        "    -- 'sso' = sesja z naglowka Authelii (panel_sso.py), NULL = haslo (+ TOTP).\n"
+        "    kind       TEXT\n", "    user_agent TEXT\n")
+    assert "kind" not in stary
     path = tmp_path / "stara.db"
-    auth = PanelAuth(path)
-    auth.add_user("marcin", HASLO)
-    token = auth.login("marcin", HASLO).token
     with sqlite3.connect(path) as conn:
-        conn.execute("ALTER TABLE sessions DROP COLUMN kind")
-    nowa = PanelAuth(path)
-    session = nowa.session(token)
+        conn.executescript(stary)
+        conn.execute("INSERT INTO users (id, login, password_hash, created_at) "
+                     "VALUES (1, 'marcin', 'x', 0)")
+        conn.execute("INSERT INTO sessions (token_hash, user_id, csrf, created_at, expires_at) "
+                     "VALUES (?, 1, 'c', 0, ?)", (panel_auth.token_hash("t"), time.time() + 60))
+    session = PanelAuth(path).session("t")
     assert session is not None and session.kind == "haslo"
+    with sqlite3.connect(path) as conn:
+        assert "kind" in {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
