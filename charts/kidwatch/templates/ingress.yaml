@@ -80,8 +80,16 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: {{ .Values.ingress.clusterIssuer }}
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    {{- /* Limity per adres PRZED SSO (`sso` w values.yaml): zalew z jednego
+    adresu konczy sie na Traefiku, zanim dojdzie do Authelii. */}}
+    {{- $mw := list }}
     {{- if .Values.ingress.limity.enabled }}
-    traefik.ingress.kubernetes.io/router.middlewares: {{ .Release.Namespace }}-{{ include "kidwatch.fullname" . }}-w-toku@kubernetescrd,{{ .Release.Namespace }}-{{ include "kidwatch.fullname" . }}-tempo@kubernetescrd
+    {{- $mw = append $mw (printf "%s-%s-w-toku@kubernetescrd" .Release.Namespace (include "kidwatch.fullname" .)) }}
+    {{- $mw = append $mw (printf "%s-%s-tempo@kubernetescrd" .Release.Namespace (include "kidwatch.fullname" .)) }}
+    {{- end }}
+    {{- if .Values.sso.enabled }}{{ $mw = concat $mw .Values.sso.middlewares }}{{ end }}
+    {{- with $mw }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ join "," . }}
     {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}

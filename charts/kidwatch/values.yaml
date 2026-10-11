@@ -144,6 +144,28 @@ ingress:
   #   kubectl -n default exec deploy/kidwatch -c kidwatch -- python -m kidwatch user-add <login>
   # Klucz szyfrujacy sekrety TOTP (PANEL_TOTP_KEY) idzie z `secretName` wyzej.
 
+# SSO: logowanie z wymuszonym 2FA (Authelia, renacode-infra
+# k3s/platforma/authelia.yaml, grupy `admins` i `rodzina`) PRZED wlasnym
+# logowaniem panelu. Middleware forwardAuth na routerze HTTPS panelu - caly
+# host, bez wyjatkow: sonda kubeleta (`/api/health`) idzie wprost do poda,
+# TV i iPady nie wolaja tego hosta (TV jest serwerem, do ktorego laczy sie
+# kidwatch; iPady rozmawiaja z mdm.renacode.com, osobny chart bez SSO).
+# Routery HTTP i aliasow tylko przekierowuja, nie dochodza do panelu.
+#
+# WYLACZONE DOMYSLNIE: wlacza `valuesObject` w argocd-apps.yaml (renacode-infra)
+# dopiero po rejestracji 2FA w Authelii. Bez dzialajacej Authelii = 500 na
+# panelu (fail-closed). Wlasne logowanie panelu (haslo + TOTP) zostaje.
+sso:
+  enabled: false
+  # Middleware'y z renacode-infra, W TEJ KOLEJNOSCI: najpierw usuniecie
+  # naglowkow tozsamosci podanych przez klienta (`Remote-User` itd.), potem
+  # forwardAuth, ktory wstawia je od Authelii. Kontrakt tozsamosci (panel
+  # rozpoznaje uzytkownika po `Remote-User` bez drugiego logowania):
+  # renacode-infra docs/sso-tozsamosc.md.
+  middlewares:
+    - default-authelia-naglowki@kubernetescrd
+    - default-authelia-sso@kubernetescrd
+
 # ------------------------------------------------------------ NETWORKPOLICY
 # Kto moze otworzyc polaczenie do poda kidwatch (templates/networkpolicy.yaml).
 # Jedynym zrodlem ruchu przychodzacego jest Traefik z kube-system - proxuje
