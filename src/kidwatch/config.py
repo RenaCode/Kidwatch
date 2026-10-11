@@ -657,6 +657,12 @@ class MdmConfig(_Base):
     #: Brak udanego uzgadniania na serwerze MDM dluzej niz tyle = alarm (raz
     #: na dobe). Obieg co 5 min, ponowienie po bledzie co minute.
     reconcile_alert_minutes: int = Field(default=30, ge=10)
+    #: Komendy czekaja, a zaden push do APNs nie przeszedl od tylu minut =
+    #: alarm (raz na dobe). Bez pusha iPad nie przyjdzie po blokade ani profil.
+    push_alert_minutes: int = Field(default=60, ge=10)
+    #: Komenda czekajaca na iPada, ktory sie odzywa, dluzej niz tyle = alarm
+    #: (raz na dobe na iPada). iPad milczacy ma juz alarm ciszy.
+    stuck_alert_hours: float = Field(default=24.0, ge=1.0)
 
     def token(self) -> str | None:
         return os.environ.get("MDM_ADMIN_TOKEN", "").strip() or None

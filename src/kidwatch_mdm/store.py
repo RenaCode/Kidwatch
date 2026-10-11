@@ -290,6 +290,19 @@ class Store:
         )
         return from_iso(row["t"]) if row else None
 
+    def pending_summary(self, udid: str) -> tuple[int, sqlite3.Row | None]:
+        """Ile komend czeka na iPada i najstarsza z nich (rodzaj, stan, od kiedy).
+
+        Komenda wiszaca dobami (NotNow bez konca, zgubiony push) inaczej nie
+        jest nigdzie widoczna — iPad sie odzywa, wiec alarm ciszy milczy.
+        """
+        rows = self.query(
+            "SELECT request_type, status, created_at FROM commands WHERE udid = ? "
+            "AND status IN ('queued', 'sent', 'not_now') ORDER BY created_at, rowid",
+            (udid,),
+        )
+        return len(rows), (rows[0] if rows else None)
+
     def requeue_not_now(self, udid: str) -> None:
         """Idle otwiera nowa sesje: odlozone NotNow wracaja do kolejki."""
         with self.tx() as c:
@@ -407,6 +420,25 @@ class Store:
     def setting(self, key: str, default: Any = None) -> Any:
         row = self.one("SELECT value FROM settings WHERE key = ?", (key,))
         return json.loads(row["value"]) if row else default
+
+    def record_push(self, ok: bool, at: datetime, error: str | None = None) -> None:
+        """Wynik pusha do APNs dla calego serwera (do /api/health).
+
+        Udany: `last_push_ok_at`, seria porazek zerowana. Nieudany: ostatni
+        blad i seria — od kiedy zaden push nie przeszedl i ile ich padlo.
+        Trwale w bazie, bo liveness restartuje pod, a seria ma przetrwac.
+        """
+        with self._lock:
+            if ok:
+                self.set_setting("last_push_ok_at", iso(at))
+                self.set_setting("push_failing_since", None)
+                self.set_setting("push_failures", None)
+                return
+            self.set_setting("last_push_error", error)
+            self.set_setting("last_push_error_at", iso(at))
+            self.set_setting("push_failures", int(self.setting("push_failures", 0)) + 1)
+            if self.setting("push_failing_since") is None:
+                self.set_setting("push_failing_since", iso(at))
 
     def set_setting(self, key: str, value: Any) -> None:
         with self.tx() as c:

@@ -115,13 +115,18 @@ function notifications(params) {
 
 const MDM = {
   available: true,
-  health: { apns: { configured: true, days_left: 214, topic: 'com.apple.mgmt.External.podglad' } },
+  health: {
+    apns: { configured: true, days_left: 214, topic: 'com.apple.mgmt.External.podglad' },
+    last_reconcile_ok_at: at(3), last_reconcile_error: null, last_push_ok_at: at(12),
+    push_failing_since: null, push_failures: 0,
+  },
   devices: [
     { udid: 'PODGLAD-0001', name: 'iPad Jan', product: 'iPad13,18', os_version: '27.0',
       supervised: true, last_seen_at: at(4), checked_out_at: null, ddm_synced: true, serial: 'PODGLAD1' },
     { udid: 'PODGLAD-0002', name: 'iPad Anna', product: 'iPad14,1', os_version: '26.4',
       supervised: false, last_seen_at: at(300), checked_out_at: null, ddm_synced: false,
-      push_error: '410 Unregistered', push_error_at: at(60), serial: 'PODGLAD2' },
+      push_error: '410 Unregistered', push_error_at: at(60), serial: 'PODGLAD2', pending_commands: 2,
+      oldest_pending: { request_type: 'InstallProfile', status: 'not_now', created_at: at(26 * 60) } },
   ],
   os_update: { effective: null, override: null },
   events: [

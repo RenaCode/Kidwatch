@@ -356,6 +356,8 @@ def test_health_reports_instance_head_and_reconcile(mdm):
     assert h["last_event_id"] == svc.store.last_event_id() > 0
     assert h["last_reconcile_ok_at"] == svc.store.setting("last_reconcile_ok_at")
     assert h["last_reconcile_error"] is None and h["started_at"]
+    assert h["last_push_ok_at"] == svc.store.setting("last_push_ok_at") is not None
+    assert h["push_failing_since"] is None and h["push_failures"] == 0
 
 
 def test_failing_reconcile_alarms_once_a_day(watcher):
@@ -424,3 +426,61 @@ async def test_time_alarms_once_per_day_through_loop_and_outbox(watcher):
         "MDM: uzgadnianie nie dziala od 2 h",
         "iPad Dziecka: brak kontaktu z MDM od 30 h",
     ]
+
+
+# ================================================== audyt 2026-10-10: S-2, N-4
+def test_failing_pushes_with_pending_commands_alarm_once_a_day(watcher):
+    """S-2: APNs nieosiagalne (egress, adresy Apple) — uzgadnianie „udane",
+    a komendy stoja. Alarm po godzinie serii porazek, gdy cos czeka."""
+    svc, w, _ = watcher
+    enroll(svc)
+    now = datetime.now(UTC)
+    w.poll(now)  # kursor
+    svc.store.record_push(False, now - timedelta(minutes=20), "None ConnectTimeout")
+    assert [n for n in w.poll(now) if "pushe" in n.title] == []  # za wczesnie
+
+    svc.store.set_setting("push_failing_since", iso(now - timedelta(hours=2)))
+    notes = [n for n in w.poll(now) if "pushe" in n.title]
+    assert [n.title for n in notes] == ["MDM: pushe do iPadow nie wychodza od 2 h"]
+    assert "ConnectTimeout" in notes[0].text and "Czeka komend" in notes[0].text
+    assert w.poll(now + timedelta(minutes=1)) == []
+
+    # Pusta kolejka: nie ma kogo budzic, wiec nie ma alarmu.
+    svc.store.query("UPDATE commands SET status='acknowledged'")
+    assert [n for n in w.poll(now + timedelta(days=1)) if "pushe" in n.title] == []
+
+
+def test_devices_report_oldest_pending_command(watcher):
+    svc, w, _ = watcher
+    enroll(svc)
+    old = iso(datetime.now(UTC) - timedelta(hours=30))
+    svc.store.query("UPDATE commands SET created_at=?, status='not_now'", (old,))
+    [dev] = w.api.devices()
+    assert dev["pending_commands"] > 0
+    assert dev["oldest_pending"]["created_at"] == old
+    assert dev["oldest_pending"]["status"] == "not_now"
+
+
+def test_command_stuck_on_live_ipad_alarms_once_a_day(watcher):
+    """N-4 / S3: komenda wiszaca dobami na iPadzie, ktory sie odzywa, nie
+    dawala zadnego sygnalu."""
+    svc, w, _ = watcher
+    enroll(svc)
+    now = datetime.now(UTC)
+    w.poll(now)  # kursor
+    svc.store.query(
+        "UPDATE commands SET created_at=?, status='not_now'",
+        (iso(now - timedelta(hours=30)),),
+    )
+    notes = [n for n in w.poll(now) if "czeka od" in n.title]
+    assert len(notes) == 1
+    assert notes[0].title.startswith("iPad Dziecka: komenda ")
+    assert notes[0].title.endswith(" czeka od 30 h")
+    assert "nie teraz" in notes[0].text
+    assert w.poll(now + timedelta(minutes=1)) == []
+
+    # iPad milczacy dobe: tylko alarm ciszy, bez drugiego o komendach.
+    svc.store.update_device(UDID, last_seen_at=iso(now - timedelta(hours=30)))
+    titles = [n.title for n in w.poll(now + timedelta(days=1))]
+    assert [t for t in titles if "czeka od" in t] == []
+    assert any("brak kontaktu" in t for t in titles)

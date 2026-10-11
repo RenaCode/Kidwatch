@@ -656,3 +656,66 @@ def test_database_instance_is_stable_and_unique(tmp_path):
     first = Store(tmp_path / "a.db").setting("instance")
     assert first and Store(tmp_path / "a.db").setting("instance") == first
     assert Store(tmp_path / "b.db").setting("instance") != first
+
+
+# ================================================== audyt 2026-10-10: S-2, N-4
+def test_failing_pushes_are_a_server_state_not_only_a_device_badge(svc):
+    """S-2: push() nie rzuca, wiec obieg z samymi nieudanymi pushami
+    zapisywal sukces uzgadniania — APNs nieosiagalne bylo widac dopiero po
+    dobie, w alarmie ciszy iPada."""
+    ipad = enroll(svc)
+    t0 = now_utc()
+    svc.pusher.next_result = PushResult(False, 503, "ServiceUnavailable")
+    stats = svc.reconcile(now=t0)
+    assert stats["pushed"] == 0 and stats["push_failed"] == 1
+    assert svc.store.setting("push_failing_since") == iso(t0)
+    assert svc.store.setting("push_failures") == 1
+    assert svc.store.setting("last_push_error") == "503 ServiceUnavailable"
+    # Kolejna porazka wydluza serie, ale nie przesuwa jej poczatku.
+    svc.store.update_device(ipad.udid, last_push_at=None)
+    svc.reconcile(now=t0 + timedelta(minutes=5))
+    assert svc.store.setting("push_failing_since") == iso(t0)
+    assert svc.store.setting("push_failures") == 2
+    # Udany push konczy serie.
+    svc.pusher.next_result = PushResult(True, 200)
+    svc.store.update_device(ipad.udid, last_push_at=None)
+    later = t0 + timedelta(minutes=10)
+    assert svc.reconcile(now=later)["pushed"] == 1
+    assert svc.store.setting("last_push_ok_at") == iso(later)
+    assert svc.store.setting("push_failing_since") is None
+    assert svc.store.setting("push_failures") is None
+
+
+def test_skipped_push_is_not_a_failure(svc):
+    enroll(svc)
+    svc.reconcile()
+    stats = svc.reconcile()  # w MIN_PUSH_INTERVAL: pominiety, nie nieudany
+    assert stats["push_failed"] == 0
+    assert svc.store.setting("push_failing_since") is None
+
+
+def test_round_with_only_failed_pushes_sets_reconcile_error(svc):
+    from kidwatch_mdm import __main__ as cli
+
+    ipad = enroll(svc)
+    svc.pusher.next_result = PushResult(False, None, "ConnectTimeout")
+    svc.flush_kicks()  # push po zapisie — tu liczy sie push z obiegu
+    svc.store.update_device(ipad.udid, last_push_at=None)
+    cli.loop_step(svc, 1000.0)
+    assert svc.last_reconcile_error == "wszystkie pushe APNs nieudane (1): None ConnectTimeout"
+    assert svc.store.setting("last_reconcile_ok_at") is not None
+
+
+def test_pending_summary_reports_oldest_waiting_command(svc):
+    ipad = enroll(svc)
+    count, oldest = svc.store.pending_summary(ipad.udid)
+    assert count > 0
+    svc.store.query(
+        "UPDATE commands SET created_at=? WHERE request_type='SecurityInfo'",
+        (iso(now_utc() - timedelta(days=2)),),
+    )
+    count2, oldest = svc.store.pending_summary(ipad.udid)
+    assert count2 == count
+    assert oldest["request_type"] == "SecurityInfo" and oldest["status"] == "queued"
+    run_commands(svc, ipad)
+    assert svc.store.pending_summary(ipad.udid) == (0, None)

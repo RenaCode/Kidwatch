@@ -5,7 +5,7 @@
 import React, { useState } from 'react';
 import { post, useApi } from '../utils/api';
 import { ago } from '../utils/format';
-import { eventTone, isMeaningfulEvent } from '../utils/mdm';
+import { eventTone, isMeaningfulEvent, pendingBadge, serverBadges } from '../utils/mdm';
 import Icon from './Icons';
 
 const EVENT_LABELS = {
@@ -59,6 +59,7 @@ function DeviceCard({ d, onChanged }) {
     later();
   };
   const apps = detail.data?.apps || [];
+  const queue = pendingBadge(d);
   const detailsId = `mdm-details-${d.udid}`;
   return (
     <article className="glass-card mdm-device">
@@ -79,6 +80,7 @@ function DeviceCard({ d, onChanged }) {
               : <span className="badge">nadzór: ?</span>}
         {!d.ddm_synced && !d.checked_out_at && <span className="badge info">polityka w drodze</span>}
         {d.push_error && <span className="badge warn" title={d.push_error_at}>push: {d.push_error}</span>}
+        {queue && !d.checked_out_at && <span className={`badge ${queue.tone}`} title={queue.title}>{queue.text}</span>}
       </div>
       <span className="dim" title={d.last_seen_at}>Kontakt z MDM {ago(d.last_seen_at)}</span>
       {!d.checked_out_at && (
@@ -205,6 +207,9 @@ export default function Mdm() {
               certyfikat APNs: {apns.days_left} dni
             </span>
           : <span className="badge warn">brak certyfikatu APNs — zapis iPadów zablokowany</span>}
+        {serverBadges(data.health).map((b) => (
+          <span key={b.key} className={`badge ${b.tone}`} title={b.title}>{b.text}</span>
+        ))}
         {error && <span className="badge warn">odświeżanie: {error}</span>}
       </div>
 

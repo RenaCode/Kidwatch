@@ -114,6 +114,7 @@ def make_admin_handler(service: MDMService, token: str):
     store = service.store
 
     def device_summary(row) -> dict:
+        pending, oldest = store.pending_summary(row["udid"])
         return {
             "udid": row["udid"],
             "label": row["label"],
@@ -132,6 +133,10 @@ def make_admin_handler(service: MDMService, token: str):
             "push_error": row["push_error"],
             "push_error_at": row["push_error_at"],
             "last_push_at": row["last_push_at"],
+            # Kolejka komend: ile czeka i najstarsza. Wiszaca dobami komenda
+            # (NotNow, zgubiony push) nie daje innego sygnalu.
+            "pending_commands": pending,
+            "oldest_pending": dict(oldest) if oldest else None,
             # iPad pobral aktualny zestaw deklaracji (DDM) — False po zmianie
             # polityki, dopoki iPad nie polaczy sie ponownie.
             "ddm_synced": row["ddm_token"]
@@ -177,6 +182,13 @@ def make_admin_handler(service: MDMService, token: str):
             "started_at": iso(service.started_at),
             "last_reconcile_ok_at": store.setting("last_reconcile_ok_at"),
             "last_reconcile_error": service.last_reconcile_error,
+            # Pushe do APNs: push() nie rzuca, wiec uzgadnianie bywa „udane",
+            # choc zaden iPad nie dostal pusha. Seria porazek: od kiedy i ile.
+            "last_push_ok_at": store.setting("last_push_ok_at"),
+            "push_failing_since": store.setting("push_failing_since"),
+            "push_failures": store.setting("push_failures", 0),
+            "last_push_error": store.setting("last_push_error"),
+            "last_push_error_at": store.setting("last_push_error_at"),
         }
 
     class AdminHandler(BaseHTTPRequestHandler):

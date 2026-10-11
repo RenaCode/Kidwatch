@@ -108,6 +108,13 @@ def loop_step(service, now: float) -> None:
         return
     log.info("uzgadnianie: %s", stats)
     service.last_reconcile_error = None
+    if stats.get("push_failed") and not stats.get("pushed"):
+        # Obieg przeszedl, ale zaden iPad nie zostal obudzony: komendy stoja.
+        service.last_reconcile_error = (
+            f"wszystkie pushe APNs nieudane ({stats['push_failed']}): "
+            f"{service.store.setting('last_push_error')}"
+        )
+        log.warning("uzgadnianie: %s", service.last_reconcile_error)
     service.next_reconcile = now + RECONCILE_SECONDS
 
 
