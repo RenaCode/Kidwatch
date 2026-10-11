@@ -402,7 +402,16 @@ python -m kidwatch user-reset <login> [--password-stdin]  # new password, unlock
 python -m kidwatch user-reset <login> --totp              # remove 2FA (lost phone)
 python -m kidwatch user-del <login>
 python -m kidwatch user-list
+python -m kidwatch konta-migruj [--przypisz N=login …] [--zapisz [--wlacz]]  # gateway recipients -> accounts
+python -m kidwatch konta-tryb [trasy|konta]               # show / switch notification mode
 ```
+
+Accounts can also be managed in the panel (Settings → **Konta**, permission
+`konta.zarzadzanie`): add (random password shown once), delete, role,
+per-account permissions, and another account's channels and preferences.
+Every change there requires the acting account's password or 2FA code. You
+cannot delete yourself, and the last account with `konta.zarzadzanie` cannot
+be demoted or stripped of it.
 
 ### Panel behind SSO (Authelia)
 
@@ -526,6 +535,60 @@ profile; panel and gateway logs show only the last three digits. Endpoint:
 (the old single-number `POST /api/profile/whatsapp/recipient` remains).
 It requires a gateway with `POST /v1/whatsapp/odbiorcy` — with an older
 gateway the profile shows its single recipient, but saving the list fails.
+
+### Notifications per account
+
+Each panel account is a notification recipient with its own profile, stored
+in `panel-auth.db` (never in the repo, values or logs — logs and the panel
+show only masked numbers/addresses):
+
+- **channels**: WhatsApp number and/or e-mail, and the route (`auto` =
+  WhatsApp, e-mail when it fails; `whatsapp`; `email`). Changing a channel
+  requires the password or a 2FA code — your own under Settings → **Moje
+  powiadomienia**, someone else's only with `konta.zarzadzanie`;
+- **categories**: sessions, alarms (iPad at night, app installed/removed),
+  reports, game time, MDM, watchdog/failures, other. Each category needs a
+  permission: sessions/alarms/reports/game → `podglad.historia`, MDM →
+  `mdm.podglad`, watchdog/other → `powiadomienia.techniczne` (owners only by
+  default). Revoking a permission stops the category immediately, whatever
+  the account has saved;
+- **quiet hours** (e.g. 22:00–07:00): session info is dropped, reports and
+  technical alerts wait for the end of quiet, priority-5 alarms go through
+  (unless the account turns that off);
+- **children**: notifications about another child's device are skipped;
+  TV, combined reports and technical alerts concern the whole home.
+
+The outbox splits every notification into one queue per account (plus one
+for home channels — ntfy and Home Assistant get everything once, as before).
+Each account gets an event at most once (`<dedup>@<login>` in `sent`), a
+failing number blocks only that account's queue, and the panel history keeps
+one row per event with per-account results (`bramka:<login>`).
+
+**What stays per home**: the WhatsApp bot (sender), UniFi, MDM, TV, the
+NextDNS account, ntfy/Home Assistant — one device or service per home;
+splitting them per person would duplicate state with no gain.
+
+**Mode.** Per-account routing (`konta`) is used only when (1) the owner
+switched it on (`konta-tryb konta`, `konta-migruj --zapisz --wlacz` or the
+panel), (2) `notifiers.bramka.per_konto` is not `false`, and (3) the gateway
+declares explicit recipients in `GET /v1/stan` (`"funkcje": ["odbiorca"]`).
+Otherwise kidwatch keeps the old route mode (`trasy`): one request per event,
+the gateway's recipient list decides. An older gateway would ignore the
+`odbiorca` field and deliver every per-account request to everyone, which is
+why (3) is checked (every 10 min) rather than assumed.
+
+**Migration** from the gateway list: `konta-migruj` reads
+`GET /v1/whatsapp`, maps the single `*` recipient to the single owner, other
+positions need `--przypisz N=login`, and prints a before/after table of
+WhatsApp numbers for every notification kind. `--zapisz` stores channels and
+categories (granting e.g. `powiadomienia.techniczne` to a viewer who used to
+receive `kidwatch:czujka`); `--wlacz` switches the mode only when the table
+has no differences and no active recipient is left without an account.
+`konta-tryb trasy` switches back at any time.
+
+Gateway request in `konta` mode: `POST /v1/wyslij` with
+`"odbiorca": {"kanal": "auto"|"whatsapp"|"email", "whatsapp"?: "48…", "email"?: "…"}`
+— delivered only to that recipient, bypassing the gateway's routes.
 
 ### Notification content
 

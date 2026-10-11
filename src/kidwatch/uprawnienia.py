@@ -30,6 +30,10 @@ CZAS_GRY = "czas_gry.zmiana"
 TV_PAUZA = "tv.pauza"
 TV_APLIKACJA = "tv.aplikacja"
 WHATSAPP = "whatsapp.konfiguracja"
+#: Konta panelu: dodaj, usun, rola, uprawnienia i kanaly powiadomien INNYCH.
+KONTA = "konta.zarzadzanie"
+#: Powiadomienia techniczne (czujka, awarie, inne) per konto (odbiorcy.py).
+POWIADOMIENIA_TECHNICZNE = "powiadomienia.techniczne"
 
 #: Uprawnienie -> opis (komunikat 403, `user-list`, pomoc CLI).
 OPISY: dict[str, str] = {
@@ -41,6 +45,8 @@ OPISY: dict[str, str] = {
     TV_PAUZA: "wstrzymanie i wznowienie monitoringu TV",
     TV_APLIKACJA: "aplikacja Kidwatch TV (instalacja, parowanie)",
     WHATSAPP: "konfiguracja WhatsAppa i powiadomień",
+    KONTA: "zarządzanie kontami (dodaj, usuń, rola, uprawnienia, kanały innych)",
+    POWIADOMIENIA_TECHNICZNE: "powiadomienia techniczne (czujka, awarie, inne)",
 }
 UPRAWNIENIA = tuple(OPISY)
 

@@ -204,6 +204,10 @@ notifiers:
     enabled: true
     url: http://bramka.bramka.svc.cluster.local
     zrodlo: kidwatch
+    # Powiadomienia per konto panelu (README: "Notifications per account").
+    # Dzialaja dopiero po `konta-tryb konta` i gdy bramka obsluguje jawnego
+    # odbiorce; false = zawsze stary tryb tras bramki.
+    per_konto: true
 
 store:
   # MUSI byc na wolumenie, inaczej kazdy restart poda gubi caly stan.

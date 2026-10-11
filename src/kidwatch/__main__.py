@@ -43,6 +43,25 @@ def build_notifiers(cfg: Config) -> list[Notifier]:
     return notifiers
 
 
+def build_outbox(cfg: Config, store: Store) -> Outbox:
+    """Kolejka z routingiem per konto (odbiorcy.py), gdy bramka na to
+    pozwala w konfiguracji. Tryb (trasy/konta) Outbox ustala przy kazdym
+    rozdziale — wlasciciel przelacza go bez restartu."""
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+    dispatcher = Dispatcher(build_notifiers(cfg), store=store)
+    bc = cfg.notifiers.bramka
+    konta = None
+    if bc is not None and bc.enabled and bc.per_konto:
+        from .odbiorcy import ProfilePowiadomien  # noqa: PLC0415
+
+        konta = ProfilePowiadomien(cfg.panel_auth_path)
+    return Outbox(
+        dispatcher, store, konta=konta,
+        dziecko={d.display_name: d.child for d in cfg.devices}, tz=ZoneInfo(cfg.timezone),
+    )
+
+
 def nextdns_cursor(store: Store, profile: str, primary: str) -> str | None:
     """Kursor profilu. Profil glowny czytal dotad klucz `cursor:nextdns` —
     bez tej sciezki pierwszy start po aktualizacji zaczynalby od "teraz"
@@ -130,7 +149,7 @@ async def cmd_run(args) -> int:
         engine.tv_pause.requests = TvPauseRequests(cfg.panel_auth_path)
     # Petle oddaja powiadomienia do kolejki w bazie; wysyla je osobne zadanie
     # "outbox". Wiszacy kanal nie trzyma tiku (tetno, liveness) ani strumienia.
-    dispatcher = Outbox(Dispatcher(build_notifiers(cfg), store=store), store)
+    dispatcher = build_outbox(cfg, store)
     source = build_source(cfg, store)
 
     log.info(
@@ -1131,6 +1150,105 @@ async def cmd_user_list(args) -> int:
     return 0
 
 
+# ============================================================ powiadomienia kont
+def _konta(cfg: Config):
+    from .odbiorcy import ProfilePowiadomien  # noqa: PLC0415
+
+    return ProfilePowiadomien(cfg.panel_auth_path)
+
+
+def _przypisania(raw: list[str]) -> dict[int, str]:
+    wynik: dict[int, str] = {}
+    for item in raw:
+        poz, sep, login = item.partition("=")
+        if not sep or not poz.isdigit() or not login.strip():
+            raise SystemExit(f"--przypisz {item!r}: oczekuje POZYCJA=login, np. 2=konto2")
+        wynik[int(poz)] = login.strip()
+    return wynik
+
+
+async def cmd_konta_migruj(args) -> int:
+    """Odbiorcy z bramki -> kanaly i kategorie kont panelu. Bez --zapisz
+    tylko pokazuje plan i porownanie "przed / po" dla kazdego rodzaju."""
+    from . import odbiorcy as o  # noqa: PLC0415
+    from .bramka_admin import BramkaAdmin, BramkaError, mask  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    bc = cfg.notifiers.bramka
+    if bc is None or not bc.enabled:
+        print("bramka wylaczona w konfiguracji — nie ma czego migrowac", file=sys.stderr)
+        return 1
+    key, _ = bc.admin_key()
+    try:
+        lista = BramkaAdmin(bc, key).status().get("odbiorcy") or []
+    except BramkaError as exc:
+        print(f"bramka: {exc.message}", file=sys.stderr)
+        return 1
+    konta = _konta(cfg)
+    profile = konta.profile()
+    try:
+        kroki = o.plan_migracji(lista, profile, _przypisania(args.przypisz))
+    except ValueError as exc:
+        print(f"odrzucone: {exc}", file=sys.stderr)
+        return 1
+    print("Odbiorcy bramki -> konta panelu:")
+    for k in kroki:
+        kat = ", ".join(sorted(k.kategorie, key=o.KATEGORIE.index)) or "nic z kidwatch"
+        extra = f", nada: {', '.join(sorted(k.nadac))}" if k.nadac else ""
+        stan = "" if k.aktywny else " (nieaktywny)"
+        print(f"  {k.pozycja}. {mask(k.numer)} [{k.etykieta or '-'}]{stan} -> "
+              f"{k.login or 'BRAK KONTA'}: {kat}{extra}")
+    bez_konta = [k for k in kroki if k.login is None and k.aktywny and k.kategorie]
+    po = o.profile_po_migracji(kroki, profile)
+    rozne = 0
+    print("\nPrzed (trasy bramki) / po (konta), numery WhatsApp:")
+    for kind, przed, teraz in o.porownanie(lista, po, datetime.now(UTC)):
+        same = przed == teraz
+        rozne += not same
+        print(f"  {'ok ' if same else 'ROZ'} {kind.value:18} "
+              f"{', '.join(sorted(mask(n) for n in przed)) or '-':30} "
+              f"{', '.join(sorted(mask(n) for n in teraz)) or '-'}")
+    if bez_konta:
+        print(f"\n{len(bez_konta)} aktywnych odbiorcow bez konta — przypisz ich "
+              "(--przypisz POZYCJA=login; konto zaloz: user-add LOGIN --rola podglad).")
+    if not args.zapisz:
+        print("\nNic nie zapisano. Zapis: dodaj --zapisz (i --wlacz, by od razu "
+              "przelaczyc na tryb kont).")
+        return 0
+    o.zastosuj_migracje(konta, kroki, _auth(cfg))
+    print("\nZapisano kanaly i kategorie kont.")
+    if args.wlacz:
+        if bez_konta or rozne:
+            print("NIE wlaczam trybu kont: sa odbiorcy bez konta albo roznice wyzej. "
+                  "Popraw i uruchom ponownie, albo: konta-tryb konta.", file=sys.stderr)
+            return 1
+        konta.ustaw_tryb(o.TRYB_KONTA)
+        print("Tryb kont wlaczony (dziala, gdy bramka obsluguje jawnego odbiorce).")
+    print("Adres e-mail kont (zapasowy kanal) uzupelnia kazdy w panelu: Profil -> Powiadomienia.")
+    return 0
+
+
+async def cmd_konta_tryb(args) -> int:
+    from . import odbiorcy as o  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    konta = _konta(cfg)
+    if args.tryb:
+        konta.ustaw_tryb(args.tryb)
+    print(f"tryb powiadomien: {konta.tryb()}")
+    bc = cfg.notifiers.bramka
+    if bc is not None and not bc.per_konto:
+        print("UWAGA: notifiers.bramka.per_konto=false w konfiguracji — zawsze tryb tras")
+    for p in konta.profile():
+        kat = ", ".join(sorted(p.efektywne_kategorie(), key=o.KATEGORIE.index)) or "-"
+        kanaly = ", ".join(x for x in (
+            p.publiczny()["whatsapp"] and f"WhatsApp {p.publiczny()['whatsapp']}",
+            p.publiczny()["email"] and f"e-mail {p.publiczny()['email']}",
+        ) if x) or "BRAK KANALU"
+        print(f"  {p.login:24} {kanaly}; {kat}{'' if p.aktywne else ' (wylaczone)'}")
+    return 0
+
+
 # ========================================================================= main
 PANEL_ROLES = uprawnienia.ROLES
 
@@ -1249,6 +1367,20 @@ def build_parser() -> argparse.ArgumentParser:
     user_del.add_argument("login")
     sub.add_parser("user-list", help="konta panelu WWW, ostatnie logowanie i blokady")
 
+    # Powiadomienia per konto (odbiorcy.py).
+    migruj = sub.add_parser(
+        "konta-migruj",
+        help="odbiorcy WhatsApp z bramki -> kanaly kont panelu (bez --zapisz: tylko plan)",
+    )
+    migruj.add_argument("--przypisz", action="append", default=[], metavar="POZYCJA=login",
+                        help="numer z pozycji listy bramki -> konto (powtarzalne)")
+    migruj.add_argument("--zapisz", action="store_true", help="zapisz kanaly i kategorie kont")
+    migruj.add_argument("--wlacz", action="store_true",
+                        help="po zapisie wlacz tryb kont (tylko gdy porownanie bez roznic)")
+    tryb = sub.add_parser("konta-tryb", help="tryb powiadomien: trasy (stary) albo konta")
+    tryb.add_argument("tryb", nargs="?", choices=("trasy", "konta"),
+                      help="bez argumentu: pokaz tryb i kanaly kont")
+
     return parser
 
 
@@ -1277,6 +1409,8 @@ def main(argv: list[str] | None = None) -> int:
         "user-rola": cmd_user_rola,
         "user-uprawnienia": cmd_user_uprawnienia,
         "user-list": cmd_user_list,
+        "konta-migruj": cmd_konta_migruj,
+        "konta-tryb": cmd_konta_tryb,
     }
     try:
         return asyncio.run(handlers[args.command](args))
