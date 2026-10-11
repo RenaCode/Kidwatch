@@ -246,7 +246,7 @@ export function MyNotifications() {
 }
 
 /* ---------------------------------------------------------------- konta */
-function AddAccount({ confirm, onDone }) {
+function AddAccount({ confirm, onUsed, onDone }) {
   const [login, setLogin] = useState('');
   const [rola, setRola] = useState('podglad');
   const [msg, setMsg] = useState(null);
@@ -262,7 +262,7 @@ function AddAccount({ confirm, onDone }) {
     } catch (err) {
       setMsg({ ok: false, text: err.message });
     } finally {
-      setBusy(false);
+      onUsed(); setBusy(false);
     }
   };
   return (
@@ -289,7 +289,7 @@ function AddAccount({ confirm, onDone }) {
   );
 }
 
-function AccountRow({ konto, katalog, confirm, onChanged }) {
+function AccountRow({ konto, katalog, confirm, onUsed, onChanged }) {
   const [open, setOpen] = useState(false);
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -305,7 +305,7 @@ function AccountRow({ konto, katalog, confirm, onChanged }) {
     } catch (err) {
       setMsg({ ok: false, text: err.message });
     } finally {
-      setBusy(false);
+      onUsed(); setBusy(false);
     }
   };
 
@@ -370,6 +370,9 @@ function AccountRow({ konto, katalog, confirm, onChanged }) {
 export function Accounts() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  /* Potwierdzenie starcza na JEDNA zmiane i znika: haslo nie zostaje w stanie
+     strony (kazdy klik w uprawnienie bylby zmiana bez potwierdzenia), a kod
+     TOTP jest jednorazowy - drugi raz uzyty liczylby sie do blokady konta. */
   const [confirm, setConfirm] = useState('');
   const [msg, setMsg] = useState(null);
   const load = useCallback(async () => {
@@ -388,6 +391,8 @@ export function Accounts() {
       load();
     } catch (e) {
       setMsg({ ok: false, text: e.message });
+    } finally {
+      setConfirm('');
     }
   };
 
@@ -399,7 +404,7 @@ export function Accounts() {
       </div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 12, maxWidth: 560 }}>
         <ConfirmField value={confirm} onChange={setConfirm}
-                      label="Twoje hasło albo kod 2FA — potwierdza każdą zmianę niżej" />
+                      label="Twoje hasło albo kod 2FA — potwierdza jedną zmianę niżej" />
         <button className="btn-ghost" disabled={!confirm}
                 onClick={() => setMode(data.tryb === 'konta' ? 'trasy' : 'konta')}>
           {data.tryb === 'konta' ? 'Wróć do listy bramki' : 'Przełącz na powiadomienia per konto'}
@@ -408,10 +413,11 @@ export function Accounts() {
       <Msg msg={msg} />
       <div style={{ margin: '12px 0' }}>
         {data.konta.map((k) => (
-          <AccountRow key={k.login} konto={k} katalog={data} confirm={confirm} onChanged={load} />
+          <AccountRow key={k.login} konto={k} katalog={data} confirm={confirm}
+                      onUsed={() => setConfirm('')} onChanged={load} />
         ))}
       </div>
-      <AddAccount confirm={confirm} onDone={load} />
+      <AddAccount confirm={confirm} onUsed={() => setConfirm('')} onDone={load} />
       <p className="dim" style={{ fontSize: '0.76rem', marginTop: 10 }}>
         Przed przełączeniem na tryb kont uzupełnij kanały (albo przenieś listę bramki:
         <code> kidwatch konta-migruj</code>). Wspólne dla domu zostają: bot WhatsApp, MDM,
