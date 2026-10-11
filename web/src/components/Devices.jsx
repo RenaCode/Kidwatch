@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { post } from '../utils/api';
-import { ago, hhmm, minutes } from '../utils/format';
+import { ago, deviceKind, hhmm, minutes } from '../utils/format';
 import Icon from './Icons';
 
 const GAME_STATE = {
@@ -70,7 +70,7 @@ function GameControl({ child, game, onChanged }) {
 // Karta na urzadzenie: czy teraz trwa sesja, ostatni push i ostatni udany
 // odczyt wprost z urzadzenia. "Brak odczytu" przy spiacym iPadzie albo
 // wylaczonym telewizorze jest normalne. Telewizor (child: null) pokazuje
-// zamiast dziecka co leci; iPad - czy jest w domowym Wi-Fi (UniFi).
+// zamiast dziecka co leci; iPad i telefon - czy sa w domowym Wi-Fi (UniFi).
 function DeviceCard({ d, onChanged, canGame }) {
   const [open, setOpen] = useState(false);
   const tv = d.kind === 'tv';
@@ -79,7 +79,7 @@ function DeviceCard({ d, onChanged, canGame }) {
   return (
     <article className={`glass-card device-card ${live ? 'live' : ''}`}>
       <div className="dev-head">
-        <span className="dev-icon"><Icon name={tv ? 'tv' : 'tablet'} size={26} /></span>
+        <span className="dev-icon"><Icon name={deviceKind(d.kind).icon} size={26} /></span>
         <div className="dev-id">
           <h3 className="dev-name">
             {d.child ?? d.name}
@@ -136,7 +136,7 @@ function DeviceCard({ d, onChanged, canGame }) {
               "Odczyt z iPada: nigdy" przy wylaczonej warstwie nic nie mowi. */}
           {d.reads_device ? (
             <div className="stat">
-              <span className="stat-label">Odczyt z {tv ? 'TV' : 'iPada'}</span>
+              <span className="stat-label">Odczyt z {deviceKind(d.kind).genitive}</span>
               <span className="stat-value sm">{ago(d.last_device_read)}</span>
             </div>
           ) : (

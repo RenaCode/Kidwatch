@@ -88,6 +88,16 @@ devices:
       com.apple.Numbers: "Numbers"
       com.apple.Pages: "Pages"
 
+  # Telefon z Androidem dziecka (Google Family Link): sama warstwa DNS przez
+  # Prywatny DNS, host `Telefon--Dziecko2-<ID profilu>.dns.nextdns.io`
+  # (NextDNS zamienia `--` na spacje). Odkomentuj w Sekrecie kidwatch-config,
+  # nie tutaj. Instrukcja: docs/telefon-android.md
+  # - display_name: "Telefon (Dziecko 2)"
+  #   child: "Dziecko 2"
+  #   kind: phone
+  #   source_ids: ["Telefon Dziecko2"]
+  #   unifi_mac: "02:00:00:00:00:03"
+
 # --------------------------------------------------------- odczyt z urzadzen
 device_read:
   # WYLACZONE w klastrze: iOS przyjmuje lockdown tylko z tej samej sieci lokalnej

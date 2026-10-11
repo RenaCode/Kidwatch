@@ -325,7 +325,7 @@ class PanelQueries:
                     if last_note is None
                     else {"ts": self._local(last_note["ts"]), "title": last_note["title"]},
                     "last_device_read": self._local(dev_ok["value"]) if dev_ok else None,
-                    "game": self._game(conn, dev.child) if dev.kind == "ipad" else None,
+                    "game": self._game(conn, dev.child) if dev.kind != "tv" else None,
                     "today": self._today(conn, name),
                 }
             )

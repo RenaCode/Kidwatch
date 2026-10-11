@@ -39,6 +39,7 @@ from collections import deque
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
+from ..devicekind import kind_of
 from ..models import Notification, NotifyKind
 from ..store import Store, episode_id, from_iso, to_iso
 
@@ -156,9 +157,12 @@ class UnifiWatcher:
         window_minutes: int = 15,
         alarm_mb: float = 20.0,
         repeat_backoff_max_minutes: int = 480,
+        kinds: dict[str, str] | None = None,
     ) -> None:
         self.client = client
         self.devices = devices  # [(nazwa, mac, ip)]
+        #: {nazwa: "ipad" | "phone"} — tylko do podpowiedzi w alarmie.
+        self.kinds = kinds or {}
         self.store = store
         self.window = timedelta(minutes=window_minutes)
         self.alarm_bytes = alarm_mb * 1_000_000
@@ -265,18 +269,18 @@ class UnifiWatcher:
         since = episode_id(state, now)
         self.store.set_json(key, {"n": count + 1, "last": to_iso(now), "since": since})
         minutes = int(self.window.total_seconds() // 60)
+        kind = kind_of(self.kinds.get(name))
         suffix = "" if count == 0 else f"\n(przypomnienie {count + 1})"
         if ip_only:
             suffix = ("\nUrządzenie rozpoznane tylko po adresie IP — sprawdź, czy to "
-                      "na pewno ten iPad." + suffix)
+                      f"na pewno ten {kind.noun}." + suffix)
         return self._emit(Notification(
             kind=NotifyKind.DNS_PROFILE,
             title=f"{name} — profil DNS prawdopodobnie usunięty",
             text=(
                 f"W domowym Wi-Fi przesłał {traffic / 1_000_000:.0f} MB w {minutes} min, "
                 f"a NextDNS nie ma od niego ani jednego zapytania.\n"
-                f"Sprawdź na iPadzie: Ustawienia → Ogólne → VPN i urządzenia → profil "
-                f"NextDNS.{suffix}"
+                f"{kind.dns_where}{suffix}"
             ),
             dedup_key=f"unifi-wd:{name}:{since}:{count}",  # epizod: patrz episode_id
             ts=now,

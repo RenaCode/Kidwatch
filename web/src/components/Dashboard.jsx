@@ -103,7 +103,7 @@ function ScreenTime({ child, devices, notes, onOpenSection }) {
       <p className="hint dim footnote">
         Pasek to oś dnia: kolorowe odcinki to aplikacje (kolory jak w legendzie), jasne tło - sesja
         bez rozpoznanej aplikacji. Przeciągnij po pasku, żeby zobaczyć, co było o danej godzinie;
-        dotknij odcinka lub nazwy, żeby podświetlić aplikację i jej minuty. Minuty iPadów to dolne
+        dotknij odcinka lub nazwy, żeby podświetlić aplikację i jej minuty. Minuty iPadów i telefonów to dolne
         oszacowanie z zapytań DNS, telewizora - czas odtwarzania.
       </p>
     </section>

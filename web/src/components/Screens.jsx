@@ -27,7 +27,7 @@ function segTitle(lane, s) {
 function Lane({ lane, day }) {
   const label = lane.kind === 'tv'
     ? `📺 ${lane.name}${lane.shared ? ' (wspólny)' : ''}`
-    : (lane.child ? `${lane.child} · ${lane.name}` : lane.name);
+    : (lane.child ? `${lane.kind === 'phone' ? '📱 ' : ''}${lane.child} · ${lane.name}` : lane.name);
   return (
     <div className={`lane ${lane.shared ? 'shared' : ''}`}>
       <span className="lane-name" title={label}>{label}</span>
@@ -68,7 +68,7 @@ export default function Screens({ child }) {
   const data = res.data;
   const hasTv = data?.lanes.some((l) => l.kind === 'tv');
   const lanes = (data?.lanes || []).filter((l) => !(hideTv && l.kind === 'tv'));
-  const own = child || 'iPady';
+  const own = child || 'Dzieci';
 
   return (
     <>
@@ -170,7 +170,7 @@ export default function Screens({ child }) {
           )}
 
           <div className="hint dim" style={{ fontSize: '0.74rem', marginTop: 12 }}>
-            iPady: minuty od pierwszego do ostatniego zapytania DNS w sesji (dolne
+            iPady i telefony: minuty od pierwszego do ostatniego zapytania DNS w sesji (dolne
             oszacowanie). TV: czas odtwarzania z odczytu co 30 s, a „dokładnie” —
             czas aplikacji na pierwszym planie według samego Androida (odczyt co 15 min).
           </div>

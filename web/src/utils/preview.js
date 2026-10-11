@@ -11,6 +11,7 @@ const META = {
   devices: [
     { name: 'iPad Jan', child: 'Jan', kind: 'ipad' },
     { name: 'iPad Anna', child: 'Anna', kind: 'ipad' },
+    { name: 'Telefon Anna', child: 'Anna', kind: 'phone' },
     { name: 'Telewizor', child: null, kind: 'tv' },
   ],
 };
@@ -35,6 +36,13 @@ const DEVICES = [
     last_notification: { ts: at(130), title: 'Anna: koniec sesji' },
     last_device_read: null, game: game('allowed'),
     today: { minutes: 105, sessions: 4, top_app: { app: 'Minecraft', minutes: 38 } },
+  },
+  {
+    name: 'Telefon Anna', child: 'Anna', kind: 'phone', reads_device: false,
+    presence: { home: true, since: at(60), essid: 'Dom' }, now_playing: null, session: null,
+    last_notification: { ts: at(70), title: 'Telefon Anna — koniec' },
+    last_device_read: null, game: game('allowed'),
+    today: { minutes: 48, sessions: 3, top_app: { app: 'WhatsApp', minutes: 21 } },
   },
   {
     name: 'Telewizor', child: null, kind: 'tv', reads_device: true, presence: null,

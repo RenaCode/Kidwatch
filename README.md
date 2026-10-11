@@ -14,6 +14,8 @@ Full cluster deployment guide (in Polish):
 
 - **Data source:** DNS query logs from [NextDNS](https://nextdns.io) (live
   stream), or AdGuard Home's query log. No app on the iPad, no jailbreak.
+  Android phones (Family Link) via Private DNS — see
+  [`docs/telefon-android.md`](docs/telefon-android.md).
 - **Own MDM server (optional, `kidwatch-mdm`):** a separate container written
   from scratch — installed apps with alerts on new ones, device state, remote
   screen lock, OS update enforcement, and on **supervised** iPads: VPN and
@@ -163,6 +165,17 @@ Then set `panel.enabled: true` in `config.yaml`. Session cookies are `Secure`
 by default; set `panel.cookie_secure: false` only if you serve the panel over
 plain `http://` on a host other than `localhost`. 2FA additionally requires
 `PANEL_TOTP_KEY` (e.g. `openssl rand -base64 32`).
+
+### Android phone (Google Family Link)
+
+A child's Android phone works through the same DNS layer: set **Private DNS**
+to `Phone--Name-<profile ID>.dns.nextdns.io` (`--` is a space in the device
+name) and add the device with `kind: phone` to `devices`. Sessions, night
+alerts, the silence watchdog, game time and the panel then treat it like an
+iPad, with phone wording. Family Link **cannot** lock the Private DNS setting
+(only a device owner can), so the watchdog is what catches it being turned
+off. Research, step-by-step setup and limits (in Polish):
+[`docs/telefon-android.md`](docs/telefon-android.md).
 
 ---
 

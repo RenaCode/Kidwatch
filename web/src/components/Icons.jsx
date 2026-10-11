@@ -73,6 +73,12 @@ const PATHS = {
       <path d="M11 18.5h2" />
     </>
   ),
+  phone: (
+    <>
+      <rect x="7" y="2.5" width="10" height="19" rx="2.2" />
+      <path d="M11 5h2M11.5 18.5h1" />
+    </>
+  ),
   tv: (
     <>
       <rect x="2.5" y="4" width="19" height="13" rx="2" />

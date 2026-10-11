@@ -59,6 +59,16 @@ devices:
   - display_name: "iPad Dziecka 2"
     child: "Dziecko 2"
     source_ids: ["iPad-Dziecka-2"]
+  # Telefon z Androidem (np. pod Google Family Link): Prywatny DNS na host
+  # `Telefon--Dziecka-2-<ID profilu>.dns.nextdns.io` — NextDNS zamienia `--`
+  # na spacje, wiec w logach i tutaj nazwa to "Telefon Dziecka 2". Bez udid,
+  # host i known_apps (to odczyt iOS). Ten sam nextdns_profile co iPady
+  # dziecka. Instrukcja: docs/telefon-android.md
+  # - display_name: "Telefon Dziecka 2"
+  #   child: "Dziecko 2"
+  #   kind: phone
+  #   source_ids: ["Telefon Dziecka 2"]
+  #   unifi_mac: "02:00:00:00:00:03"   # MAC z Wi-Fi telefonu (losowy per siec)
 
 # ----------------------------------------------------------- telewizor (opcja)
 # Google TV po ADB/TCP. Klucz `adbkey` (+ .pub) w adb_key_dir, zaakceptowany
