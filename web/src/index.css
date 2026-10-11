@@ -304,6 +304,8 @@ a.src-link:hover { text-decoration: underline; }
 .btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 7px 22px -4px rgba(124,58,237,0.6); }
 .btn-primary:active:not(:disabled) { transform: translateY(0); }
 .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+/* Link w stroju przycisku (Wyloguj z SSO - nawigacja na portal, nie POST). */
+a.btn-primary { display: block; text-align: center; text-decoration: none; }
 
 .btn-link {
   width: 100%; margin-top: 10px;

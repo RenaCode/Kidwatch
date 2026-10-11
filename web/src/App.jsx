@@ -11,7 +11,8 @@ import Dashboard from './components/Dashboard';
 import Icon from './components/Icons';
 import ErrorBoundary from './components/ErrorBoundary';
 import { TvPauseBanner } from './components/TvPause';
-import { get, post, qs, useApi, setSessionExpiredHandler } from './utils/api';
+import { get, post, qs, useApi, setSessionExpiredHandler, setSsoMode } from './utils/api';
+import { signOutLabel, signOutTarget, ssoDenial } from './utils/sso';
 import { localToday } from './utils/format';
 import { isCriticalNote } from './utils/mdm';
 
@@ -68,6 +69,8 @@ export default function App() {
   // przy odswiezeniu strony - dopiero odpowiedz /api/auth/me rozstrzyga.
   const [authState, setAuthState] = useState('checking');
   const [user, setUser] = useState(null);
+  // Odmowa SSO (brak konta albo grupy): komunikat + wylogowanie z portalu.
+  const [denied, setDenied] = useState(null);
 
   const isPreview = import.meta.env.DEV && readPreview();
 
@@ -78,21 +81,34 @@ export default function App() {
       return;
     }
     try {
-      setUser(await get('/api/auth/me'));
+      const me = await get('/api/auth/me');
+      setSsoMode(!!me.logout_url);
+      setUser(me);
       setAuthState('in');
-    } catch {
+    } catch (e) {
       setUser(null);
-      setAuthState('out');
+      const d = ssoDenial(e);
+      setDenied(d);
+      setAuthState(d ? 'denied' : 'out');
     }
   }, [isPreview]);
 
   useEffect(() => { checkSession(); }, [checkSession]);
 
   const signOut = useCallback(async () => {
-    try { await post('/api/auth/logout'); } catch { /* sesja i tak przepada */ }
+    let r = null;
+    try { r = await post('/api/auth/logout'); } catch { /* sesja i tak przepada */ }
+    // Za Authelia: portal konczy jej sesje (we wszystkich aplikacjach naraz)
+    // i wraca na strone logowania. Bez tego nastepne zadanie zalogowaloby od nowa.
+    const target = signOutTarget(r, user);
+    if (target) {
+      setSsoMode(false);
+      window.location.assign(target);
+      return;
+    }
     setUser(null);
     setAuthState('out');
-  }, []);
+  }, [user]);
 
   // Sesja moze wygasnac w trakcie ogladania. Kazde 401 spoza logowania konczy
   // sie tutaj, niezaleznie od tego, ktory komponent wyslal zapytanie.
@@ -104,10 +120,30 @@ export default function App() {
   if (authState === 'checking') {
     return <div className="login-shell"><div className="loading-pulse dim">Sprawdzanie sesji…</div></div>;
   }
+  if (authState === 'denied') {
+    return <SsoDenied {...denied} />;
+  }
   if (authState === 'out') {
     return <Login onSuccess={checkSession} />;
   }
   return <Panel user={user} onSignOut={signOut} onUserChanged={checkSession} />;
+}
+
+// Authelia wpuscila, ale panel nie zna tego konta (albo grupy). Haslo panelu
+// tu nie pomoze - wyjsciem jest zalogowanie w portalu jako ktos inny.
+function SsoDenied({ message, logoutUrl }) {
+  return (
+    <div className="login-shell">
+      <div className="login-card glass-card">
+        <div className="login-card-head">
+          <h1>Brak dostępu</h1>
+          <p>Logowanie przez SSO powiodło się, ale panel nie wpuszcza tego konta.</p>
+        </div>
+        <div className="form-error" role="alert">{message}</div>
+        <a className="btn-primary" href={logoutUrl}>Wyloguj z SSO</a>
+      </div>
+    </div>
+  );
 }
 
 // Konto jako avatar z menu (Ustawienia, Wyloguj). Kropka na avatarze mowi o 2FA:
@@ -136,12 +172,16 @@ function AccountMenu({ user, onProfile, onSignOut }) {
         <div className="account-menu" role="menu">
           <div className="account-head">
             <strong>{user?.login}</strong>
-            <span className={`badge ${user?.totp_enabled ? 'ok' : 'warn'}`}>
-              {user?.totp_enabled ? '2FA' : 'bez 2FA'}
-            </span>
+            {user?.sso
+              ? <span className="badge info" title="Zalogowano przez Authelię (2FA)">SSO</span>
+              : (
+                <span className={`badge ${user?.totp_enabled ? 'ok' : 'warn'}`}>
+                  {user?.totp_enabled ? '2FA' : 'bez 2FA'}
+                </span>
+              )}
           </div>
           <button role="menuitem" onClick={() => { setOpen(false); onProfile(); }}>Ustawienia</button>
-          <button role="menuitem" onClick={() => { setOpen(false); onSignOut(); }}>Wyloguj</button>
+          <button role="menuitem" onClick={() => { setOpen(false); onSignOut(); }}>{signOutLabel(user)}</button>
         </div>
       )}
     </div>
