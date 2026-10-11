@@ -145,6 +145,45 @@ const MDM = {
   ],
 };
 
+const KATALOG = {
+  kategorie: [
+    ['sesje', 'sesje: start, aplikacja, koniec (iPady, telewizor)', 'podglad.historia'],
+    ['alarmy', 'alarmy: iPad w nocy, nowa albo usunięta aplikacja', 'podglad.historia'],
+    ['raporty', 'raporty: dzienny i tygodniowy', 'podglad.historia'],
+    ['gra', 'czas gry', 'podglad.historia'],
+    ['mdm', 'MDM: profil zdjęty, iPad cichy, certyfikat', 'mdm.podglad'],
+    ['czujka', 'czujka i awarie', 'powiadomienia.techniczne'],
+    ['inne', 'inne', 'powiadomienia.techniczne'],
+  ].map(([id, opis, wymaga]) => ({ id, opis, wymaga })),
+  kanaly: ['auto', 'whatsapp', 'email'],
+  dzieci: ['Jan', 'Anna'],
+  tryb: 'trasy',
+};
+const PROFIL = {
+  login: 'rodzic', rola: 'wlasciciel', whatsapp: '...200', email: null, kanal: 'auto',
+  kategorie: ['sesje', 'alarmy', 'raporty', 'mdm', 'czujka'],
+  dozwolone: ['sesje', 'alarmy', 'raporty', 'gra', 'mdm', 'czujka', 'inne'],
+  cisza_od: '22:00', cisza_do: '07:00', cisza_alarmy: true, dzieci: null, aktywne: true, ma_kanal: true,
+};
+const KONTA = {
+  ...KATALOG,
+  role: ['wlasciciel', 'podglad'],
+  uprawnienia: [
+    ['konto.wlasne', 'własne hasło i 2FA', true], ['podglad.historia', 'podgląd historii', false],
+    ['mdm.podglad', 'podgląd MDM', false], ['konta.zarzadzanie', 'zarządzanie kontami', false],
+  ].map(([id, opis, stale]) => ({ id, opis, stale })),
+  role_uprawnienia: { wlasciciel: ['konto.wlasne', 'podglad.historia', 'mdm.podglad', 'konta.zarzadzanie'],
+    podglad: ['konto.wlasne', 'podglad.historia'] },
+  konta: [
+    { login: 'rodzic', rola: 'wlasciciel', ja: true, totp: true, odstepstwa: [],
+      uprawnienia: ['konto.wlasne', 'podglad.historia', 'mdm.podglad', 'konta.zarzadzanie'], powiadomienia: PROFIL },
+    { login: 'domownik', rola: 'podglad', ja: false, totp: false, odstepstwa: [],
+      uprawnienia: ['konto.wlasne', 'podglad.historia'],
+      powiadomienia: { ...PROFIL, login: 'domownik', rola: 'podglad', whatsapp: '...300', kategorie: ['sesje'],
+        dozwolone: ['sesje', 'alarmy', 'raporty', 'gra'], cisza_od: null, cisza_do: null } },
+  ],
+};
+
 export function previewResponse(path, method) {
   const url = new URL(path, 'http://podglad');
   const p = url.searchParams;
@@ -157,6 +196,8 @@ export function previewResponse(path, method) {
     case '/api/tv/pause': return { available: true, name: 'Telewizor', max_days: 30, active: null, request: null };
     case '/api/tv/aplikacja': return { available: false };
     case '/api/mdm': return MDM;
+    case '/api/konto/powiadomienia': return { profil: PROFIL, ...KATALOG };
+    case '/api/konta': return KONTA;
     default: throw new ApiError(404, 'brak danych w podglądzie');
   }
 }

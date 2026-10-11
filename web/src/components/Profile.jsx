@@ -13,6 +13,7 @@ import {
   sourcesLabel, testSummary, validateRecipients,
 } from '../utils/recipients';
 import TwoFactor from './TwoFactor';
+import { Accounts, MyNotifications } from './Konta';
 
 const STATUS = {
   WORKING: { label: 'połączony', badge: 'ok' },
@@ -439,11 +440,20 @@ export default function Profile({ user, onChanged, onClose, tvPause, onTvPauseCh
         <TwoFactor user={user} onChanged={onChanged} />
         <PasswordForm />
       </div>
-      {/* Konto `podglad`: tylko wlasne haslo i 2FA. Kanaly powiadomien,
-          pauza i aplikacja TV wymagaja uprawnien (uprawnienia.js). */}
+      {/* Kazde konto: wlasne kanaly i preferencje powiadomien. */}
+      <div className="stat-label">Moje powiadomienia</div>
+      <MyNotifications />
+      {can(user, 'konta.zarzadzanie') && (
+        <>
+          <div className="stat-label">Konta</div>
+          <Accounts />
+        </>
+      )}
+      {/* Bot WhatsApp (nadawca) i lista odbiorcow bramki sa wspolne dla domu
+          i aplikacji RenaCode - wymagaja uprawnienia (uprawnienia.js). */}
       {can(user, 'whatsapp.konfiguracja') && (
         <>
-          <div className="stat-label">Powiadomienia / WhatsApp</div>
+          <div className="stat-label">Powiadomienia / WhatsApp (bot i lista bramki)</div>
           <WhatsApp />
         </>
       )}
