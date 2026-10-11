@@ -598,3 +598,39 @@ def test_mdm_egress_domyslnie_bez_adresow_i_z_flaga_wycofania():
     assert list(_mdm_policies("networkPolicy.egress.enabled=false")) == ["kidwatch-mdm"]
     assert _mdm_policies("networkPolicy.enabled=false") == {}
 
+
+
+# ============================================ audyt 2026-10-10: naglowki MDM
+def _mdm_docs(*sets: str) -> list[dict]:
+    args = [a for kv in sets for a in ("--set", kv)]
+    out = subprocess.run(
+        ["helm", "template", "kidwatch-mdm", str(MDM_CHART), "-n", "default", *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return [d for d in yaml.safe_load_all(out) if d]
+
+
+@pytestmark_helm
+def test_mdm_HSTS_i_nosniff_bez_przekierowan():
+    """Audyt infra N-K3: mdm.renacode.com jako jedyny host bez HSTS. Tylko
+    naglowki odpowiedzi - przekierowanie albo zmiana sciezki zerwalyby
+    zapisane iPady. Brakujacy middleware = 404 na calym routerze /mdm/."""
+    docs = _mdm_docs()
+    middlewares = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Middleware"}
+    assert list(middlewares) == ["kidwatch-mdm-naglowki"]
+    mw = middlewares["kidwatch-mdm-naglowki"]
+    assert set(mw["spec"]) == {"headers"}
+    assert mw["spec"]["headers"]["stsSeconds"] >= 15552000
+    assert mw["spec"]["headers"]["contentTypeNosniff"] is True
+    assert int(mw["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]) < 0
+
+    ingressy = [d for d in docs if d["kind"] == "Ingress"]
+    assert len(ingressy) == 1
+    ann = ingressy[0]["metadata"]["annotations"]
+    assert ann["traefik.ingress.kubernetes.io/router.entrypoints"] == "websecure"
+    assert ann["traefik.ingress.kubernetes.io/router.middlewares"] == (
+        "default-kidwatch-mdm-naglowki@kubernetescrd")
+    sciezki = [p["path"] for r in ingressy[0]["spec"]["rules"] for p in r["http"]["paths"]]
+    assert sciezki == ["/mdm/"]
