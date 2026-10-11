@@ -419,10 +419,13 @@ renacode-infra) in front of the panel **and** the same switch sets
   `https://auth.renacode.com/logout?rd=https://<host>/`, which ends the
   Authelia session for all RenaCode apps.
 - Break-glass: without the header (`kubectl port-forward` when Authelia is
-  down) the normal password + TOTP login works unchanged.
+  down) the normal password + TOTP login works unchanged. An `sso` session is
+  valid only together with the matching `Remote-User`: a copied SSO cookie
+  opens nothing over port-forward, and turning SSO off ends all SSO sessions.
 - Without `SSO_NAGLOWKI=1` all `Remote-*` headers are ignored. Never set it by
   hand: without the Traefik middleware a client can send `Remote-User`
-  itself.
+  itself. The chart always sets the variable explicitly (`"0"` without SSO),
+  so a key in the Secret cannot switch it on.
 
 Adding a family member (two steps, same lowercase login in both places):
 

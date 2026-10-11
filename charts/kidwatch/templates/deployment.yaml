@@ -97,6 +97,12 @@ spec:
             # w Authelii; grupa nie nadaje uprawnien w panelu).
             - name: SSO_GRUPY
               value: {{ join "," .Values.sso.grupy | quote }}
+            {{- else }}
+            # Jawne "0": `env` ma pierwszenstwo przed `envFrom`, wiec klucz
+            # SSO_NAGLOWKI dopisany kiedys do Sekretu nie wlaczy zaufania do
+            # naglowkow na routerze bez middleware'u Authelii.
+            - name: SSO_NAGLOWKI
+              value: "0"
             {{- end }}
           envFrom:
             - secretRef:

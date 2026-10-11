@@ -177,3 +177,31 @@ def test_user_add_z_rola_podglad_i_zmiana_roli(tmp_path, monkeypatch, capsys):
     assert main(["--config", str(cfg), "user-rola", "nikt", "podglad"]) == 1
     with pytest.raises(SystemExit):
         main(["--config", str(cfg), "user-add", "x", "--rola", "admin"])
+
+
+#: POST-y, ktore `podglad` moze wolac: logowanie, wlasne konto, pauza TV.
+POST_DLA_PODGLADU = {
+    "/api/auth/login", "/api/auth/mfa", "/api/auth/totp/setup", "/api/auth/totp/confirm",
+    "/api/auth/totp/disable", "/api/auth/logout", "/api/auth/password",
+    "/api/tv/pause", "/api/tv/resume",
+}
+
+
+def test_kazda_trasa_POST_jest_sklasyfikowana():
+    """Nowa trasa w do_POST musi trafic do ADMIN (z testem 403) albo swiadomie
+    do POST_DLA_PODGLADU — inaczej `podglad` dostalby ja po cichu."""
+    import inspect  # noqa: PLC0415
+    import re  # noqa: PLC0415
+
+    from kidwatch import panel  # noqa: PLC0415
+
+    zrodlo = inspect.getsource(panel)
+    cialo = zrodlo[zrodlo.index("def do_POST"):zrodlo.index("def _authed")]
+    trasy = set(re.findall(r'"(/api/[^"]*)"', cialo))
+    admin = {p for m, p, _ in ADMIN if m == "POST"}
+    prefiksy = {p for p in trasy if p.endswith("/")}
+    assert prefiksy == {"/api/profile/", "/api/mdm/"}, prefiksy
+    for prefiks in prefiksy:
+        assert any(p.startswith(prefiks) for p in admin), prefiks
+    nieznane = trasy - prefiksy - admin - POST_DLA_PODGLADU
+    assert not nieznane, f"trasa bez decyzji o roli: {nieznane}"

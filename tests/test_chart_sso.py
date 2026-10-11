@@ -82,11 +82,22 @@ def test_MDM_nigdy_za_sso():
 def test_flaga_zaufania_do_naglowkow_tylko_razem_z_middlewarem():
     """Kontrakt SSO, punkt 3: `sso.enabled` ustawia i middleware, i
     `SSO_NAGLOWKI=1`. Flaga bez middleware'u = Remote-User od kazdego."""
-    assert "SSO_NAGLOWKI" not in env_panelu()
+    # Bez SSO jawne "0" — nadpisuje ewentualny klucz z Sekretu (envFrom).
+    assert env_panelu()["SSO_NAGLOWKI"] == "0"
     env = env_panelu("sso.enabled=true")
     assert env["SSO_NAGLOWKI"] == "1"
     assert env["SSO_ADRES"] == "https://kidwatch.renacode.com/"
     assert env["SSO_GRUPY"] == "wlasciciel,rodzina"
     assert "admins" not in env["SSO_GRUPY"]
     # Bez routera panelu nie ma middleware'u — nie ma tez zaufania.
-    assert "SSO_NAGLOWKI" not in env_panelu("sso.enabled=true", "ingress.enabled=false")
+    assert env_panelu("sso.enabled=true", "ingress.enabled=false")["SSO_NAGLOWKI"] == "0"
+
+
+def test_flaga_z_Sekretu_nie_wlacza_zaufania():
+    """Sekret wchodzi przez envFrom; `env` z chartu ma pierwszenstwo, wiec
+    wartosc z chartu musi byc ZAWSZE jawna, takze przy wylaczonym SSO."""
+    dep = next(d for d in obiekty("kidwatch") if d["kind"] == "Deployment")
+    kontener = next(c for c in dep["spec"]["template"]["spec"]["containers"]
+                    if c["name"] == "kidwatch")
+    assert any("secretRef" in e for e in kontener.get("envFrom", []))
+    assert [e["value"] for e in kontener["env"] if e["name"] == "SSO_NAGLOWKI"] == ["0"]

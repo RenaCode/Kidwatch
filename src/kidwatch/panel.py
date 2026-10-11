@@ -941,6 +941,13 @@ def make_handler(
             _cookie(CSRF_COOKIE, session.csrf, max_age, http_only=False, secure=cookie_secure),
         ]
 
+    def _bez_sso(session: Session | None) -> Session | None:
+        """Sesja `sso` zyje tylko z naglowkiem Authelii. Bez niego (port-forward,
+        flaga wylaczona po wycofaniu SSO) to zwykly token na okaziciela, ktory
+        nie przeszedl hasla ani TOTP panelu: skopiowane ciasteczko nie moze
+        ominac drogi awaryjnej, ktora zada hasla i TOTP."""
+        return None if session is not None and session.kind == "sso" else session
+
     def cleared_cookies() -> list[str]:
         return [
             _cookie(SESSION_COOKIE, "", 0, http_only=True, secure=cookie_secure),
@@ -1006,11 +1013,11 @@ def make_handler(
             podwojny naglowek, 403 brak grupy albo konta) leca wyzej."""
             session = auth.session(self._cookies().get(SESSION_COOKIE))
             if sso is None:
-                return session
+                return _bez_sso(session)
             self._via_sso = bool(self.headers.get_all("Remote-User"))
             ident = sso.identity(self.headers)
             if ident is None:
-                return session
+                return _bez_sso(session)
             if session is not None and session.login == ident.login:
                 return session
             if session is not None:

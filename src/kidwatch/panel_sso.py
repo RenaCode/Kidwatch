@@ -11,15 +11,17 @@ Kontrakt: renacode-infra docs/sso-tozsamosc.md. W skrocie:
   - `Remote-User` == `users.login` w panel-auth.db. Kont nie zakladamy w locie:
     konto bez dopasowania to 403 z czytelnym komunikatem.
   - Sesja z naglowka nie pyta o haslo ani o wlasny TOTP panelu — 2FA wymusila
-    juz Authelia. Lokalne haslo i TOTP zostaja jako droga awaryjna
+    juz Authelia. Dlatego sesja `sso` jest wazna TYLKO z naglowkiem tego
+    samego uzytkownika: bez niego (port-forward, wylaczona flaga) nic nie
+    otwiera. Lokalne haslo i TOTP zostaja jako droga awaryjna
     (`kubectl port-forward`, gdy Authelia lezy).
   - Wylogowanie konczy tez sesje Authelii: portal `/logout?rd=<adres panelu>`.
 
-`Remote-Groups` NIE nadaje uprawnien w panelu (panel nie ma rol — kazde konto
-widzi i moze to samo). Sluzy tylko jako bezpiecznik: sesja powstaje, gdy
-uzytkownik nalezy do jednej z grup, ktore Authelia wpuszcza na ten host. Gdyby
-regula w Authelii zostala kiedys poluzowana, panel nie otworzy sie dla calej
-reszty uzytkownikow SSO.
+`Remote-Groups` NIE nadaje uprawnien w panelu (rola konta, `wlasciciel` albo
+`podglad`, pochodzi z panel-auth.db, panel_auth.ROLES). Sluzy tylko jako
+bezpiecznik: sesja powstaje, gdy uzytkownik nalezy do jednej z grup, ktore
+Authelia wpuszcza na ten host. Gdyby regula w Authelii zostala kiedys
+poluzowana, panel nie otworzy sie dla calej reszty uzytkownikow SSO.
 """
 
 from __future__ import annotations

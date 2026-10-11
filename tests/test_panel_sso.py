@@ -397,3 +397,44 @@ def test_user_add_ostrzega_o_loginie_nie_do_dopasowania_przez_SSO(tmp_path, monk
     assert "UWAGA" not in capsys.readouterr().err
     assert main(["--config", str(cfg), "user-add", "Osoba3"]) == 0
     assert "nie dopasuje sie do konta w Authelii" in capsys.readouterr().err
+
+
+def test_sesja_SSO_bez_naglowka_nic_nie_otwiera(sso_on):
+    """Skopiowane ciasteczko sesji `sso` przez port-forward (bez Authelii, wiec
+    bez `Remote-User`) nie omija hasla i TOTP drogi awaryjnej."""
+    srv, auth = sso_on
+    _, headers, _ = call(srv, "GET", "/api/auth/me", headers=OD_AUTHELII)
+    j = jar(headers)
+    for path in ("/api/auth/me", "/api/devices"):
+        status, _, _ = call(srv, "GET", path, headers={"Cookie": cookie(j)})
+        assert status == 401, path
+    status, _, _ = call(srv, "POST", "/api/auth/totp/setup", {}, headers={
+        "Cookie": cookie(j), "X-CSRF-Token": j["kidwatch_csrf"]})
+    assert status == 401
+    # Z naglowkiem ta sama sesja dziala dalej.
+    status, _, me = call(srv, "GET", "/api/auth/me", headers={**OD_AUTHELII, "Cookie": cookie(j)})
+    assert status == 200 and me["sso"] is True
+
+
+def test_sesja_SSO_po_wylaczeniu_flagi_wygasa(tmp_path, monkeypatch):
+    """Wycofanie `sso.enabled` zdejmuje Authelie z routera — sesje `sso`,
+    ktore nie przeszly hasla ani TOTP panelu, nie moga zyc dalej."""
+    srv, auth, _ = uruchom(tmp_path, monkeypatch, sso=True)
+    try:
+        _, headers, _ = call(srv, "GET", "/api/auth/me", headers=OD_AUTHELII)
+        j = jar(headers)
+    finally:
+        srv.shutdown()
+    monkeypatch.delenv("SSO_NAGLOWKI")
+    cfg = make_config(panel=PanelConfig(enabled=True, port=0, static_dir=str(tmp_path / "web")))
+    cfg.store = StoreConfig(path=str(tmp_path / "k.db"))
+    srv = start_panel(cfg)
+    try:
+        assert auth.session(j["kidwatch_session"]).kind == "sso"  # w bazie jest
+        status, _, _ = call(srv, "GET", "/api/auth/me", headers={"Cookie": cookie(j)})
+        assert status == 401
+        # Sesja z hasla po wylaczeniu flagi dziala jak zawsze.
+        c = panel_login(srv.server_address[1], "rodzic2", HASLO)
+        assert call(srv, "GET", "/api/auth/me", headers={"Cookie": c})[0] == 200
+    finally:
+        srv.shutdown()
