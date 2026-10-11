@@ -17,6 +17,7 @@ import yaml
 KORZEN = Path(__file__).resolve().parents[1]
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="helm niedostepny")
 SSO = "default-authelia-sso@kubernetescrd"
+NAGLOWKI = "default-authelia-naglowki@kubernetescrd"
 MW = "traefik.ingress.kubernetes.io/router.middlewares"
 
 
@@ -24,7 +25,8 @@ def ingressy(chart: str = "kidwatch", *sets: str) -> dict[str, dict]:
     args = [a for kv in sets for a in ("--set", kv)]
     out = subprocess.run(["helm", "template", chart, str(KORZEN / "charts" / chart), *args],
                          capture_output=True, text=True, check=True).stdout
-    return {d["metadata"]["name"]: d for d in yaml.safe_load_all(out) if d and d["kind"] == "Ingress"}
+    obiekty = [d for d in yaml.safe_load_all(out) if d]
+    return {d["metadata"]["name"]: d for d in obiekty if d["kind"] == "Ingress"}
 
 
 def middleware(ing: dict) -> list[str]:
@@ -43,12 +45,12 @@ def test_domyslnie_BEZ_sso():
 def test_sso_na_routerze_panelu_po_limitach():
     panel = ingressy("kidwatch", "sso.enabled=true")["kidwatch"]
     assert middleware(panel) == ["default-kidwatch-w-toku@kubernetescrd",
-                                 "default-kidwatch-tempo@kubernetescrd", SSO]
+                                 "default-kidwatch-tempo@kubernetescrd", NAGLOWKI, SSO]
 
 
 def test_sso_bez_limitow():
     panel = ingressy("kidwatch", "sso.enabled=true", "ingress.limity.enabled=false")["kidwatch"]
-    assert middleware(panel) == [SSO]
+    assert middleware(panel) == [NAGLOWKI, SSO]
 
 
 def test_KAZDY_router_do_panelu_ma_sso_albo_tylko_przekierowuje():

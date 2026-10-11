@@ -87,7 +87,7 @@ metadata:
     {{- $mw = append $mw (printf "%s-%s-w-toku@kubernetescrd" .Release.Namespace (include "kidwatch.fullname" .)) }}
     {{- $mw = append $mw (printf "%s-%s-tempo@kubernetescrd" .Release.Namespace (include "kidwatch.fullname" .)) }}
     {{- end }}
-    {{- if .Values.sso.enabled }}{{ $mw = append $mw .Values.sso.middleware }}{{ end }}
+    {{- if .Values.sso.enabled }}{{ $mw = concat $mw .Values.sso.middlewares }}{{ end }}
     {{- with $mw }}
     traefik.ingress.kubernetes.io/router.middlewares: {{ join "," . }}
     {{- end }}

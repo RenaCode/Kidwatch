@@ -157,8 +157,14 @@ ingress:
 # panelu (fail-closed). Wlasne logowanie panelu (haslo + TOTP) zostaje.
 sso:
   enabled: false
-  # <namespace>-<nazwa>@kubernetescrd middleware'u forwardAuth w klastrze.
-  middleware: default-authelia-sso@kubernetescrd
+  # Middleware'y z renacode-infra, W TEJ KOLEJNOSCI: najpierw usuniecie
+  # naglowkow tozsamosci podanych przez klienta (`Remote-User` itd.), potem
+  # forwardAuth, ktory wstawia je od Authelii. Kontrakt tozsamosci (panel
+  # rozpoznaje uzytkownika po `Remote-User` bez drugiego logowania):
+  # renacode-infra docs/sso-tozsamosc.md.
+  middlewares:
+    - default-authelia-naglowki@kubernetescrd
+    - default-authelia-sso@kubernetescrd
 
 # ------------------------------------------------------------ NETWORKPOLICY
 # Kto moze otworzyc polaczenie do poda kidwatch (templates/networkpolicy.yaml).
