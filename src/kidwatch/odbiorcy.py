@@ -319,6 +319,14 @@ def adresaci(
     return wynik
 
 
+def nadal_chce(p: Profil, note: Notification) -> bool:
+    """Czy konto wciaz moze i chce dostac wpis, ktory juz czeka w jego
+    kolejce (np. raport wstrzymany cisza). Sprawdzane tuz przed wysylka:
+    odebrane uprawnienie, wylaczona kategoria albo wylaczone konto dzialaja
+    od razu, takze na wpisy rozdzielone wczesniej."""
+    return p.aktywne and p.ma_kanal and kategoria(note.kind) in p.efektywne_kategorie()
+
+
 # ================================================================== baza
 SCHEMA = """
 -- Kanaly i preferencje powiadomien konta (odbiorcy.py). Brak wiersza =
@@ -643,13 +651,17 @@ def plan_migracji(
 
 def zastosuj_migracje(konta: ProfilePowiadomien, kroki: list[KrokMigracji], auth) -> None:
     """Zapisuje kanaly i kategorie przypisanych kont; `auth` (PanelAuth)
-    nadaje brakujace uprawnienia. Nie wlacza trybu kont — to osobny krok."""
+    nadaje brakujace uprawnienia. Nie wlacza trybu kont — to osobny krok.
+    E-mail konta zostaje: bramka go nie zna, a ponowna migracja (nowy numer
+    w bramce) nie moze po cichu skasowac zapasowego kanalu."""
     for k in kroki:
         if k.login is None:
             continue
         if k.nadac:
             auth.set_permissions(k.login, dict.fromkeys(k.nadac, True))
-        konta.ustaw_kanaly(k.login, whatsapp=k.numer, email=None, kanal="auto")
+        przed = konta.profil(k.login)
+        konta.ustaw_kanaly(k.login, whatsapp=k.numer, email=przed.email if przed else None,
+                           kanal="auto")
         konta.ustaw_preferencje(
             k.login, kategorie=sorted(k.kategorie, key=KATEGORIE.index), aktywne=k.aktywny,
         )
@@ -666,7 +678,7 @@ def profile_po_migracji(kroki: list[KrokMigracji], profile: list[Profil]) -> lis
             continue
         p = by_login[k.login]
         by_login[k.login] = replace(
-            p, uprawnienia=p.uprawnienia | k.nadac, whatsapp=k.numer or None, email=None,
+            p, uprawnienia=p.uprawnienia | k.nadac, whatsapp=k.numer or None,
             kanal="auto", kategorie=k.kategorie, cisza_od=None, cisza_do=None,
             dzieci=None, aktywne=k.aktywny,
         )

@@ -303,6 +303,25 @@ def test_zastosowana_migracja_nadaje_uprawnienie_w_bazie(tmp_path):
     assert all(a == b for _, a, b in o.porownanie(bramka, k.profile(), T0))
 
 
+def test_ponowna_migracja_nie_kasuje_adresu_email(tmp_path):
+    """Krok 4 wdrozenia: kazdy wpisuje e-mail. Ponowna migracja (np. nowy
+    numer w bramce) nie moze go po cichu skasowac — to zapasowy kanal."""
+    path = tmp_path / "panel-auth.db"
+    auth = PanelAuth(path)
+    auth.add_user("rodzic", HASLO)
+    auth.add_user("drugi", HASLO, rola=u.ROLE_VIEWER)
+    k = o.ProfilePowiadomien(path)
+    bramka = [{"numer": NR_A, "zrodla": ["*"]}, {"numer": NR_B, "zrodla": ["kidwatch"]}]
+    o.zastosuj_migracje(k, o.plan_migracji(bramka, k.profile(), {2: "drugi"}), auth)
+    k.ustaw_kanaly("drugi", whatsapp=NR_B, email="osoba@example.com")
+    kroki = o.plan_migracji(bramka, k.profile(), {2: "drugi"})
+    po = {p.login: p for p in o.profile_po_migracji(kroki, k.profile())}
+    assert po["drugi"].email == "osoba@example.com"
+    o.zastosuj_migracje(k, kroki, auth)
+    assert k.profil("drugi").email == "osoba@example.com"
+    assert k.profil("drugi").whatsapp == NR_B
+
+
 # ===================================================== kolejka per konto
 class Konto:
     """Kanal per konto (jak bramka): zapisuje (klucz, numer)."""
@@ -459,6 +478,61 @@ async def test_konto_usuniete_po_rozdziale_wpis_porzucony(kolejka, tmp_path):
     PanelAuth(k.path).delete_user("domownik")
     outbox._now.now += timedelta(minutes=5)
     await outbox.flush()
+    assert store.outbox_pending() == []
+
+
+async def test_wycofana_bramka_nie_rozsyla_wpisow_kont_do_wszystkich(kolejka):
+    """Raport wstrzymany cisza dwoch kont, a bramke wycofano do wersji bez
+    `odbiorca`: ta zignorowalaby pole i kazde z dwoch zadan wyslala do
+    wszystkich z trasy. Wpisy kont zwijaja sie do jednego wpisu trybu tras."""
+    outbox, bramka, _, k, store, clock = kolejka
+    for login in ("rodzic", "domownik"):
+        k.ustaw_preferencje(login, kategorie=[o.SESJE, o.RAPORTY],
+                            cisza_od="22:00", cisza_do="07:00")
+    clock.now = datetime(2026, 10, 3, 23, 0, tzinfo=TZ).astimezone(UTC)
+    await outbox.send_all([note(NotifyKind.DAILY, key="raport", device=None)])
+    await outbox.flush()
+    assert bramka.calls == []
+    bramka.obsluguje = False
+    clock.now = datetime(2026, 10, 4, 7, 1, tzinfo=TZ).astimezone(UTC)
+    await outbox.flush()
+    assert bramka.calls == [("raport", None)]
+    assert store.outbox_pending() == []
+
+
+async def test_wlasciciel_wrocil_do_tras_wpisy_kont_wychodza_do_kont(kolejka):
+    """Przelaczenie na trasy przy bramce z `odbiorca`: wstrzymane wpisy kont
+    ida dalej do swoich kont (bramka je rozumie), bez rozsylki do wszystkich."""
+    outbox, bramka, _, k, _, clock = kolejka
+    k.ustaw_preferencje("rodzic", kategorie=None, cisza_od="22:00", cisza_do="07:00")
+    clock.now = datetime(2026, 10, 3, 23, 0, tzinfo=TZ).astimezone(UTC)
+    await outbox.send_all([note(NotifyKind.DAILY, key="raport", device=None)])
+    await outbox.flush()
+    k.ustaw_tryb(o.TRYB_TRASY)
+    clock.now = datetime(2026, 10, 4, 7, 1, tzinfo=TZ).astimezone(UTC)
+    await outbox.flush()
+    assert bramka.calls == [("raport", NR_A)]
+
+
+@pytest.mark.parametrize("zmiana", ["uprawnienie", "wylaczone", "kategoria"])
+async def test_wstrzymany_wpis_nie_wychodzi_po_odebraniu_prawa(kolejka, zmiana):
+    """"Odebranie uprawnienia dziala od razu" dotyczy tez wpisow, ktore juz
+    czekaja w kolejce konta (raport wstrzymany cisza do rana)."""
+    outbox, bramka, _, k, store, clock = kolejka
+    k.ustaw_preferencje("domownik", kategorie=[o.SESJE, o.RAPORTY],
+                        cisza_od="22:00", cisza_do="07:00")
+    clock.now = datetime(2026, 10, 3, 23, 0, tzinfo=TZ).astimezone(UTC)
+    await outbox.send_all([note(NotifyKind.DAILY, key="raport", device=None)])
+    await outbox.flush()
+    if zmiana == "uprawnienie":
+        PanelAuth(k.path).set_permissions("domownik", {u.PODGLAD: False})
+    elif zmiana == "wylaczone":
+        k.ustaw_preferencje("domownik", kategorie=[o.SESJE, o.RAPORTY], aktywne=False)
+    else:
+        k.ustaw_preferencje("domownik", kategorie=[o.SESJE])
+    clock.now = datetime(2026, 10, 4, 7, 1, tzinfo=TZ).astimezone(UTC)
+    await outbox.flush()
+    assert ("raport", NR_B) not in bramka.calls
     assert store.outbox_pending() == []
 
 

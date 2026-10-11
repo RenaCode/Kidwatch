@@ -871,6 +871,37 @@ class Store:
             self.conn.execute("ROLLBACK")
             raise
 
+    def outbox_do_tras(self) -> int:
+        """Wpisy kolejek kont i domu -> jeden wpis '*' (tryb tras) na klucz
+        dedupu, wysylany od razu (tryb tras nie zna ciszy). Po wycofaniu
+        bramki z jawnym odbiorca; kanaly domowe moga dostac zdarzenie drugi
+        raz, odbiorcy bramki - najwyzej raz. Zwraca liczbe zwinietych."""
+        rows = self.conn.execute(
+            "SELECT id, note FROM outbox WHERE odbiorca IS NOT NULL AND odbiorca != '*' "
+            "ORDER BY id"
+        ).fetchall()
+        if not rows:
+            return 0
+        first: dict[str, int] = {}
+        for r in rows:
+            first.setdefault(note_from_json(r["note"]).dedup_key, int(r["id"]))
+        keep = set(first.values())
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            for r in rows:
+                if int(r["id"]) in keep:
+                    self.conn.execute(
+                        "UPDATE outbox SET odbiorca = '*', next_at = NULL WHERE id = ?",
+                        (r["id"],),
+                    )
+                else:
+                    self.conn.execute("DELETE FROM outbox WHERE id = ?", (r["id"],))
+            self.conn.execute("COMMIT")
+        except BaseException:
+            self.conn.execute("ROLLBACK")
+            raise
+        return len(rows)
+
     def outbox_attempt(self, item_id: int, next_at: datetime | None = None) -> None:
         """Liczy probe i od razu wyznacza nastepna — PRZED wysylka, zeby
         proces padajacy w samej wysylce nie ponawial jej bez przerwy."""

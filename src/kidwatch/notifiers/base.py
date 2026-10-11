@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Protocol
 import httpx
 
 from ..models import Notification, NotifyKind
-from ..odbiorcy import TRYB_KONTA, Profil, adresaci
+from ..odbiorcy import TRYB_KONTA, Profil, adresaci, nadal_chce
 
 if TYPE_CHECKING:
     from zoneinfo import ZoneInfo
@@ -279,7 +279,7 @@ class Outbox:
             powod = "tryb tras (brak kont albo kanalu per konto)"
         elif self.konta.tryb() != TRYB_KONTA:
             powod = "tryb tras (wlasciciel nie wlaczyl trybu kont)"
-        elif not all([await n.obsluguje_odbiorcow() for n in self.dispatcher.per_konto]):
+        elif not await self._bramka_zna_odbiorce():
             powod = "TRYB TRAS: wlaczony tryb kont, ale bramka nie obsluguje jawnego odbiorcy"
         else:
             profile = self.konta.profile()
@@ -288,6 +288,9 @@ class Outbox:
             (log.error if powod.startswith("TRYB TRAS") else log.info)("kolejka: %s", powod)
             self._tryb_log = powod
         return profile
+
+    async def _bramka_zna_odbiorce(self) -> bool:
+        return all([await n.obsluguje_odbiorcow() for n in self.dispatcher.per_konto])
 
     async def _rozdziel(self) -> dict[str, Profil]:
         """Nierozdzielone wpisy -> kolejki odbiorcow. Zwraca profile kont
@@ -331,10 +334,17 @@ class Outbox:
         if not profile and self.konta is not None and any(
             q not in ("*", "") for q in self.store.outbox_queues()
         ):
-            # Wpisy kont z poprzedniego flusha, a tryb kont wlasnie wypadl
-            # (bramka wycofana): wysylamy je dalej na zapisane kanaly kont.
-            with contextlib.suppress(Exception):
-                profile = {p.login: p for p in self.konta.profile()}
+            # Wpisy kont z poprzedniego flusha, a tryb kont wlasnie wypadl.
+            # Bramka dalej zna `odbiorca` (wlasciciel wrocil do tras): wysylamy
+            # je na zapisane kanaly kont. Bramke wycofano: zignorowalaby pole
+            # i KAZDY wpis konta poszedlby do wszystkich z trasy (N razy to
+            # samo) - zwijamy je do jednego wpisu trybu tras na zdarzenie.
+            if await self._bramka_zna_odbiorce():
+                with contextlib.suppress(Exception):
+                    profile = {p.login: p for p in self.konta.profile()}
+            else:
+                n = self.store.outbox_do_tras()
+                log.error("kolejka: TRYB TRAS - %d wpisow kont zwinietych do tras", n)
         done = 0
         lost: list[OutboxItem] = []
         for queue in self.store.outbox_queues():
@@ -363,9 +373,10 @@ class Outbox:
                 cel = ""
             elif queue != "*":
                 cel = profile.get(queue)
-                if cel is None or not cel.ma_kanal:
-                    # Konto usuniete albo bez kanalu od chwili rozdzialu.
-                    log.warning("kolejka: %s dla %r - konto bez kanalu, porzucam",
+                if cel is None or not nadal_chce(cel, item.note):
+                    # Od chwili rozdzialu konto usunieto, stracilo kanal albo
+                    # prawo do tej kategorii, albo je wylaczylo.
+                    log.warning("kolejka: %s dla %r - konto juz tego nie dostaje, porzucam",
                                 item.note.dedup_key, queue)
                     self.store.outbox_done(item.id)
                     continue
