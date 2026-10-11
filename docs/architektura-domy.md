@@ -1,6 +1,6 @@
 # Wiele domów (gospodarstw) w jednym Kidwatchu — projekt
 
-Stan: **projekt do akceptacji**, bez kodu. Podstawa: `main` po #43 i #44 oraz
+Stan: **projekt zaakceptowany** (decyzje właściciela z 2026-10-11 w §8), bez kodu. Podstawa: `main` po #43 i #44 oraz
 otwarty #45 (powiadomienia per konto), który zostanie scalony wcześniej
 i jest tu traktowany jako punkt wyjścia.
 
@@ -28,7 +28,7 @@ klastra).
 **Uczciwa granica izolacji.** Izolacja jest na poziomie aplikacji. Operator
 klastra (właściciel) ma `kubectl exec`, klucz szyfrujący i bazę — technicznie
 może zajrzeć w dane Domu 2. Tego kod nie zmieni; zaproszony dom musi to
-wiedzieć i się na to zgodzić (pytanie 5). Kod gwarantuje natomiast, że
+wiedzieć i się na to zgodzić (decyzja 5, §8). Kod gwarantuje natomiast, że
 **żadna ścieżka w panelu, API, pushach ani w pętlach** nie przenosi danych
 ani poleceń między domami, także dla konta właściciela.
 
@@ -407,7 +407,7 @@ właściciela. Dlatego:
   do odbiorców Domu 1. Dom ≠ 1 wysyła wyłącznie w trybie `konta`; gdy bramka
   nie deklaruje `funkcje: ["odbiorca"]`, outbox Domu 2 **wstrzymuje wysyłkę**
   (notki czekają w kolejce domu, nie giną) i zgłasza alarm instancji.
-- Nadawca WhatsApp: wspólny bot bramki (pytanie 1). Temat/stopka notki
+- Nadawca WhatsApp: wspólny bot bramki (decyzja 1, §8). Temat/stopka notki
   zawiera nazwę domu tylko, gdy odbiorca jest członkiem więcej niż jednego
   domu.
 - **Czujki per dom**: cisza strumienia, cisza urządzenia, „profil DNS
@@ -732,7 +732,7 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
 - **Gotowe, gdy**: zaproszony dostaje sesje/alarm nocny/podsumowanie ze
   swojego telefonu, nie widzi Domu 1, członkowie Domu 1 nie dostają nic
   z Domu 2 (sprawdzone w historii powiadomień obu domów i w logu bramki).
-- **UniFi i TV w Domu 2**: poza E6 (brak trasy sieciowej, pytanie 4).
+- **UniFi i TV w Domu 2**: poza E6 (brak trasy sieciowej, decyzja 4, §8).
 
 ### Podsumowanie i podział na agentów
 
@@ -753,32 +753,34 @@ Po E1 trzy agenty mogą pracować jednocześnie (każdy we **własnym
 A–B: interfejs `domy.py` (rejestr domów, `uprawnienia(konto, dom)`)
 uzgodniony w E1 i zamrożony. E3b i E4 sekwencyjnie po B.
 
-## 8. Pytania do właściciela
+## 8. Decyzje właściciela (2026-10-11)
 
-1. **Nadawca WhatsApp dla Domu 2: wspólny bot czy własny numer?**
-   *Rekomendacja: wspólny bot bramki* z routingiem per konto (#45 + pole
-   `odbiorca` w bramce). Zaproszony zobaczy numer bota Domu 1 jako nadawcę;
-   własny bot to druga sesja WAHA, drugi numer i drugi klucz aplikacji
-   w bramce — koszt bez zysku przy jednym telefonie. Warunek: Dom 2 wysyła
-   wyłącznie w trybie `konta` (§4.2), bez tego — tylko e-mail.
-2. **MDM dla Domu 2: wspólny `kidwatch-mdm` czy osobny serwer?**
-   *Rekomendacja: wspólny, z rozdziałem po domu (§4.3), a na start Dom 2 bez
-   MDM* (Android pod Family Link nie ma MDM). Osobny serwer i tak użyłby
-   certyfikatu APNs z Apple ID właściciela, więc nie daje niezależności, tylko
-   drugi Ingress i drugą bazę.
-3. **Konto zaproszonego w Authelii: nowa grupa `kidwatch-goscie` czy
-   `rodzina`?** *Rekomendacja: nowa grupa* z dostępem tylko do hosta
-   Kidwatcha. `rodzina` może dziś (lub w przyszłości) otwierać inne
-   aplikacje; grupa Authelii i tak niczego w panelu nie nadaje (§2.3).
-4. **UniFi i telewizor w Domu 2: teraz czy później?** *Rekomendacja:
-   później.* Wymagają drugiego tunelu WireGuard do sieci zaproszonego
-   (sprzęt i konfiguracja po jego stronie) i rozszerzenia egress poda;
-   na start Dom 2 działa w chmurze (NextDNS). Projekt (`dozwolone_sieci`,
-   integracje per dom) jest na to gotowy.
-5. **Widoczność Domu 2 dla operatora i konto NextDNS.** *Rekomendacja:*
-   (a) w aplikacji właściciel **nie** widzi danych Domu 2 bez członkostwa,
-   a zaproszony dostaje na piśmie informację, że operator klastra ma
-   techniczny dostęp do danych i klucza (§0) — to dane dziecka, więc zgoda
-   rodzica musi być świadoma; (b) Dom 2 używa **własnego konta NextDNS**
-   zaproszonego (klucz API konta daje dostęp do wszystkich jego profili,
-   więc nie dzielimy kont między domami), co przy okazji rozdziela limity 429.
+Wszystkie pytania rozstrzygnięte zgodnie z rekomendacjami projektu.
+
+1. **Nadawca WhatsApp: wspólny bot bramki.** Dom 2 wysyła **wyłącznie
+   w trybie `konta`** (#45), nigdy przez trasy bramki. Dopóki bramka nie
+   obsługuje pola `odbiorca` (`GET /v1/stan` → `"funkcje": ["odbiorca"]`),
+   Dom 2 nie dostaje WhatsAppa — docelowo tylko e-mail na adres konta.
+   Uwaga wykonawcza: zapasowy e-mail bramki idzie dziś na `ADRES_DOMYSLNY`
+   (adres Domu 1), więc e-mail na adres członka Domu 2 też wymaga pola
+   `odbiorca` (`kanal: "email"`). Bez niego outbox Domu 2 wstrzymuje wysyłkę
+   i zgłasza alarm instancji (§4.2) — notki czekają, nie trafiają do Domu 1.
+2. **MDM: wspólny `kidwatch-mdm` z rozdziałem po domu** (§4.3, etap E3b).
+   Dom 2 startuje **bez MDM**; integracja `mdm` Domu 2 pozostaje wyłączona,
+   token domu wydawany dopiero przy pierwszym urządzeniu Apple.
+3. **Authelia: nowa grupa `kidwatch-goscie`** z dostępem wyłącznie do hosta
+   panelu Kidwatcha; dopisana do `sso.grupy` i reguły hosta w Authelii
+   (renacode-infra) w etapie E4. Grupa wpuszcza, niczego w panelu nie nadaje.
+4. **UniFi i TV w Domu 2: później.** Start Domu 2 to NextDNS w chmurze;
+   `domy.dozwolone_sieci` Domu 2 pozostaje puste do czasu decyzji o tunelu.
+   E6 nie obejmuje UniFi ani TV.
+5. **Prywatność i NextDNS.**
+   - Właściciel (także jako `admin_instancji`) **nie widzi danych Domu 2**
+     bez członkostwa w nim — wymagane testami izolacji (§4.4 p. 2).
+   - Zaproszony dostaje **pisemną informację**, że operator klastra ma
+     techniczny dostęp do danych i klucza szyfrującego (§0). Treść w
+     `docs/nowy-dom.md` (E6) i pokazywana na ekranie przyjęcia zaproszenia
+     (E4) przed utworzeniem członkostwa — przyjęcie = potwierdzenie
+     przeczytania.
+   - Dom 2 używa **własnego konta NextDNS** zaproszonego (własny klucz API,
+     osobna bramka połączeń 429, §5.2).
