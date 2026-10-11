@@ -129,7 +129,10 @@ CREATE TABLE IF NOT EXISTS notifications (
     delivered INTEGER NOT NULL,
     -- JSON z formatting.payload (sekcje, aplikacje, tytuly) — panel rysuje z
     -- niego liste zamiast surowego tekstu. NULL dla prostych pushy i starych wpisow.
-    data      TEXT
+    data      TEXT,
+    -- Klucz dedupu: w trybie kont kazdy odbiorca dopisuje swoj wynik do
+    -- TEGO SAMEGO wpisu historii (record_notification(merge=True)).
+    dedup_key TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_notifications_ts ON notifications (ts);
 
@@ -195,7 +198,12 @@ CREATE TABLE IF NOT EXISTS outbox (
     attempts   INTEGER NOT NULL DEFAULT 0,
     note       TEXT NOT NULL,
     next_at    TEXT,
-    last_error TEXT
+    last_error TEXT,
+    -- Kolejka odbiorcy (odbiorcy.py). NULL = jeszcze nierozdzielony (tak
+    -- wstawia outbox_put), '*' = stary tryb tras: wszystkie kanaly, jak
+    -- przed kontami, '' = tylko kanaly domowe (ntfy, Home Assistant),
+    -- inaczej login konta panelu: bramka z jawnym odbiorca.
+    odbiorca   TEXT
 );
 
 -- Pauzy monitoringu telewizora (tvpause.py). Wiersz = jedna pauza; otwarta
@@ -270,6 +278,7 @@ class OutboxItem:
     created_at: datetime
     next_at: datetime | None = None
     last_error: str | None = None
+    odbiorca: str | None = None
 
 
 class Store:
@@ -313,6 +322,8 @@ class Store:
         }
         if "data" not in note_cols:
             self.conn.execute("ALTER TABLE notifications ADD COLUMN data TEXT")
+        if "dedup_key" not in note_cols:
+            self.conn.execute("ALTER TABLE notifications ADD COLUMN dedup_key TEXT")
         outbox_cols = {
             row["name"] for row in self.conn.execute("PRAGMA table_info(outbox)").fetchall()
         }
@@ -320,6 +331,9 @@ class Store:
             self.conn.execute("ALTER TABLE outbox ADD COLUMN next_at TEXT")
         if "last_error" not in outbox_cols:
             self.conn.execute("ALTER TABLE outbox ADD COLUMN last_error TEXT")
+        if "odbiorca" not in outbox_cols:
+            # Wpisy sprzed kont dostaja NULL i rozdziela je pierwszy flush.
+            self.conn.execute("ALTER TABLE outbox ADD COLUMN odbiorca TEXT")
         self._migrate_child_nullable()
 
     def _migrate_child_nullable(self) -> None:
@@ -726,12 +740,32 @@ class Store:
         )
 
     def record_notification(
-        self, note: Notification, results: dict[str, bool], at: datetime
+        self, note: Notification, results: dict[str, bool], at: datetime,
+        *, merge: bool = False,
     ) -> int:
-        """Zapisuje wyslane powiadomienie z wynikiem per kanal (historia panelu)."""
+        """Zapisuje wyslane powiadomienie z wynikiem per kanal (historia panelu).
+
+        `merge=True` (tryb kont): jesli ten klucz dedupu juz jest w historii,
+        dopisuje wyniki do tego wpisu zamiast tworzyc drugi — jedno zdarzenie
+        to jeden wiersz w panelu, z kanalami kazdego odbiorcy."""
+        if merge:
+            row = self.conn.execute(
+                "SELECT id, channels FROM notifications WHERE dedup_key = ? "
+                "ORDER BY id DESC LIMIT 1", (note.dedup_key,),
+            ).fetchone()
+            if row is not None:
+                channels = {**json.loads(row["channels"]), **results}
+                self.conn.execute(
+                    "UPDATE notifications SET channels = ?, delivered = ?, sent_at = ? "
+                    "WHERE id = ?",
+                    (json.dumps(channels, ensure_ascii=False), int(any(channels.values())),
+                     to_iso(at), row["id"]),
+                )
+                return int(row["id"])
         cur = self.conn.execute(
             "INSERT INTO notifications (ts, sent_at, kind, device, app, title, text, "
-            "priority, channels, delivered, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "priority, channels, delivered, data, dedup_key) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 to_iso(note.ts),
                 to_iso(at),
@@ -744,6 +778,7 @@ class Store:
                 json.dumps(results, ensure_ascii=False),
                 int(any(results.values())),
                 None if note.data is None else json.dumps(note.data, ensure_ascii=False),
+                note.dedup_key,
             ),
         )
         return int(cur.lastrowid)
@@ -769,13 +804,19 @@ class Store:
             [(to_iso(at), note_to_json(n)) for n in notes],
         )
 
-    def outbox_pending(self, limit: int = 50) -> list[OutboxItem]:
-        """Wpisy w kolejnosci wstawienia (tej samej, w jakiej maja wyjsc)."""
-        rows = self.conn.execute(
-            "SELECT id, created_at, attempts, note, next_at, last_error FROM outbox "
-            "ORDER BY id LIMIT ?",
-            (limit,),
-        ).fetchall()
+    _ALL = object()
+
+    def outbox_pending(self, limit: int = 50, odbiorca=_ALL) -> list[OutboxItem]:
+        """Wpisy w kolejnosci wstawienia (tej samej, w jakiej maja wyjsc).
+        `odbiorca` zaweza do jednej kolejki; None = nierozdzielone."""
+        sql = "SELECT id, created_at, attempts, note, next_at, last_error, odbiorca FROM outbox"
+        params: list = []
+        if odbiorca is None:
+            sql += " WHERE odbiorca IS NULL"
+        elif odbiorca is not Store._ALL:
+            sql += " WHERE odbiorca = ?"
+            params.append(odbiorca)
+        rows = self.conn.execute(sql + " ORDER BY id LIMIT ?", (*params, limit)).fetchall()
         return [
             OutboxItem(
                 id=int(r["id"]),
@@ -784,6 +825,7 @@ class Store:
                 created_at=from_iso(r["created_at"]),
                 next_at=from_iso(r["next_at"]) if r["next_at"] else None,
                 last_error=r["last_error"],
+                odbiorca=r["odbiorca"],
             )
             for r in rows
         ]
@@ -791,6 +833,43 @@ class Store:
     def outbox_head(self) -> OutboxItem | None:
         pending = self.outbox_pending(limit=1)
         return pending[0] if pending else None
+
+    def outbox_queues(self) -> list[str]:
+        """Rozdzielone kolejki, w kolejnosci najstarszego wpisu."""
+        return [r["odbiorca"] for r in self.conn.execute(
+            "SELECT odbiorca, MIN(id) AS first FROM outbox WHERE odbiorca IS NOT NULL "
+            "GROUP BY odbiorca ORDER BY first"
+        )]
+
+    def outbox_route(self, item_id: int, targets: list[tuple[str, datetime | None]]) -> None:
+        """Rozdziela wpis na kolejki odbiorcow w jednej transakcji: kopie
+        z tym samym `created_at` (limit wieku liczy sie od zdarzenia), oryginal
+        znika. Pusta lista = nikt tego nie dostaje, wpis znika. Jeden cel
+        (tryb tras) = ten sam wiersz z odbiorca: id, proby i blad zostaja."""
+        if len(targets) == 1:
+            who, at = targets[0]
+            self.conn.execute(
+                "UPDATE outbox SET odbiorca = ?, next_at = COALESCE(?, next_at) WHERE id = ?",
+                (who, None if at is None else to_iso(at), item_id),
+            )
+            return
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute(
+                "SELECT created_at, note FROM outbox WHERE id = ?", (item_id,)
+            ).fetchone()
+            if row is not None:
+                self.conn.executemany(
+                    "INSERT INTO outbox (created_at, note, next_at, odbiorca) "
+                    "VALUES (?, ?, ?, ?)",
+                    [(row["created_at"], row["note"],
+                      None if at is None else to_iso(at), who) for who, at in targets],
+                )
+                self.conn.execute("DELETE FROM outbox WHERE id = ?", (item_id,))
+            self.conn.execute("COMMIT")
+        except BaseException:
+            self.conn.execute("ROLLBACK")
+            raise
 
     def outbox_attempt(self, item_id: int, next_at: datetime | None = None) -> None:
         """Liczy probe i od razu wyznacza nastepna — PRZED wysylka, zeby

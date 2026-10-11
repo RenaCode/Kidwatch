@@ -398,6 +398,10 @@ class BramkaConfig(_Base):
     #: potem zapasowy mail do 15 s, plus do 3 s na status. Krotszy timeout
     #: konczyl sie ponowieniem z outboxa, choc mail juz wyszedl (K-12).
     timeout_seconds: float = 40.0
+    #: Pozwala na powiadomienia per konto panelu (odbiorcy.py). Wlaczaja sie
+    #: dopiero, gdy wlasciciel je wlaczy (`konta-migruj --zapisz`) i bramka
+    #: obsluguje jawnego odbiorce; false = zawsze stary tryb tras bramki.
+    per_konto: bool = True
 
     def key(self) -> str:
         """Klucz WYSYLKOWY kidwatcha (po stronie bramki: BRAMKA_KLUCZ_KIDWATCH).

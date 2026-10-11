@@ -49,6 +49,7 @@ from .bramka_admin import (
 from .config import Config, MissingSecretError, WatchedDevice
 from .gametime import ACTIONS, GameRequests, TooManyRequests
 from .mdm import MdmApi, MdmError, build_api
+from .odbiorcy import ProfilePowiadomien
 from .panel_auth import (
     CSRF_COOKIE,
     CSRF_HEADER,
@@ -59,6 +60,7 @@ from .panel_auth import (
     box_from_env,
     csrf_ok,
 )
+from .panel_konta import PanelKonta
 from .panel_sso import SsoConfig
 from .panel_sso import config_from_env as sso_from_env
 from .store import from_iso, to_iso
@@ -66,6 +68,7 @@ from .tvpause import MAX_PAUSE_DAYS, TvPauseRequests, parse_until
 from .tvpause import TooManyRequests as TooManyPauseRequests
 from .uprawnienia import (
     CZAS_GRY,
+    KONTA,
     KONTO_WLASNE,
     MDM_KOMENDY,
     MDM_PODGLAD,
@@ -953,6 +956,17 @@ POST_TRASY: dict[str, tuple[str, str]] = {
     "/api/mdm/command": (MDM_KOMENDY, "_mdm_post"),
     "/api/mdm/enroll": (MDM_KOMENDY, "_mdm_post"),
     "/api/mdm/os-update": (MDM_KOMENDY, "_mdm_post"),
+    # Powiadomienia per konto (panel_konta.py): wlasny profil — kazde konto,
+    # tylko o sobie; cudze konta — zarzadzanie kontami.
+    "/api/konto/powiadomienia": (KONTO_WLASNE, "_konta_post"),
+    "/api/konto/kanaly": (KONTO_WLASNE, "_konta_post"),
+    "/api/konta/dodaj": (KONTA, "_konta_post"),
+    "/api/konta/usun": (KONTA, "_konta_post"),
+    "/api/konta/rola": (KONTA, "_konta_post"),
+    "/api/konta/uprawnienia": (KONTA, "_konta_post"),
+    "/api/konta/powiadomienia": (KONTA, "_konta_post"),
+    "/api/konta/kanaly": (KONTA, "_konta_post"),
+    "/api/konta/tryb": (KONTA, "_konta_post"),
 }
 
 #: GET /api/*: sciezka -> uprawnienie; klucz z "/" na koncu to prefiks
@@ -975,6 +989,8 @@ GET_TRASY: dict[str, str] = {
     "/api/profile/whatsapp/qr": WHATSAPP,
     "/api/mdm": MDM_PODGLAD,
     "/api/mdm/devices/": MDM_PODGLAD,
+    "/api/konto/powiadomienia": KONTO_WLASNE,
+    "/api/konta": KONTA,
 }
 
 
@@ -1006,6 +1022,7 @@ def make_handler(
     bramka: BramkaAdmin | None = None,
     mdm: MdmApi | None = None,
     sso: SsoConfig | None = None,
+    konta: PanelKonta | None = None,
 ):
     """`sso` = None: naglowki `Remote-*` ignorowane w calosci (panel_sso.py)."""
     static_root = static_dir.resolve()
@@ -1411,6 +1428,28 @@ def make_handler(
             else:
                 self._json(404, {"error": "nie ma takiego endpointu"})
 
+        # ------------------------------------------- konta i ich powiadomienia
+        def _konta(self) -> PanelKonta:
+            if konta is None:
+                raise AuthError(503, "Zarządzanie kontami jest niedostępne")
+            return konta
+
+        def _konta_post(self, path: str, session: Session) -> None:
+            k = self._konta()
+            data = self._read_json()
+            akcje = {
+                "/api/konto/powiadomienia": k.moje_preferencje,
+                "/api/konto/kanaly": k.moje_kanaly,
+                "/api/konta/dodaj": k.dodaj,
+                "/api/konta/usun": k.usun,
+                "/api/konta/rola": k.rola,
+                "/api/konta/uprawnienia": k.uprawnienia,
+                "/api/konta/powiadomienia": k.preferencje,
+                "/api/konta/kanaly": k.kanaly,
+                "/api/konta/tryb": k.tryb,
+            }
+            self._json(200, akcje[path](session, data))
+
         # ---------------------------------------------------------------- MDM
         # Panel jest posrednikiem: token API serwera MDM zostaje w backendzie,
         # a przegladarka widzi tylko zalogowana sesje panelu (+ CSRF przy akcjach).
@@ -1560,6 +1599,14 @@ def make_handler(
             if path == "/api/meta":
                 self._json(200, queries.meta())
                 return
+            if path in ("/api/konto/powiadomienia", "/api/konta"):
+                try:
+                    k = self._konta()
+                    self._json(200, k.moje(session) if path == "/api/konto/powiadomienia"
+                               else k.lista(session))
+                except AuthError as exc:
+                    self._json(exc.status, {"error": exc.message})
+                return
             if path.startswith("/api/profile/"):
                 try:
                     self._profile_get(path, session)
@@ -1708,6 +1755,8 @@ def start_panel(cfg: Config) -> ThreadingHTTPServer:
         make_handler(
             queries, Path(cfg.panel.static_dir), auth, cookie_secure=cfg.panel.cookie_secure,
             bramka=_bramka_admin(cfg), mdm=build_api(cfg.mdm), sso=sso,
+            konta=PanelKonta(auth, ProfilePowiadomien(cfg.panel_auth_path),
+                             [d.child for d in cfg.devices]),
         ),
     )
     server.daemon_threads = True
