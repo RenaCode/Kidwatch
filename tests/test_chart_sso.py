@@ -21,12 +21,22 @@ NAGLOWKI = "default-authelia-naglowki@kubernetescrd"
 MW = "traefik.ingress.kubernetes.io/router.middlewares"
 
 
-def ingressy(chart: str = "kidwatch", *sets: str) -> dict[str, dict]:
+def obiekty(chart: str, *sets: str) -> list[dict]:
     args = [a for kv in sets for a in ("--set", kv)]
     out = subprocess.run(["helm", "template", chart, str(KORZEN / "charts" / chart), *args],
                          capture_output=True, text=True, check=True).stdout
-    obiekty = [d for d in yaml.safe_load_all(out) if d]
-    return {d["metadata"]["name"]: d for d in obiekty if d["kind"] == "Ingress"}
+    return [d for d in yaml.safe_load_all(out) if d]
+
+
+def ingressy(chart: str = "kidwatch", *sets: str) -> dict[str, dict]:
+    return {d["metadata"]["name"]: d for d in obiekty(chart, *sets) if d["kind"] == "Ingress"}
+
+
+def env_panelu(*sets: str) -> dict[str, str]:
+    dep = next(d for d in obiekty("kidwatch", *sets) if d["kind"] == "Deployment")
+    kontener = next(c for c in dep["spec"]["template"]["spec"]["containers"]
+                    if c["name"] == "kidwatch")
+    return {e["name"]: e.get("value") for e in kontener["env"]}
 
 
 def middleware(ing: dict) -> list[str]:
@@ -67,3 +77,14 @@ def test_MDM_nigdy_za_sso():
     for nazwa, ing in ingressy("kidwatch-mdm", "sso.enabled=true").items():
         assert SSO not in middleware(ing), nazwa
         assert "authelia" not in str(ing), nazwa
+
+
+def test_flaga_zaufania_do_naglowkow_tylko_razem_z_middlewarem():
+    """Kontrakt SSO, punkt 3: `sso.enabled` ustawia i middleware, i
+    `SSO_NAGLOWKI=1`. Flaga bez middleware'u = Remote-User od kazdego."""
+    assert "SSO_NAGLOWKI" not in env_panelu()
+    env = env_panelu("sso.enabled=true")
+    assert env["SSO_NAGLOWKI"] == "1"
+    assert env["SSO_ADRES"] == "https://kidwatch.renacode.com/"
+    # Bez routera panelu nie ma middleware'u — nie ma tez zaufania.
+    assert "SSO_NAGLOWKI" not in env_panelu("sso.enabled=true", "ingress.enabled=false")

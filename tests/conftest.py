@@ -118,6 +118,9 @@ def fast_argon2(monkeypatch):
     monkeypatch.setattr(panel_auth, "_dummy_hash", None)
     # Klucz szyfrujacy sekrety TOTP — wylacznie testowy, losowany per test.
     monkeypatch.setenv(panel_auth.TOTP_KEY_ENV, base64.b64encode(os.urandom(32)).decode())
+    # SSO z otoczenia (np. wyeksportowane w powloce) nie moze wlaczyc zaufania
+    # do naglowkow w testach, ktore o nim nie wiedza.
+    monkeypatch.delenv("SSO_NAGLOWKI", raising=False)
 
 
 def panel_login(port: int, login: str, password: str, totp_secret: str | None = None) -> str:

@@ -389,6 +389,38 @@ python -m kidwatch user-del <login>
 python -m kidwatch user-list
 ```
 
+### Panel behind SSO (Authelia)
+
+With `sso.enabled: true` in the chart, Traefik puts Authelia (password + 2FA,
+renacode-infra) in front of the panel **and** the same switch sets
+`SSO_NAGLOWKI=1` in the pod. Only then does the panel trust the
+`Remote-User` header from Authelia (contract: renacode-infra
+`docs/sso-tozsamosc.md`, code: `src/kidwatch/panel_sso.py`):
+
+- `Remote-User` must equal an **existing** panel login (`user-add`), lowercase
+  `[a-z0-9._-]`. No accounts are created on the fly — an unknown login gets
+  403 with a readable message and an "SSO log out" button. A new person needs
+  two steps: an Authelia account and `user-add` with the same login.
+- `Remote-Groups` must contain `admins` or `rodzina` (the groups Authelia
+  admits to this host; override with `SSO_GRUPY`). The panel has no roles, so
+  groups only gate entry, they grant nothing.
+- The session is marked `sso` and is created **without** the panel password
+  or panel TOTP (Authelia already enforced 2FA). Account lockout from wrong
+  panel passwords does not block SSO, and SSO does not lift it.
+- Sensitive actions still need the panel password or panel 2FA code exactly
+  as before (password change, disabling 2FA, WhatsApp sender/recipients, bot
+  QR) — an SSO session is not a fresh confirmation. MDM commands, game time
+  and TV pause need a session + CSRF, as with a password session; an SSO
+  session always went through 2FA, so it is never weaker than a local one.
+- "Wyloguj (SSO)" deletes the panel session and goes to
+  `https://auth.renacode.com/logout?rd=https://<host>/`, which ends the
+  Authelia session for all RenaCode apps.
+- Break-glass: without the header (`kubectl port-forward` when Authelia is
+  down) the normal password + TOTP login works unchanged.
+- Without `SSO_NAGLOWKI=1` all `Remote-*` headers are ignored. Never set it by
+  hand: without the Traefik middleware a client can send `Remote-User`
+  itself.
+
 ### Profile: password and WhatsApp
 
 Avatar in the header → **Profil**: two-factor authentication, password change

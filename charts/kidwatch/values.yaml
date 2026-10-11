@@ -154,7 +154,10 @@ ingress:
 #
 # WYLACZONE DOMYSLNIE: wlacza `valuesObject` w argocd-apps.yaml (renacode-infra)
 # dopiero po rejestracji 2FA w Authelii. Bez dzialajacej Authelii = 500 na
-# panelu (fail-closed). Wlasne logowanie panelu (haslo + TOTP) zostaje.
+# panelu (fail-closed). Wlasne logowanie panelu (haslo + TOTP) zostaje jako
+# droga awaryjna (port-forward). Ten sam przelacznik ustawia w podzie
+# SSO_NAGLOWKI=1: panel zaklada sesje z `Remote-User` bez hasla i TOTP, dla
+# ISTNIEJACEGO konta o tym loginie (src/kidwatch/panel_sso.py).
 sso:
   enabled: false
   # Middleware'y z renacode-infra, W TEJ KOLEJNOSCI: najpierw usuniecie

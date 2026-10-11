@@ -17,6 +17,10 @@ PRZEPLYW. Konto bez TOTP: haslo -> sesja. Konto z TOTP: haslo -> krotkotrwaly
 bilet, ktory sam niczego nie otwiera -> /api/auth/mfa z kodem -> sesja.
 Dokladnie jak w Traderze.
 
+SSO (panel_sso.py): przy SSO_NAGLOWKI=1 sesja `sso` powstaje z naglowka
+Authelii dla istniejacego konta, bez hasla i TOTP (`sso_login`). Haslo i TOTP
+zostaja jako droga awaryjna i jako potwierdzenie czynnosci wrazliwych.
+
 DLACZEGO OSOBNA BAZA, A NIE TABELE W kidwatch.db
 
 Panel czyta kidwatch.db w trybie `mode=ro`, a petla glowna jest jej jedynym
@@ -176,7 +180,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at REAL NOT NULL,
     expires_at REAL NOT NULL,
     ip         TEXT,
-    user_agent TEXT
+    user_agent TEXT,
+    -- 'sso' = sesja z naglowka Authelii (panel_sso.py), NULL = haslo (+ TOTP).
+    kind       TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_sessions_user ON sessions (user_id);
 CREATE INDEX IF NOT EXISTS ix_sessions_expires ON sessions (expires_at);
@@ -207,6 +213,8 @@ class Session:
     token_hash: str
     csrf: str
     expires_at: float
+    #: "sso" — sesja z naglowka Authelii (bez hasla i TOTP panelu), "haslo" — zwykla.
+    kind: str = "haslo"
 
 
 # ======================================================================= hasla
@@ -399,6 +407,11 @@ class PanelAuth:
         new = not Path(self.path).exists()
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            # Baza sprzed SSO: kolumna `kind` dochodzi bez migracji danych —
+            # stare sesje (NULL) to sesje z hasla.
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(sessions)")}
+            if "kind" not in cols:
+                conn.execute("ALTER TABLE sessions ADD COLUMN kind TEXT")
         if new:
             # Hashe hasel i sesji nie sa dla innych uzytkownikow systemu.
             with contextlib.suppress(OSError):
@@ -970,6 +983,19 @@ class PanelAuth:
             "WHERE id = ?",
             (now, row["user_id"]),
         )
+        token, session = self._new_session(conn, row, now, ip, user_agent, "haslo")
+        log.info("panel: zalogowano %r z %s", row["login"], ip or "?")
+        return token, session
+
+    def _new_session(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        now: float,
+        ip: str | None,
+        user_agent: str | None,
+        kind: str,
+    ) -> tuple[str, Session]:
         token = secrets.token_urlsafe(32)
         session = Session(
             login=row["login"],
@@ -977,16 +1003,47 @@ class PanelAuth:
             token_hash=token_hash(token),
             csrf=secrets.token_urlsafe(32),
             expires_at=now + self.session_seconds,
+            kind=kind,
         )
         conn.execute(
             "INSERT INTO sessions (token_hash, user_id, csrf, created_at, expires_at, "
-            "ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "ip, user_agent, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (session.token_hash, row["user_id"], session.csrf, now, session.expires_at,
-             ip, (user_agent or "")[:300]),
+             ip, (user_agent or "")[:300], None if kind == "haslo" else kind),
         )
         # Sprzatanie przy okazji: osobny watek na to byloby przesada.
         conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
-        log.info("panel: zalogowano %r z %s", row["login"], ip or "?")
+        return token, session
+
+    def sso_login(
+        self, login: str, *, ip: str | None = None, user_agent: str | None = None
+    ) -> tuple[str, Session]:
+        """Sesja z naglowka Authelii (panel_sso.py) — BEZ hasla i bez TOTP
+        panelu: 2FA wymusila Authelia, zanim Traefik przepuscil zadanie.
+
+        Konto musi istniec (403, nie nowe puste konto). Blokada po nieudanych
+        haslach NIE obowiazuje: liczy zgadywanie hasla panelu, a tu hasla nie
+        ma — inaczej kazdy, kto zna login, wylaczalby wlascicielowi SSO,
+        wpisujac zle hasla na ekranie awaryjnym. Licznik zostaje nietkniety
+        z tego samego powodu w druga strone: sesja SSO nie zdejmuje blokady
+        z logowania haslem."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id AS user_id, login FROM users WHERE login = ?", (login,)
+            ).fetchone()
+            if row is None:
+                raise AuthError(
+                    403, f"Brak konta w Kidwatchu dla użytkownika „{login}” — "
+                    "poproś administratora."
+                )
+            now = self.clock()
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?",
+                         (now, row["user_id"]))
+            token, session = self._new_session(conn, row, now, ip, user_agent, "sso")
+            conn.execute("COMMIT")
+        # Audyt: login i adres, nic wiecej (bez e-maila, grup ani tokenu).
+        log.info("panel: logowanie SSO %r z %s", row["login"], ip or "?")
         return token, session
 
     # ------------------------------------------------------------- sesje
@@ -995,7 +1052,7 @@ class PanelAuth:
             return None
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT s.token_hash, s.csrf, s.expires_at, u.id, u.login "
+                "SELECT s.token_hash, s.csrf, s.expires_at, s.kind, u.id, u.login "
                 "FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?",
                 (token_hash(token),),
             ).fetchone()
@@ -1007,6 +1064,7 @@ class PanelAuth:
             token_hash=row["token_hash"],
             csrf=row["csrf"],
             expires_at=row["expires_at"],
+            kind=row["kind"] or "haslo",
         )
 
     def account(self, session: Session) -> dict:

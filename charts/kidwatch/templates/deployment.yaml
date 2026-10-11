@@ -83,6 +83,17 @@ spec:
                   name: {{ .Values.mdmAdminSecret }}
                   key: token
                   optional: true
+            {{- if and .Values.sso.enabled .Values.panel.enabled .Values.ingress.enabled }}
+            # Zaufanie do naglowkow Authelii (Remote-User) — TEN SAM przelacznik,
+            # ktory dopina middleware'y w ingress.yaml. Bez middleware'u Traefik
+            # przepuszcza Remote-User od klienta, wiec flaga nigdy bez niego
+            # (src/kidwatch/panel_sso.py, renacode-infra docs/sso-tozsamosc.md).
+            - name: SSO_NAGLOWKI
+              value: "1"
+            # Powrot z portalu po wylogowaniu.
+            - name: SSO_ADRES
+              value: "https://{{ .Values.ingress.host }}/"
+            {{- end }}
           envFrom:
             - secretRef:
                 name: {{ .Values.secretName }}
