@@ -15,6 +15,9 @@ POST /api/game (czas gry) i POST /api/tv/pause|resume (pauza monitoringu TV),
 ktore NIE pisza do kidwatch.db, tylko dopisuja zadanie do kolejki
 w panel-auth.db (gametime.py, tvpause.py). Konta i sesje leza
 w osobnej bazie — panel_auth.py tlumaczy, dlaczego nie w kidwatch.db.
+Konto z rola `podglad` (panel_auth.ROLES) tylko oglada: czas gry, aplikacja
+TV, WhatsApp/powiadomienia i MDM (takze odczyt) dostaja 403 — _owner().
+Zostaje mu wlasne haslo i 2FA oraz pauza telewizora.
 Statyczny front jest dostepny bez sesji: to sam kod ekranu logowania, zadnych
 danych.
 """
@@ -48,6 +51,7 @@ from .mdm import MdmApi, MdmError, build_api
 from .panel_auth import (
     CSRF_COOKIE,
     CSRF_HEADER,
+    ROLE_OWNER,
     SESSION_COOKIE,
     AuthError,
     PanelAuth,
@@ -1017,6 +1021,18 @@ def make_handler(
             self._sso_cookies = session_cookies(token, session, int(auth.session_seconds))
             return session
 
+        def _owner(self, session: Session) -> Session:
+            """Czynnosc tylko dla roli `wlasciciel`. Rola z bazy panelu (sesja),
+            nigdy z `Remote-Groups`."""
+            if session.rola != ROLE_OWNER:
+                log.warning("panel: %r (rola %s) bez uprawnien do %s %s",
+                            session.login, session.rola, self.command,
+                            urlparse(self.path).path)
+                raise AuthError(
+                    403, "To konto ma tylko podgląd — ta czynność wymaga konta właściciela."
+                )
+            return session
+
         def _deny(self, exc: AuthError) -> None:
             payload = {"error": exc.message}
             if self._via_sso:
@@ -1161,7 +1177,7 @@ def make_handler(
         def _game_request(self) -> None:
             """Zadanie czasu gry. NIE wykonuje go — dopisuje do kolejki,
             ktora odbiera petla glowna (jedyny pisarz kidwatch.db)."""
-            session = self._authed()
+            session = self._owner(self._authed())
             if queries.requests is None:
                 raise AuthError(404, "Czas gry jest wyłączony w konfiguracji")
             data = self._read_json()
@@ -1221,7 +1237,7 @@ def make_handler(
             i parowanie kodem z jej ekranu. Wykonuje petla serwisu."""
             from .sources import tv_app  # noqa: PLC0415
 
-            session = self._authed()
+            session = self._owner(self._authed())
             app = tv_app.AKTYWNA
             if app is None:
                 raise AuthError(404, "Aplikacja TV jest wyłączona w konfiguracji")
@@ -1255,7 +1271,7 @@ def make_handler(
         def _profile_post(self, path: str) -> None:
             """Akcje WhatsAppa. Sesja + CSRF jak kazda zmiana stanu; bramke
             wola serwer swoim kluczem — przegladarka go nie zna."""
-            session = self._authed()
+            session = self._owner(self._authed())
             data = self._read_json()
             b = self._bramka()
             try:
@@ -1361,7 +1377,7 @@ def make_handler(
                     self._json(_mdm_status(exc.status), {"error": str(exc)})
 
         def _mdm_post(self, path: str) -> None:
-            session = self._authed()
+            session = self._owner(self._authed())
             data = self._read_json()
             udid = data.get("udid")
             if udid is not None and (
@@ -1461,6 +1477,9 @@ def make_handler(
                     # sso: sesja z Authelii; logout_url: "Wyloguj" ma przejsc
                     # przez portal, inaczej nastepne zadanie zalogowaloby od nowa.
                     "sso": session.kind == "sso",
+                    # Front chowa przyciski, ktorych rola nie moze uzyc; serwer
+                    # i tak odmawia (403) niezaleznie od frontu.
+                    "rola": session.rola,
                     "logout_url": sso.logout_url if self._via_sso else None,
                     **auth.account(session),
                 })
@@ -1468,6 +1487,15 @@ def make_handler(
             if path == "/api/meta":
                 self._json(200, queries.meta())
                 return
+            if (path.startswith(("/api/profile/", "/api/mdm/")) or path == "/api/mdm"
+                    or path == "/api/tv/aplikacja"):
+                # Numery WhatsAppa, UDID-y i zdarzenia MDM, stan aplikacji TV —
+                # to ekrany zarzadzania, nie podgladu.
+                try:
+                    self._owner(session)
+                except AuthError as exc:
+                    self._json(exc.status, {"error": exc.message})
+                    return
             if path.startswith("/api/profile/"):
                 try:
                     self._profile_get(path, session)

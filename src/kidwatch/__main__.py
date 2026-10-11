@@ -993,14 +993,14 @@ async def cmd_user_add(args) -> int:
     cfg = Config.load(args.config)
     password, generated = _new_password(args)
     try:
-        _auth(cfg).add_user(args.login, password)
+        _auth(cfg).add_user(args.login, password, args.rola)
     except UserExists:
         print(f"konto {args.login!r} juz istnieje — uzyj user-reset", file=sys.stderr)
         return 1
     except ValueError as exc:
         print(f"odrzucone: {exc}", file=sys.stderr)
         return 1
-    print(f"zalozono konto panelu {args.login!r} ({cfg.panel_auth_path})")
+    print(f"zalozono konto panelu {args.login!r}, rola {args.rola} ({cfg.panel_auth_path})")
     from .panel_sso import login_ok  # noqa: PLC0415
 
     if not login_ok(args.login.strip()):
@@ -1062,6 +1062,19 @@ async def cmd_user_del(args) -> int:
     return 0
 
 
+async def cmd_user_rola(args) -> int:
+    from .panel_auth import UnknownUser  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    try:
+        n = _auth(cfg).set_role(args.login, args.rola)
+    except UnknownUser:
+        print(f"nie ma konta {args.login!r}", file=sys.stderr)
+        return 1
+    print(f"konto {args.login!r}: rola {args.rola}, wylogowano sesji: {n}")
+    return 0
+
+
 async def cmd_user_list(args) -> int:
     cfg = Config.load(args.config)
     users = _auth(cfg).list_users()
@@ -1082,12 +1095,15 @@ async def cmd_user_list(args) -> int:
             f"2FA wlaczone, kodow zapasowych: {u['backup_codes_left']}"
             if u["totp"] else "bez 2FA"
         )
-        print(f"{u['login']:24} ostatnie logowanie: {last}, {totp}, "
+        print(f"{u['login']:24} rola: {u['rola']}, ostatnie logowanie: {last}, {totp}, "
               f"nieudane proby: {u['failed_logins']}{lock}")
     return 0
 
 
 # ========================================================================= main
+PANEL_ROLES = ("wlasciciel", "podglad")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kidwatch", description=__doc__)
     parser.add_argument("--config", default=os.environ.get("KIDWATCH_CONFIG", "config.yaml"))
@@ -1176,6 +1192,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="zamiast hasla zdejmij drugi skladnik (zgubiony telefon, zmiana "
         "PANEL_TOTP_KEY); haslo zostaje, 2FA mozna wlaczyc od nowa w panelu",
     )
+    # Rola z bazy panelu: `podglad` tylko oglada. Lista jak panel_auth.ROLES —
+    # przepisana, bo import panel_auth (argon2, cryptography) przy kazdym
+    # poleceniu CLI bylby zbedny; zgodnosc pilnuje test.
+    users["user-add"].add_argument(
+        "--rola", choices=PANEL_ROLES, default=PANEL_ROLES[0],
+        help="wlasciciel (domyslnie) albo podglad: tylko ogladanie, bez MDM, czasu gry, "
+        "WhatsAppa i aplikacji TV",
+    )
+    user_rola = sub.add_parser("user-rola", help="zmien role konta (wylogowuje jego sesje)")
+    user_rola.add_argument("login")
+    user_rola.add_argument("rola", choices=PANEL_ROLES)
     user_del = sub.add_parser("user-del", help="usun konto panelu WWW razem z sesjami")
     user_del.add_argument("login")
     sub.add_parser("user-list", help="konta panelu WWW, ostatnie logowanie i blokady")
@@ -1205,6 +1232,7 @@ def main(argv: list[str] | None = None) -> int:
         "user-add": cmd_user_add,
         "user-reset": cmd_user_reset,
         "user-del": cmd_user_del,
+        "user-rola": cmd_user_rola,
         "user-list": cmd_user_list,
     }
     try:

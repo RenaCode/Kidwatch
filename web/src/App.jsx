@@ -13,6 +13,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import { TvPauseBanner } from './components/TvPause';
 import { get, post, qs, useApi, setSessionExpiredHandler, setSsoMode } from './utils/api';
 import { signOutLabel, signOutTarget, ssoDenial } from './utils/sso';
+import { can, isViewer, sectionsFor } from './utils/rola';
 import { localToday } from './utils/format';
 import { isCriticalNote } from './utils/mdm';
 
@@ -164,7 +165,7 @@ function AccountMenu({ user, onProfile, onSignOut }) {
         </span>
         <span className="account-id">
           <strong>{user?.login}</strong>
-          <span>{user?.role === 'admin' ? 'administrator' : (user?.role || '')}</span>
+          <span>{isViewer(user) ? 'podgląd' : ''}</span>
         </span>
         <Icon name="chevron" size={16} className="account-chev" />
       </button>
@@ -223,16 +224,16 @@ function ChildTabs({ items, child, onPick, className = '' }) {
 }
 
 // Dolny pasek telefonu: cztery sekcje i "Wiecej" (reszta + Ustawienia).
-function BottomNav({ section, profile, go, openProfile }) {
+function BottomNav({ sections, section, profile, go, openProfile }) {
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
   const ref = useDismiss(open, close);
-  const rest = SECTIONS.filter((s) => !BOTTOM.includes(s.key));
+  const rest = sections.filter((s) => !BOTTOM.includes(s.key));
   const restActive = profile || rest.some((s) => s.key === section);
   return (
     <nav className="bottom-nav" aria-label="Sekcje" ref={ref}>
       {BOTTOM.map((k) => {
-        const s = SECTIONS.find((x) => x.key === k);
+        const s = sections.find((x) => x.key === k);
         const active = !profile && section === k;
         return (
           <button key={k} className={`bottom-item ${active ? 'active' : ''}`}
@@ -306,7 +307,9 @@ function Panel({ user, onSignOut, onUserChanged }) {
     critical: notesToday.data.items.some(isCriticalNote),
   } : null;
 
-  const current = SECTIONS.find((s) => s.key === section) || SECTIONS[0];
+  // Rola `podglad` nie widzi sekcji zarzadzania (MDM) - serwer i tak odmawia.
+  const sections = sectionsFor(SECTIONS, user);
+  const current = sections.find((s) => s.key === section) || sections[0];
   const Active = current.Component;
   const children = activeMeta.children || [];
   const showChildren = children.length > 1 || meta.data?.devices.some((d) => d.child == null);
@@ -325,7 +328,7 @@ function Panel({ user, onSignOut, onUserChanged }) {
         </div>
         {showChildren && <ChildTabs items={childItems} child={child} onPick={setChild} className="vertical" />}
         <nav className="side-nav" aria-label="Sekcje">
-          {SECTIONS.map((s) => {
+          {sections.map((s) => {
             const active = !profile && section === s.key;
             return (
               <button key={s.key} className={`side-item ${active ? 'active' : ''}`}
@@ -402,6 +405,7 @@ function Panel({ user, onSignOut, onUserChanged }) {
               <Active child={child} meta={meta.data} devices={devices.data || []} />
             ) : (
               <Dashboard child={child} devices={devices.data} onDevicesChanged={devices.reload}
+                         canGame={can(user, 'game')}
                          tvPause={tvPause.data} onTvPauseChanged={tvPauseChanged}
                          notes={notes} onOpenSection={go} onOpenSettings={openProfile} />
             )}
@@ -414,7 +418,7 @@ function Panel({ user, onSignOut, onUserChanged }) {
         </footer>
       </div>
 
-      <BottomNav section={section} profile={profile} go={go} openProfile={openProfile} />
+      <BottomNav sections={sections} section={section} profile={profile} go={go} openProfile={openProfile} />
     </div>
   );
 }

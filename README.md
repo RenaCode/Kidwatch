@@ -382,7 +382,8 @@ Panel accounts are managed from the CLI (in the cluster via
 `kubectl exec deploy/kidwatch -c kidwatch -- python -m kidwatch …`):
 
 ```bash
-python -m kidwatch user-add <login> [--password-stdin]    # random password printed ONCE
+python -m kidwatch user-add <login> [--password-stdin] [--rola podglad]  # random password printed ONCE
+python -m kidwatch user-rola <login> wlasciciel|podglad   # change role, log the account out
 python -m kidwatch user-reset <login> [--password-stdin]  # new password, unlock, log out everywhere
 python -m kidwatch user-reset <login> --totp              # remove 2FA (lost phone)
 python -m kidwatch user-del <login>
@@ -404,16 +405,16 @@ renacode-infra) in front of the panel **and** the same switch sets
 - `Remote-Groups` must contain `wlasciciel` or `rodzina` (chart
   `sso.grupy` → `SSO_GRUPY`; must match the Authelia rule for this host).
   The administrative Authelia account (`admins`) is deliberately not
-  admitted. The panel has **no roles**: groups only gate entry, every admitted
-  account can see and do the same things (see "Roles" below).
+  admitted. Groups only gate entry; what an account may do comes from its
+  panel role (see "Roles" below).
 - The session is marked `sso` and is created **without** the panel password
   or panel TOTP (Authelia already enforced 2FA). Account lockout from wrong
   panel passwords does not block SSO, and SSO does not lift it.
 - Sensitive actions still need the panel password or panel 2FA code exactly
   as before (password change, disabling 2FA, WhatsApp sender/recipients, bot
   QR) — an SSO session is not a fresh confirmation. MDM commands, game time
-  and TV pause need a session + CSRF, as with a password session; an SSO
-  session always went through 2FA, so it is never weaker than a local one.
+  and TV pause need a session + CSRF (and the `wlasciciel` role, except TV
+  pause), as with a password session.
 - "Wyloguj (SSO)" deletes the panel session and goes to
   `https://auth.renacode.com/logout?rd=https://<host>/`, which ends the
   Authelia session for all RenaCode apps.
@@ -426,24 +427,27 @@ renacode-infra) in front of the panel **and** the same switch sets
 Adding a family member (two steps, same lowercase login in both places):
 
 1. Authelia account in group `rodzina` (renacode-infra, `authelia-uzytkownicy`).
-2. Panel account:
-   `kubectl -n default exec -it deploy/kidwatch -c kidwatch -- python -m kidwatch user-add <login>`
-   (prints a random password once — keep it: it is the break-glass login and
-   the confirmation for sensitive actions; or pipe your own with
-   `--password-stdin` and `exec -i`). `user-add` warns when the login could
-   never match `Remote-User`.
+2. Panel account with the view-only role, password from stdin:
+   ```bash
+   read -rs HASLO && printf '%s\n' "$HASLO" | kubectl -n default exec -i deploy/kidwatch \
+     -c kidwatch -- python -m kidwatch user-add <login> --rola podglad --password-stdin; unset HASLO
+   ```
+   The password is the break-glass login and the confirmation for her own
+   password/2FA changes. `user-add` warns when the login could never match
+   `Remote-User`.
 
-**Roles.** There are none today: a `rodzina` account can do everything the
-owner can — send MDM commands (lock/restart iPads, enrollment, iOS update
-policy), change game time, pause TV monitoring, install/pair the TV app,
-change the shared WhatsApp sender/recipients (those still need *her* panel
-password or 2FA code). Proposed minimal role `podglad` (not implemented):
-`users.role` (`wlasciciel` | `podglad`, default `wlasciciel` for existing
-accounts), set by `user-add --role podglad`; a `podglad` session gets every
-GET except `/api/profile/whatsapp/qr`, and 403 on all state-changing POSTs
-except logout and its own password/2FA; the front hides the action buttons.
-The role would come from the panel database, not from `Remote-Groups`
-(contract v1).
+**Roles** (from the panel database, never from `Remote-Groups`):
+
+| | `wlasciciel` (default; all accounts that existed before roles) | `podglad` |
+|---|---|---|
+| Pulpit, Ekrany, Użycie, Trendy, Dzień, Powiadomienia, CSV export | yes | yes |
+| Own password and 2FA, log out | yes | yes |
+| TV monitoring pause / resume | yes | yes — an action for an adult watching TV themselves; the banner shows who paused it, and it is time-limited |
+| Game time (block/allow/bonus) | yes | no (403, buttons hidden) |
+| MDM (read and commands), Kidwatch TV app, WhatsApp/notification channels and bot QR | yes | no (403, section/buttons hidden) |
+
+`python -m kidwatch user-rola <login> wlasciciel|podglad` changes a role and
+logs that account out; `user-list` shows roles.
 
 ### Profile: password and WhatsApp
 

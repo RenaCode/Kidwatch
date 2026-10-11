@@ -130,7 +130,9 @@ CREATE TABLE IF NOT EXISTS users (
     totp_confirmed_at REAL,
     -- Ostatni zaakceptowany krok czasowy (RFC 6238 §5.2): kod z krokiem nie
     -- wiekszym jest odrzucany, choc sam w sobie poprawny.
-    totp_last_step   INTEGER
+    totp_last_step   INTEGER,
+    -- 'wlasciciel' = wszystko, 'podglad' = tylko ogladanie (ROLE nizej).
+    rola             TEXT NOT NULL DEFAULT 'wlasciciel'
 );
 
 -- Nieudane hasla przy logowaniu, per (login, adres). Per adres, nie per
@@ -189,6 +191,14 @@ CREATE INDEX IF NOT EXISTS ix_sessions_expires ON sessions (expires_at);
 """
 
 
+#: Rola konta panelu, z BAZY (nigdy z naglowka SSO). `podglad` widzi historie,
+#: ekrany, uzycie i powiadomienia, ale nie zmienia niczego poza wlasnym
+#: kontem (haslo, 2FA) i pauza telewizora — panel.py, _wlasciciel().
+ROLE_OWNER = "wlasciciel"
+ROLE_VIEWER = "podglad"
+ROLES = (ROLE_OWNER, ROLE_VIEWER)
+
+
 class AuthError(Exception):
     """Odmowa z kodem HTTP i komunikatem dla uzytkownika."""
 
@@ -215,6 +225,7 @@ class Session:
     expires_at: float
     #: "sso" — sesja z naglowka Authelii (bez hasla i TOTP panelu), "haslo" — zwykla.
     kind: str = "haslo"
+    rola: str = ROLE_OWNER
 
 
 # ======================================================================= hasla
@@ -412,6 +423,13 @@ class PanelAuth:
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(sessions)")}
             if "kind" not in cols:
                 conn.execute("ALTER TABLE sessions ADD COLUMN kind TEXT")
+            # Baza sprzed rol: istniejace konta to wlasciciele — nikt nie traci
+            # uprawnien, ktore mial.
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+            if "rola" not in cols:
+                conn.execute(
+                    "ALTER TABLE users ADD COLUMN rola TEXT NOT NULL DEFAULT 'wlasciciel'"
+                )
         if new:
             # Hashe hasel i sesji nie sa dla innych uzytkownikow systemu.
             with contextlib.suppress(OSError):
@@ -441,16 +459,18 @@ class PanelAuth:
         return self.box
 
     # ------------------------------------------------------------- konta (CLI)
-    def add_user(self, login: str, password: str) -> None:
+    def add_user(self, login: str, password: str, rola: str = ROLE_OWNER) -> None:
         login = login.strip()
         if not login:
             raise ValueError("pusty login")
+        _check_role(rola)
         check_password_policy(password)
         with self._conn() as conn:
             try:
                 conn.execute(
-                    "INSERT INTO users (login, password_hash, created_at) VALUES (?, ?, ?)",
-                    (login, hash_password(password), self.clock()),
+                    "INSERT INTO users (login, password_hash, created_at, rola) "
+                    "VALUES (?, ?, ?, ?)",
+                    (login, hash_password(password), self.clock(), rola),
                 )
             except sqlite3.IntegrityError as exc:
                 raise UserExists(login) from exc
@@ -461,6 +481,19 @@ class PanelAuth:
         if row is None:
             raise UnknownUser(login)
         return row["id"]
+
+    def set_role(self, login: str, rola: str) -> int:
+        """Zmiana roli z CLI. Sesje konta sa uniewazniane: rola jest czytana
+        przy kazdym zadaniu, ale front rysuje przyciski z /api/auth/me i po
+        odebraniu uprawnien mialby je na ekranie do odswiezenia."""
+        _check_role(rola)
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            uid = self._user_id(conn, login)
+            conn.execute("UPDATE users SET rola = ? WHERE id = ?", (rola, uid))
+            n = self._revoke_all(conn, uid)
+            conn.execute("COMMIT")
+        return n
 
     def reset_user(self, login: str, password: str) -> int:
         """Nowe haslo, zdjeta blokada, WSZYSTKIE sesje i bilety uniewaznione.
@@ -521,7 +554,7 @@ class PanelAuth:
     def list_users(self) -> list[dict]:
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT u.login, u.failed_logins, u.locked_until, u.created_at, "
+                "SELECT u.login, u.rola, u.failed_logins, u.locked_until, u.created_at, "
                 "u.last_login_at, u.totp_confirmed_at IS NOT NULL AS totp, "
                 "(SELECT COUNT(*) FROM backup_codes b WHERE b.user_id = u.id "
                 " AND b.used_at IS NULL) AS backup_codes_left "
@@ -997,6 +1030,9 @@ class PanelAuth:
         kind: str,
     ) -> tuple[str, Session]:
         token = secrets.token_urlsafe(32)
+        rola = conn.execute(
+            "SELECT rola FROM users WHERE id = ?", (row["user_id"],)
+        ).fetchone()["rola"]
         session = Session(
             login=row["login"],
             user_id=row["user_id"],
@@ -1004,6 +1040,7 @@ class PanelAuth:
             csrf=secrets.token_urlsafe(32),
             expires_at=now + self.session_seconds,
             kind=kind,
+            rola=rola,
         )
         conn.execute(
             "INSERT INTO sessions (token_hash, user_id, csrf, created_at, expires_at, "
@@ -1052,7 +1089,7 @@ class PanelAuth:
             return None
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT s.token_hash, s.csrf, s.expires_at, s.kind, u.id, u.login "
+                "SELECT s.token_hash, s.csrf, s.expires_at, s.kind, u.id, u.login, u.rola "
                 "FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?",
                 (token_hash(token),),
             ).fetchone()
@@ -1065,6 +1102,7 @@ class PanelAuth:
             csrf=row["csrf"],
             expires_at=row["expires_at"],
             kind=row["kind"] or "haslo",
+            rola=row["rola"],
         )
 
     def account(self, session: Session) -> dict:
@@ -1088,6 +1126,11 @@ class PanelAuth:
             self._reauth_at.pop(session.token_hash, None)
         with self._conn() as conn:
             conn.execute("DELETE FROM sessions WHERE token_hash = ?", (session.token_hash,))
+
+
+def _check_role(rola: str) -> None:
+    if rola not in ROLES:
+        raise ValueError(f"nieznana rola {rola!r} (dozwolone: {', '.join(ROLES)})")
 
 
 def csrf_ok(session: Session, header: str | None) -> bool:
