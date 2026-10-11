@@ -30,13 +30,14 @@ pusty zbior. Wyjatek administratora instalacji (§2.3: flaga + grupa SSO
 `admins` + wpis w `audyt`) zalezy od sesji i dochodzi w panelu, nad ta
 funkcja.
 
-ZRODLO PRAWDY O ROLACH W DOMU 1. Do konca okresu wycofania (§6 p. 7)
-`users.rola` i `user_uprawnienia` sa lustrem roli w Domu 1, zeby obraz
-sprzed domow dzialal na tej samej bazie. W E1 panel liczy uprawnienia jak
-dotad (z `users`), a kazda zmiana konta przepisuje rola do `czlonkostwa`
+ZRODLO PRAWDY O ROLACH W DOMU 1. Do E4 (§6 p. 7) `users.rola`
+i `user_uprawnienia` sa lustrem roli w Domu 1, zeby obraz sprzed domow
+dzialal na tej samej bazie. W E1 panel liczy uprawnienia jak dotad
+(z `users`), a kazda zmiana konta przepisuje rola do `czlonkostwa`
 (`uzgodnij_konto_conn`). Start uzgadnia oba miejsca: role zmienione przez
-stary obraz po wycofaniu wracaja do `czlonkostwa`. Etap, ktory przelaczy
-odczyt na `czlonkostwa`, musi odwrocic kierunek uzgadniania przy starcie.
+stary obraz po wycofaniu wracaja do `czlonkostwa`. E3a, przelaczajac
+odczyt na `czlonkostwa`, odwraca kierunek uzgadniania przy starcie;
+lustro w `users` usuwa E4.
 """
 
 from __future__ import annotations

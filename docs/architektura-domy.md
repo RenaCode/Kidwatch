@@ -609,7 +609,10 @@ sekund), bez utraty historii, z możliwością cofnięcia obrazu w każdym etapi
 7. **Wycofanie obrazu**: każdy etap dodaje tylko tabele i kolumny
    z wartościami domyślnymi; stary obraz ich nie czyta. `users.rola`
    i `user_uprawnienia` są aktualizowane równolegle (lustro Domu 1) aż do E4,
-   więc cofnięcie do obrazu sprzed E1 zachowuje role.
+   więc cofnięcie do obrazu sprzed E1 zachowuje role. W E1 prawdą jest
+   `users`, a start uzgadnia z niego `czlonkostwa(dom 1)`; E3a przełącza
+   odczyt na `czlonkostwa` i odwraca kierunek uzgadniania przy starcie;
+   lustro `users.rola` usuwa E4 (§7 E1, „Ustalenia z realizacji”).
 8. **Weryfikacja bez przerwy**: przed i po każdym etapie — liczba
    powiadomień i sesji z ostatnich 48 h w panelu (z `notifications`,
    `sessions`), `tests/test_e2e_replay.py` z `fixtures/day.jsonl` daje

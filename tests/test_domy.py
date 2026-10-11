@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
 import sqlite3
 import stat
 from datetime import UTC, datetime, timedelta
@@ -607,7 +608,7 @@ async def test_dzien_przez_srodowisko_domu_1_daje_te_same_powiadomienia(tmp_path
 
 
 def test_run_zaklada_dom_1_przy_starcie(tmp_path, monkeypatch):
-    """`run` przez nadzorce: Dom 1 w panel-auth.db, koniec zadania = kod 1."""
+    """`run` przez nadzorce: Dom 1 w panel-auth.db (0600), koniec zadania = kod 1."""
 
     class Puste:
         name = "atrapa"
@@ -622,10 +623,39 @@ def test_run_zaklada_dom_1_przy_starcie(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "build_source", lambda cfg, store: Puste())
     monkeypatch.setenv("KIDWATCH_HEARTBEAT", str(tmp_path / "hb"))
     cfg_path = _konfiguracja_dnia(tmp_path)
-    assert cli.main(["--config", str(cfg_path), "run"]) == 1
+    stara = os.umask(0o022)
+    try:
+        assert cli.main(["--config", str(cfg_path), "run"]) == 1
+    finally:
+        os.umask(stara)
+    assert stat.S_IMODE((tmp_path / "panel-auth.db").stat().st_mode) == 0o600
     [dom] = RejestrDomow(tmp_path / "panel-auth.db").domy()
     assert (dom.id, dom.zrodlo_konfiguracji) == (1, "yaml")
     assert (tmp_path / "kidwatch.db").exists()  # baza Domu 1 = dotychczasowa
+
+
+@pytest.mark.parametrize("pierwszy", ["migruj", "domy"])
+def test_rejestr_zaklada_panel_auth_z_prawami_0600(tmp_path, pierwszy):
+    """Swieza instalacja: `run` (migruj) i CLI `domy` zakladaja panel-auth.db
+    jako pierwsze, wiec PanelAuth/TvPauseRequests widza istniejacy plik i nie
+    robia chmod — prawa musi ustawic rejestr (hashe hasel, TOTP, sesje)."""
+    path = tmp_path / "panel-auth.db"
+    stara = os.umask(0o022)
+    try:
+        getattr(RejestrDomow(path), pierwszy)()
+        TvPauseRequests(path)
+        PanelAuth(path)
+    finally:
+        os.umask(stara)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_rejestr_nie_zmienia_praw_istniejacej_bazy(tmp_path):
+    path = tmp_path / "panel-auth.db"
+    path.touch(mode=0o640)
+    path.chmod(0o640)
+    RejestrDomow(path).migruj()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
 
 
 async def test_nadzorca_stop_i_zamkniecie(tmp_path):
