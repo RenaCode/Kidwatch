@@ -10,6 +10,7 @@ import asyncio
 import inspect
 import json
 import sqlite3
+import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -242,6 +243,15 @@ def _start(path: Path):
     GameRequests(path)
     TvPauseRequests(path)
     return raport
+
+
+def test_baza_panelu_zalozona_przez_migracje_tylko_dla_wlasciciela(tmp_path):
+    """`run` i `domy` migruja, zanim PanelAuth czy kolejki zobacza plik. Plik
+    z hashami hasel nie moze dostac praw z umask (0644), jak przed domami."""
+    path = tmp_path / "panel-auth.db"
+    RejestrDomow(path).migruj()
+    PanelAuth(path)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_migracja_idempotentna(tmp_path):

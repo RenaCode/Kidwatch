@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import sqlite3
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Iterator, Sequence
@@ -458,7 +459,13 @@ class RejestrDomow:
 
     @contextlib.contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
+        new = not Path(self.path).exists()
         conn = sqlite3.connect(self.path, timeout=5, isolation_level=None)
+        if new:
+            # `run` i `domy` zakladaja plik przed PanelAuth, a ten nadaje 0600
+            # tylko nowemu plikowi — hashe hasel nie dla innych uzytkownikow.
+            with contextlib.suppress(OSError):
+                os.chmod(self.path, 0o600)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         try:
