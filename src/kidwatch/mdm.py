@@ -243,7 +243,11 @@ class MdmWatcher:
         server = data["health"].get("instance")
         if server and server != self.store.get_meta(INSTANCE_KEY):
             self.store.set_meta(INSTANCE_KEY, server)
-        return out
+        # Klucze z data ("raz na dobe") nic nie dawaly bez zapisu: mdm_loop
+        # wysyla przez Outbox, ktory kluczy nie sprawdza, wiec stan trwajacy
+        # (iPad wylaczony, uzgadnianie stoi) dawal ten sam push co obieg,
+        # czyli co minute (audyt 2026-10-10, W1). Zapis tu, w watku petli.
+        return [n for n in out if self.store.mark_sent(n.dedup_key, now)]
 
     def poll(self, now: datetime) -> list[Notification]:
         """Wszystko w biezacym watku (CLI, testy)."""

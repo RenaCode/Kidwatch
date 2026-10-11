@@ -90,10 +90,17 @@ def test_silent_ipad_alarm_once_per_day(watcher):
     enroll(svc)
     now = datetime.now(UTC)
     svc.store.update_device(UDID, last_seen_at=iso(now - timedelta(hours=30)))
-    w.poll(now)  # pierwszy odczyt dziennika — ale cisza liczy sie od razu
+    # Pierwszy odczyt dziennika — ale cisza liczy sie od razu.
     notes = [n for n in w.poll(now) if "brak kontaktu" in n.title]
     assert len(notes) == 1
     assert notes[0].dedup_key.endswith(now.date().isoformat())
+    # Drugi obieg w tym samym stanie: nic (W1 — wczesniej co minute).
+    assert w.poll(now + timedelta(minutes=1)) == []
+    # Nastepna doba: znowu jeden.
+    later = w.poll(now + timedelta(days=1))
+    assert [n.title for n in later if "brak kontaktu" in n.title] == [
+        "iPad Dziecka: brak kontaktu z MDM od 54 h"
+    ]
 
 
 def test_certificate_warning_cadence(watcher):
@@ -368,6 +375,8 @@ def test_failing_reconcile_alarms_once_a_day(watcher):
     assert notes[0].title == "MDM: uzgadnianie nie dziala od 2 h"
     assert "zla polityka" in notes[0].text
     assert notes[0].dedup_key == f"mdm-reconcile:{now.date().isoformat()}"
+    # Drugi obieg tego samego dnia: cisza (W1).
+    assert [n for n in w.poll(now + timedelta(minutes=1)) if "uzgadnianie" in n.title] == []
 
 
 def test_never_reconciled_server_alarms_after_grace(watcher):
@@ -375,3 +384,43 @@ def test_never_reconciled_server_alarms_after_grace(watcher):
     now = datetime.now(UTC)
     svc.started_at = now - timedelta(hours=1)
     assert [n for n in w.poll(now) if "uzgadnianie" in n.title]
+
+
+# ======================================================= audyt 2026-10-10: W1
+class _Kanal:
+    name = "atrapa"
+
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, note):
+        self.sent.append(note.title)
+        return True
+
+    async def aclose(self):
+        pass
+
+
+async def test_time_alarms_once_per_day_through_loop_and_outbox(watcher):
+    """W1: alarmy czasowe (cisza iPada, uzgadnianie) mialy klucz „raz na dobe",
+    ale nikt go nie zapisywal — mdm_loop przez Outbox wysylal je co obieg
+    (5 obiegow = 10 pushy). Produkcyjna droga: petla, kolejka, kanal."""
+    from kidwatch.mdm import mdm_loop
+    from kidwatch.notifiers.base import Dispatcher, Outbox
+
+    svc, w, store = watcher
+    enroll(svc)
+    now = datetime.now(UTC)
+    svc.store.set_setting("last_reconcile_ok_at", iso(now - timedelta(hours=2)))
+    svc.store.update_device(UDID, last_seen_at=iso(now - timedelta(hours=30)))
+    kanal = _Kanal()
+    outbox = Outbox(Dispatcher([kanal], store=store), store)
+
+    async def oproznij(_):
+        await outbox.flush()
+
+    await mdm_loop(w, outbox, 60, sleep=oproznij, max_iterations=5)
+    assert sorted(kanal.sent) == [
+        "MDM: uzgadnianie nie dziala od 2 h",
+        "iPad Dziecka: brak kontaktu z MDM od 30 h",
+    ]
