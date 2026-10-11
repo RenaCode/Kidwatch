@@ -1,4 +1,26 @@
 {{- if .Values.ingress.enabled -}}
+# Naglowki odpowiedzi jak na pozostalych hostach (audyt infra 2026-10-10,
+# N-K3): HSTS i nosniff. Panel kidwatch ustawia je sam (src/kidwatch/panel.py),
+# serwer MDM nie, wiec robi to Traefik. To TYLKO naglowki odpowiedzi: zadnego
+# przekierowania ani zmiany sciezki, klient MDM w iOS ich nie czyta.
+#
+# sync-wave -1: Ingress odwolujacy sie do middleware'u, ktorego jeszcze nie ma,
+# Traefik karze 404 na CALYM routerze - a to bylby /mdm/ dla wszystkich iPadow.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "kidwatch-mdm.fullname" . }}-naglowki
+  labels:
+    {{- include "kidwatch-mdm.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  headers:
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    forceSTSHeader: true
+    contentTypeNosniff: true
+---
 # Na zewnatrz wychodzi tylko /mdm (checkin, connect, enroll). iPady mowia
 # wylacznie HTTPS — routera na `web` z przekierowaniem nie ma, bo iOS i tak
 # nie poszedlby za przekierowaniem w protokole MDM.
@@ -11,6 +33,7 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: {{ .Values.ingress.clusterIssuer }}
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Release.Namespace }}-{{ include "kidwatch-mdm.fullname" . }}-naglowki@kubernetescrd
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   tls:
