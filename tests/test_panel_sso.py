@@ -19,16 +19,18 @@ import pytest
 
 from conftest import make_config, panel_login
 from kidwatch import panel_auth
+from kidwatch.__main__ import main
 from kidwatch.config import PanelConfig, StoreConfig
 from kidwatch.panel import start_panel
 from kidwatch.panel_auth import AuthError, PanelAuth, box_from_env
 from kidwatch.panel_sso import SsoConfig, config_from_env
 from kidwatch.store import Store
+from test_panel_auth import CONFIG
 
 HASLO = "dlugie-haslo-testowe"
 ADRES = "https://kidwatch.renacode.com/"
 WYLOGUJ = "https://auth.renacode.com/logout?rd=https%3A%2F%2Fkidwatch.renacode.com%2F"
-OD_AUTHELII = {"Remote-User": "marcin", "Remote-Groups": "admins",
+OD_AUTHELII = {"Remote-User": "marcin", "Remote-Groups": "wlasciciel",
                "Remote-Email": "rodzic@example.com", "Remote-Name": "Marcin"}
 
 
@@ -114,7 +116,7 @@ def test_bez_flagi_naglowek_nie_zmienia_sesji_z_hasla(sso_off):
     c = panel_login(srv.server_address[1], "marcin", HASLO)
     status, headers, me = call(srv, "GET", "/api/auth/me",
                                headers={"Cookie": c, "Remote-User": "ania",
-                                        "Remote-Groups": "admins"})
+                                        "Remote-Groups": "wlasciciel"})
     assert status == 200
     assert me["login"] == "marcin"
     assert me["sso"] is False and me["logout_url"] is None
@@ -167,7 +169,8 @@ def test_nieznany_login_403_z_komunikatem_i_wylogowaniem(sso_on):
     assert not headers.get_all("Set-Cookie")
 
 
-@pytest.mark.parametrize("grupy", [None, "", "dietetyk", "admins-old,dietetyk"])
+@pytest.mark.parametrize("grupy", [None, "", "dietetyk", "admins", "admins,dietetyk",
+                                   "wlasciciel-old,rodzina2"])
 def test_brak_grupy_z_dostepem_403(sso_on, grupy):
     srv, _ = sso_on
     h = {"Remote-User": "marcin"}
@@ -180,7 +183,7 @@ def test_brak_grupy_z_dostepem_403(sso_on, grupy):
     assert not headers.get_all("Set-Cookie")
 
 
-def test_grupa_rodzina_wpuszcza_tak_samo_jak_admins(sso_on):
+def test_grupa_rodzina_wpuszcza_tak_samo_jak_wlasciciel(sso_on):
     """Panel nie ma rol: grupa decyduje o wejsciu, nie o uprawnieniach."""
     srv, _ = sso_on
     status, _, me = call(srv, "GET", "/api/auth/me",
@@ -188,10 +191,23 @@ def test_grupa_rodzina_wpuszcza_tak_samo_jak_admins(sso_on):
     assert status == 200 and me["login"] == "ania"
 
 
+def test_grupy_z_SSO_GRUPY(tmp_path, monkeypatch):
+    monkeypatch.setenv("SSO_GRUPY", " admins , ")
+    srv, _, _ = uruchom(tmp_path, monkeypatch, sso=True)
+    try:
+        ok = call(srv, "GET", "/api/auth/me",
+                  headers={"Remote-User": "marcin", "Remote-Groups": "admins"})
+        nie = call(srv, "GET", "/api/auth/me",
+                   headers={"Remote-User": "marcin", "Remote-Groups": "wlasciciel"})
+        assert (ok[0], nie[0]) == (200, 403)
+    finally:
+        srv.shutdown()
+
+
 def test_podwojny_naglowek_400(sso_on):
     srv, _ = sso_on
     status, _, body = call(srv, "GET", "/api/auth/me", headers=[
-        ("Remote-User", "marcin"), ("Remote-User", "ania"), ("Remote-Groups", "admins")])
+        ("Remote-User", "marcin"), ("Remote-User", "ania"), ("Remote-Groups", "wlasciciel")])
     assert status == 400
     assert "więcej niż raz" in body["error"]
 
@@ -201,7 +217,7 @@ def test_podwojny_naglowek_400(sso_on):
 def test_login_spoza_alfabetu_400(sso_on, login):
     srv, _ = sso_on
     status, _, _ = call(srv, "GET", "/api/auth/me",
-                        headers={"Remote-User": login, "Remote-Groups": "admins"})
+                        headers={"Remote-User": login, "Remote-Groups": "wlasciciel"})
     assert status == 400
 
 
@@ -209,7 +225,7 @@ def test_login_spoza_alfabetu_400(sso_on, login):
 def test_warianty_naglowka_nie_sa_tozsamoscia(sso_on, naglowek):
     srv, _ = sso_on
     status, _, _ = call(srv, "GET", "/api/auth/me",
-                        headers={naglowek: "marcin", "Remote-Groups": "admins"})
+                        headers={naglowek: "marcin", "Remote-Groups": "wlasciciel"})
     assert status == 401
 
 
@@ -261,7 +277,7 @@ def test_sciezka_maszynowa_z_podrobionym_naglowkiem_bez_skutku(sso_on):
     srv, auth = sso_on
     for path in ("/api/health", "/", "/index.html"):
         status, headers, _ = call(srv, "GET", path,
-                                  headers={"Remote-User": "ola", "Remote-Groups": "admins"})
+                                  headers={"Remote-User": "ola", "Remote-Groups": "wlasciciel"})
         assert status == 200, path
         assert not headers.get_all("Set-Cookie"), path
     with sqlite3.connect(auth.path) as conn:
@@ -342,7 +358,8 @@ def test_dziennik_logowania_SSO_bez_danych_wrazliwych(sso_on, caplog):
     srv, _ = sso_on
     with caplog.at_level(logging.INFO, logger="kidwatch"):
         _, headers, _ = call(srv, "GET", "/api/auth/me", headers=OD_AUTHELII)
-        call(srv, "GET", "/api/auth/me", headers={"Remote-User": "ola", "Remote-Groups": "admins"})
+        call(srv, "GET", "/api/auth/me",
+             headers={"Remote-User": "ola", "Remote-Groups": "wlasciciel"})
     tekst = caplog.text
     assert "logowanie SSO 'marcin'" in tekst
     assert "odmowa SSO" in tekst and "ola" in tekst
@@ -370,3 +387,13 @@ def test_baza_sprzed_SSO_dostaje_kolumne_a_stare_sesje_zyja(tmp_path):
     assert session is not None and session.kind == "haslo"
     with sqlite3.connect(path) as conn:
         assert "kind" in {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+
+
+def test_user_add_ostrzega_o_loginie_nie_do_dopasowania_przez_SSO(tmp_path, monkeypatch, capsys):
+    """Nowa osoba = konto w Authelii + `user-add` z TYM SAMYM loginem."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(CONFIG, encoding="utf-8")
+    assert main(["--config", str(cfg), "user-add", "osoba2"]) == 0
+    assert "UWAGA" not in capsys.readouterr().err
+    assert main(["--config", str(cfg), "user-add", "Osoba3"]) == 0
+    assert "nie dopasuje sie do konta w Authelii" in capsys.readouterr().err

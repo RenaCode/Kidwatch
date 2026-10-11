@@ -39,14 +39,20 @@ PORTAL_ENV = "SSO_PORTAL"
 GROUPS_ENV = "SSO_GRUPY"
 
 DEFAULT_PORTAL = "https://auth.renacode.com"
-#: Grupy z reguly Authelii dla kidwatch.renacode.com (renacode-infra
-#: k3s/platforma/authelia.yaml).
-DEFAULT_GROUPS = ("admins", "rodzina")
+#: Grupy Authelii z dostepem do panelu (decyzja wlasciciela 11.10): konto
+#: codzienne wlasciciela i rodzina. `admins` (konto administracyjne) do
+#: Kidwatcha NIE wchodzi. Chart: `sso.grupy` -> SSO_GRUPY.
+DEFAULT_GROUPS = ("wlasciciel", "rodzina")
 
 USER_HEADER = "Remote-User"
 GROUPS_HEADER = "Remote-Groups"
 
 _LOGIN = re.compile(r"[a-z0-9._-]{1,64}")
+
+
+def login_ok(login: str) -> bool:
+    """Czy konto panelu o tym loginie da sie dopasowac do `Remote-User`."""
+    return bool(_LOGIN.fullmatch(login))
 
 
 class SsoError(AuthError):
@@ -83,7 +89,7 @@ class SsoConfig:
         if len(users) > 1:
             raise SsoError(400, "Nagłówek Remote-User wystąpił więcej niż raz")
         login = users[0].strip()
-        if not _LOGIN.fullmatch(login):
+        if not login_ok(login):
             raise SsoError(400, "Niepoprawny nagłówek Remote-User")
         groups = tuple(
             g.strip() for raw in headers.get_all(GROUPS_HEADER) or [] for g in raw.split(",")

@@ -145,7 +145,7 @@ ingress:
   # Klucz szyfrujacy sekrety TOTP (PANEL_TOTP_KEY) idzie z `secretName` wyzej.
 
 # SSO: logowanie z wymuszonym 2FA (Authelia, renacode-infra
-# k3s/platforma/authelia.yaml, grupy `admins` i `rodzina`) PRZED wlasnym
+# k3s/platforma/authelia.yaml, grupy z `sso.grupy`) PRZED wlasnym
 # logowaniem panelu. Middleware forwardAuth na routerze HTTPS panelu - caly
 # host, bez wyjatkow: sonda kubeleta (`/api/health`) idzie wprost do poda,
 # TV i iPady nie wolaja tego hosta (TV jest serwerem, do ktorego laczy sie
@@ -168,6 +168,12 @@ sso:
   middlewares:
     - default-authelia-naglowki@kubernetescrd
     - default-authelia-sso@kubernetescrd
+  # Grupy Authelii wpuszczane do panelu (SSO_GRUPY). Musza sie zgadzac z regula
+  # dla tego hosta w authelia.yaml. Konto administracyjne (`admins`) celowo
+  # poza lista. Panel nie ma rol: kazda z tych grup widzi i moze to samo.
+  grupy:
+    - wlasciciel
+    - rodzina
 
 # ------------------------------------------------------------ NETWORKPOLICY
 # Kto moze otworzyc polaczenie do poda kidwatch (templates/networkpolicy.yaml).

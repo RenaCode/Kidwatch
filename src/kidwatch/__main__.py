@@ -1001,6 +1001,14 @@ async def cmd_user_add(args) -> int:
         print(f"odrzucone: {exc}", file=sys.stderr)
         return 1
     print(f"zalozono konto panelu {args.login!r} ({cfg.panel_auth_path})")
+    from .panel_sso import login_ok  # noqa: PLC0415
+
+    if not login_ok(args.login.strip()):
+        # Konto dziala z haslem, ale logowanie przez SSO (Remote-User z Authelii,
+        # zawsze malymi literami) nigdy go nie znajdzie.
+        print(f"UWAGA: login {args.login!r} nie dopasuje sie do konta w Authelii (SSO) — "
+              "dozwolone tylko a-z, 0-9, '.', '_', '-'. Usun: user-del, zaloz z malym loginem.",
+              file=sys.stderr)
     if generated:
         _print_generated(args.login, password)
     print("Weryfikacje dwuetapowa (TOTP) wlaczysz po zalogowaniu: menu konta -> Wlacz 2FA.")

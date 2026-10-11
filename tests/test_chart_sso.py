@@ -86,5 +86,7 @@ def test_flaga_zaufania_do_naglowkow_tylko_razem_z_middlewarem():
     env = env_panelu("sso.enabled=true")
     assert env["SSO_NAGLOWKI"] == "1"
     assert env["SSO_ADRES"] == "https://kidwatch.renacode.com/"
+    assert env["SSO_GRUPY"] == "wlasciciel,rodzina"
+    assert "admins" not in env["SSO_GRUPY"]
     # Bez routera panelu nie ma middleware'u — nie ma tez zaufania.
     assert "SSO_NAGLOWKI" not in env_panelu("sso.enabled=true", "ingress.enabled=false")

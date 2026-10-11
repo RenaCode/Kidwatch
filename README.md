@@ -401,9 +401,11 @@ renacode-infra) in front of the panel **and** the same switch sets
   `[a-z0-9._-]`. No accounts are created on the fly — an unknown login gets
   403 with a readable message and an "SSO log out" button. A new person needs
   two steps: an Authelia account and `user-add` with the same login.
-- `Remote-Groups` must contain `admins` or `rodzina` (the groups Authelia
-  admits to this host; override with `SSO_GRUPY`). The panel has no roles, so
-  groups only gate entry, they grant nothing.
+- `Remote-Groups` must contain `wlasciciel` or `rodzina` (chart
+  `sso.grupy` → `SSO_GRUPY`; must match the Authelia rule for this host).
+  The administrative Authelia account (`admins`) is deliberately not
+  admitted. The panel has **no roles**: groups only gate entry, every admitted
+  account can see and do the same things (see "Roles" below).
 - The session is marked `sso` and is created **without** the panel password
   or panel TOTP (Authelia already enforced 2FA). Account lockout from wrong
   panel passwords does not block SSO, and SSO does not lift it.
@@ -420,6 +422,28 @@ renacode-infra) in front of the panel **and** the same switch sets
 - Without `SSO_NAGLOWKI=1` all `Remote-*` headers are ignored. Never set it by
   hand: without the Traefik middleware a client can send `Remote-User`
   itself.
+
+Adding a family member (two steps, same lowercase login in both places):
+
+1. Authelia account in group `rodzina` (renacode-infra, `authelia-uzytkownicy`).
+2. Panel account:
+   `kubectl -n default exec -it deploy/kidwatch -c kidwatch -- python -m kidwatch user-add <login>`
+   (prints a random password once — keep it: it is the break-glass login and
+   the confirmation for sensitive actions; or pipe your own with
+   `--password-stdin` and `exec -i`). `user-add` warns when the login could
+   never match `Remote-User`.
+
+**Roles.** There are none today: a `rodzina` account can do everything the
+owner can — send MDM commands (lock/restart iPads, enrollment, iOS update
+policy), change game time, pause TV monitoring, install/pair the TV app,
+change the shared WhatsApp sender/recipients (those still need *her* panel
+password or 2FA code). Proposed minimal role `podglad` (not implemented):
+`users.role` (`wlasciciel` | `podglad`, default `wlasciciel` for existing
+accounts), set by `user-add --role podglad`; a `podglad` session gets every
+GET except `/api/profile/whatsapp/qr`, and 403 on all state-changing POSTs
+except logout and its own password/2FA; the front hides the action buttons.
+The role would come from the panel database, not from `Remote-Groups`
+(contract v1).
 
 ### Profile: password and WhatsApp
 
