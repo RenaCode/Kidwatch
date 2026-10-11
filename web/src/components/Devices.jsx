@@ -71,7 +71,7 @@ function GameControl({ child, game, onChanged }) {
 // odczyt wprost z urzadzenia. "Brak odczytu" przy spiacym iPadzie albo
 // wylaczonym telewizorze jest normalne. Telewizor (child: null) pokazuje
 // zamiast dziecka co leci; iPad - czy jest w domowym Wi-Fi (UniFi).
-function DeviceCard({ d, onChanged }) {
+function DeviceCard({ d, onChanged, canGame }) {
   const [open, setOpen] = useState(false);
   const tv = d.kind === 'tv';
   const live = !!d.session;
@@ -118,7 +118,8 @@ function DeviceCard({ d, onChanged }) {
           <span className="dim"> · od {hhmm(d.now_playing.since)}</span>
         </div>
       )}
-      {d.game && <GameControl child={d.child} game={d.game} onChanged={onChanged} />}
+      {/* Konto `podglad` nie zmienia czasu gry - bez przyciskow, serwer i tak odmawia. */}
+      {d.game && canGame && <GameControl child={d.child} game={d.game} onChanged={onChanged} />}
 
       {open && (
         <div className="dev-details" id={detailsId}>
@@ -158,12 +159,12 @@ function DeviceCard({ d, onChanged }) {
 }
 
 // Karty w siatce - na telefonie jedna kolumna, od 720 px dwie.
-export default function Devices({ devices, onChanged }) {
+export default function Devices({ devices, onChanged, canGame = true }) {
   if (!devices) return <div className="empty loading-pulse">Wczytywanie urządzeń…</div>;
   if (!devices.length) return <div className="empty">Brak urządzeń dla tego wyboru.</div>;
   return (
     <div className="device-grid">
-      {devices.map((d) => <DeviceCard key={d.name} d={d} onChanged={onChanged} />)}
+      {devices.map((d) => <DeviceCard key={d.name} d={d} onChanged={onChanged} canGame={canGame} />)}
     </div>
   );
 }

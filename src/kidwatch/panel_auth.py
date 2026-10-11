@@ -17,6 +17,10 @@ PRZEPLYW. Konto bez TOTP: haslo -> sesja. Konto z TOTP: haslo -> krotkotrwaly
 bilet, ktory sam niczego nie otwiera -> /api/auth/mfa z kodem -> sesja.
 Dokladnie jak w Traderze.
 
+SSO (panel_sso.py): przy SSO_NAGLOWKI=1 sesja `sso` powstaje z naglowka
+Authelii dla istniejacego konta, bez hasla i TOTP (`sso_login`). Haslo i TOTP
+zostaja jako droga awaryjna i jako potwierdzenie czynnosci wrazliwych.
+
 DLACZEGO OSOBNA BAZA, A NIE TABELE W kidwatch.db
 
 Panel czyta kidwatch.db w trybie `mode=ro`, a petla glowna jest jej jedynym
@@ -126,7 +130,9 @@ CREATE TABLE IF NOT EXISTS users (
     totp_confirmed_at REAL,
     -- Ostatni zaakceptowany krok czasowy (RFC 6238 §5.2): kod z krokiem nie
     -- wiekszym jest odrzucany, choc sam w sobie poprawny.
-    totp_last_step   INTEGER
+    totp_last_step   INTEGER,
+    -- 'wlasciciel' = wszystko, 'podglad' = tylko ogladanie (ROLE nizej).
+    rola             TEXT NOT NULL DEFAULT 'wlasciciel'
 );
 
 -- Nieudane hasla przy logowaniu, per (login, adres). Per adres, nie per
@@ -176,11 +182,21 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at REAL NOT NULL,
     expires_at REAL NOT NULL,
     ip         TEXT,
-    user_agent TEXT
+    user_agent TEXT,
+    -- 'sso' = sesja z naglowka Authelii (panel_sso.py), NULL = haslo (+ TOTP).
+    kind       TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_sessions_user ON sessions (user_id);
 CREATE INDEX IF NOT EXISTS ix_sessions_expires ON sessions (expires_at);
 """
+
+
+#: Rola konta panelu, z BAZY (nigdy z naglowka SSO). `podglad` widzi historie,
+#: ekrany, uzycie i powiadomienia, ale nie zmienia niczego poza wlasnym
+#: kontem (haslo, 2FA) i pauza telewizora — panel.py, _wlasciciel().
+ROLE_OWNER = "wlasciciel"
+ROLE_VIEWER = "podglad"
+ROLES = (ROLE_OWNER, ROLE_VIEWER)
 
 
 class AuthError(Exception):
@@ -207,6 +223,9 @@ class Session:
     token_hash: str
     csrf: str
     expires_at: float
+    #: "sso" — sesja z naglowka Authelii (bez hasla i TOTP panelu), "haslo" — zwykla.
+    kind: str = "haslo"
+    rola: str = ROLE_OWNER
 
 
 # ======================================================================= hasla
@@ -399,6 +418,18 @@ class PanelAuth:
         new = not Path(self.path).exists()
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            # Baza sprzed SSO: kolumna `kind` dochodzi bez migracji danych —
+            # stare sesje (NULL) to sesje z hasla.
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(sessions)")}
+            if "kind" not in cols:
+                conn.execute("ALTER TABLE sessions ADD COLUMN kind TEXT")
+            # Baza sprzed rol: istniejace konta to wlasciciele — nikt nie traci
+            # uprawnien, ktore mial.
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+            if "rola" not in cols:
+                conn.execute(
+                    "ALTER TABLE users ADD COLUMN rola TEXT NOT NULL DEFAULT 'wlasciciel'"
+                )
         if new:
             # Hashe hasel i sesji nie sa dla innych uzytkownikow systemu.
             with contextlib.suppress(OSError):
@@ -428,16 +459,18 @@ class PanelAuth:
         return self.box
 
     # ------------------------------------------------------------- konta (CLI)
-    def add_user(self, login: str, password: str) -> None:
+    def add_user(self, login: str, password: str, rola: str = ROLE_OWNER) -> None:
         login = login.strip()
         if not login:
             raise ValueError("pusty login")
+        _check_role(rola)
         check_password_policy(password)
         with self._conn() as conn:
             try:
                 conn.execute(
-                    "INSERT INTO users (login, password_hash, created_at) VALUES (?, ?, ?)",
-                    (login, hash_password(password), self.clock()),
+                    "INSERT INTO users (login, password_hash, created_at, rola) "
+                    "VALUES (?, ?, ?, ?)",
+                    (login, hash_password(password), self.clock(), rola),
                 )
             except sqlite3.IntegrityError as exc:
                 raise UserExists(login) from exc
@@ -448,6 +481,19 @@ class PanelAuth:
         if row is None:
             raise UnknownUser(login)
         return row["id"]
+
+    def set_role(self, login: str, rola: str) -> int:
+        """Zmiana roli z CLI. Sesje konta sa uniewazniane: rola jest czytana
+        przy kazdym zadaniu, ale front rysuje przyciski z /api/auth/me i po
+        odebraniu uprawnien mialby je na ekranie do odswiezenia."""
+        _check_role(rola)
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            uid = self._user_id(conn, login)
+            conn.execute("UPDATE users SET rola = ? WHERE id = ?", (rola, uid))
+            n = self._revoke_all(conn, uid)
+            conn.execute("COMMIT")
+        return n
 
     def reset_user(self, login: str, password: str) -> int:
         """Nowe haslo, zdjeta blokada, WSZYSTKIE sesje i bilety uniewaznione.
@@ -508,7 +554,7 @@ class PanelAuth:
     def list_users(self) -> list[dict]:
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT u.login, u.failed_logins, u.locked_until, u.created_at, "
+                "SELECT u.login, u.rola, u.failed_logins, u.locked_until, u.created_at, "
                 "u.last_login_at, u.totp_confirmed_at IS NOT NULL AS totp, "
                 "(SELECT COUNT(*) FROM backup_codes b WHERE b.user_id = u.id "
                 " AND b.used_at IS NULL) AS backup_codes_left "
@@ -970,23 +1016,71 @@ class PanelAuth:
             "WHERE id = ?",
             (now, row["user_id"]),
         )
+        token, session = self._new_session(conn, row, now, ip, user_agent, "haslo")
+        log.info("panel: zalogowano %r z %s", row["login"], ip or "?")
+        return token, session
+
+    def _new_session(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        now: float,
+        ip: str | None,
+        user_agent: str | None,
+        kind: str,
+    ) -> tuple[str, Session]:
         token = secrets.token_urlsafe(32)
+        rola = conn.execute(
+            "SELECT rola FROM users WHERE id = ?", (row["user_id"],)
+        ).fetchone()["rola"]
         session = Session(
             login=row["login"],
             user_id=row["user_id"],
             token_hash=token_hash(token),
             csrf=secrets.token_urlsafe(32),
             expires_at=now + self.session_seconds,
+            kind=kind,
+            rola=rola,
         )
         conn.execute(
             "INSERT INTO sessions (token_hash, user_id, csrf, created_at, expires_at, "
-            "ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "ip, user_agent, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (session.token_hash, row["user_id"], session.csrf, now, session.expires_at,
-             ip, (user_agent or "")[:300]),
+             ip, (user_agent or "")[:300], None if kind == "haslo" else kind),
         )
         # Sprzatanie przy okazji: osobny watek na to byloby przesada.
         conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
-        log.info("panel: zalogowano %r z %s", row["login"], ip or "?")
+        return token, session
+
+    def sso_login(
+        self, login: str, *, ip: str | None = None, user_agent: str | None = None
+    ) -> tuple[str, Session]:
+        """Sesja z naglowka Authelii (panel_sso.py) — BEZ hasla i bez TOTP
+        panelu: 2FA wymusila Authelia, zanim Traefik przepuscil zadanie.
+
+        Konto musi istniec (403, nie nowe puste konto). Blokada po nieudanych
+        haslach NIE obowiazuje: liczy zgadywanie hasla panelu, a tu hasla nie
+        ma — inaczej kazdy, kto zna login, wylaczalby wlascicielowi SSO,
+        wpisujac zle hasla na ekranie awaryjnym. Licznik zostaje nietkniety
+        z tego samego powodu w druga strone: sesja SSO nie zdejmuje blokady
+        z logowania haslem."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id AS user_id, login FROM users WHERE login = ?", (login,)
+            ).fetchone()
+            if row is None:
+                raise AuthError(
+                    403, f"Brak konta w Kidwatchu dla użytkownika „{login}” — "
+                    "poproś administratora."
+                )
+            now = self.clock()
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?",
+                         (now, row["user_id"]))
+            token, session = self._new_session(conn, row, now, ip, user_agent, "sso")
+            conn.execute("COMMIT")
+        # Audyt: login i adres, nic wiecej (bez e-maila, grup ani tokenu).
+        log.info("panel: logowanie SSO %r z %s", row["login"], ip or "?")
         return token, session
 
     # ------------------------------------------------------------- sesje
@@ -995,7 +1089,7 @@ class PanelAuth:
             return None
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT s.token_hash, s.csrf, s.expires_at, u.id, u.login "
+                "SELECT s.token_hash, s.csrf, s.expires_at, s.kind, u.id, u.login, u.rola "
                 "FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?",
                 (token_hash(token),),
             ).fetchone()
@@ -1007,6 +1101,8 @@ class PanelAuth:
             token_hash=row["token_hash"],
             csrf=row["csrf"],
             expires_at=row["expires_at"],
+            kind=row["kind"] or "haslo",
+            rola=row["rola"],
         )
 
     def account(self, session: Session) -> dict:
@@ -1030,6 +1126,11 @@ class PanelAuth:
             self._reauth_at.pop(session.token_hash, None)
         with self._conn() as conn:
             conn.execute("DELETE FROM sessions WHERE token_hash = ?", (session.token_hash,))
+
+
+def _check_role(rola: str) -> None:
+    if rola not in ROLES:
+        raise ValueError(f"nieznana rola {rola!r} (dozwolone: {', '.join(ROLES)})")
 
 
 def csrf_ok(session: Session, header: str | None) -> bool:
