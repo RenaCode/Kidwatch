@@ -7,8 +7,8 @@ const PORTAL = 'https://auth.renacode.com/logout?rd=https%3A%2F%2Fkidwatch.renac
 
 test('wyloguj przez SSO idzie na portal, bez SSO zostaje w panelu', () => {
   assert.equal(signOutTarget({ ok: true, logout_url: PORTAL }, { logout_url: PORTAL }), PORTAL);
-  assert.equal(signOutTarget({ ok: true }, { login: 'marcin', logout_url: null }), null);
-  assert.equal(signOutTarget(null, { login: 'marcin' }), null);
+  assert.equal(signOutTarget({ ok: true }, { login: 'rodzic1', logout_url: null }), null);
+  assert.equal(signOutTarget(null, { login: 'rodzic1' }), null);
 });
 
 test('nieudany POST wylogowania i tak konczy sesje Authelii', () => {
@@ -29,7 +29,7 @@ test('adres spoza https nie trafia do window.location', () => {
 });
 
 test('odmowa SSO z /api/auth/me to komunikat i portal, nie ekran logowania', () => {
-  const err = { status: 403, message: 'Brak konta w Kidwatchu dla użytkownika „ola”', data: { logout_url: PORTAL } };
+  const err = { status: 403, message: 'Brak konta w Kidwatchu dla użytkownika „nieznany”', data: { logout_url: PORTAL } };
   assert.deepEqual(ssoDenial(err), { message: err.message, logoutUrl: PORTAL });
   assert.equal(ssoDenial({ ...err, status: 400 }).logoutUrl, PORTAL);
   // 401 bez SSO albo 403 bez adresu portalu - zwykly ekran logowania.

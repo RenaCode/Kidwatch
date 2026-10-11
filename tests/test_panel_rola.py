@@ -58,8 +58,8 @@ def server(tmp_path, monkeypatch):
     cfg.store = StoreConfig(path=str(tmp_path / "k.db"))
     Store(cfg.store.path).close()
     auth = PanelAuth(cfg.panel_auth_path)
-    auth.add_user("marcin", HASLO)
-    auth.add_user("paulina", HASLO, panel_auth.ROLE_VIEWER)
+    auth.add_user("rodzic1", HASLO)
+    auth.add_user("rodzic2", HASLO, panel_auth.ROLE_VIEWER)
     srv = start_panel(cfg)
     yield srv
     srv.shutdown()
@@ -73,7 +73,7 @@ def naglowki(srv, login: str) -> dict[str, str]:
 
 @pytest.mark.parametrize(("method", "path", "body"), ADMIN)
 def test_podglad_dostaje_403_na_kazda_czynnosc_administracyjna(server, method, path, body):
-    status, _, payload = call(server, method, path, body, naglowki(server, "paulina"))
+    status, _, payload = call(server, method, path, body, naglowki(server, "rodzic2"))
     assert status == 403, (path, payload)
     assert "podgląd" in payload["error"]
 
@@ -83,20 +83,20 @@ def test_wlasciciel_nie_jest_zatrzymany_rola(server, method, path, body):
     """Ta sama lista dla wlasciciela: inna odpowiedz (zwykle 404 — w tescie nie
     ma MDM, bramki ani TV; QR bota 403 za brak swiezego potwierdzenia), wiec
     odmowa wyzej pochodzi z roli, nie z czegos innego."""
-    status, _, payload = call(server, method, path, body, naglowki(server, "marcin"))
+    status, _, payload = call(server, method, path, body, naglowki(server, "rodzic1"))
     assert "podgląd" not in (payload or {}).get("error", ""), (path, payload)
     assert status != 403 or path == "/api/profile/whatsapp/qr", (path, payload)
 
 
 @pytest.mark.parametrize("path", VIEW)
 def test_podglad_widzi_ekrany_podgladu(server, path):
-    assert call(server, "GET", path, headers=naglowki(server, "paulina"))[0] == 200, path
+    assert call(server, "GET", path, headers=naglowki(server, "rodzic2"))[0] == 200, path
 
 
 def test_podglad_moze_pauze_TV_i_wlasne_konto(server):
     """Pauza TV dozwolona (opis w panel.py): 404 tylko dlatego, ze w tescie
     czujnik TV jest wylaczony — nie 403. Wlasne haslo i 2FA tez."""
-    h = naglowki(server, "paulina")
+    h = naglowki(server, "rodzic2")
     assert call(server, "POST", "/api/tv/pause", {"until": None}, h)[0] == 404
     assert call(server, "POST", "/api/tv/resume", {}, h)[0] == 404
     assert call(server, "POST", "/api/auth/totp/setup", {}, h)[0] == 200
@@ -106,15 +106,15 @@ def test_podglad_moze_pauze_TV_i_wlasne_konto(server):
 
 
 def test_me_podaje_role(server):
-    me = call(server, "GET", "/api/auth/me", headers=naglowki(server, "paulina"))[2]
+    me = call(server, "GET", "/api/auth/me", headers=naglowki(server, "rodzic2"))[2]
     assert me["rola"] == "podglad"
-    me = call(server, "GET", "/api/auth/me", headers=naglowki(server, "marcin"))[2]
+    me = call(server, "GET", "/api/auth/me", headers=naglowki(server, "rodzic1"))[2]
     assert me["rola"] == "wlasciciel"
 
 
 @pytest.mark.parametrize(("login", "grupa", "rola"), [
-    ("paulina", "wlasciciel", "podglad"),   # grupa nie podnosi roli
-    ("marcin", "rodzina", "wlasciciel"),    # ani jej nie obniza
+    ("rodzic2", "wlasciciel", "podglad"),   # grupa nie podnosi roli
+    ("rodzic1", "rodzina", "wlasciciel"),    # ani jej nie obniza
 ])
 def test_rola_z_bazy_nie_z_naglowka_SSO(server, login, grupa, rola):
     status, headers, me = call(server, "GET", "/api/auth/me",
@@ -139,11 +139,11 @@ def test_baza_sprzed_rol_istniejace_konta_to_wlasciciele(tmp_path):
     path = tmp_path / "stara.db"
     with sqlite3.connect(path) as conn:
         conn.executescript(stary)
-        conn.execute("INSERT INTO users (login, password_hash, created_at) VALUES ('marcin', ?, 0)",
-                     (panel_auth.hash_password(HASLO),))
+        conn.execute("INSERT INTO users (login, password_hash, created_at) "
+                     "VALUES ('rodzic1', ?, 0)", (panel_auth.hash_password(HASLO),))
     auth = PanelAuth(path)
     assert auth.list_users()[0]["rola"] == "wlasciciel"
-    assert auth.login("marcin", HASLO).session.rola == "wlasciciel"
+    assert auth.login("rodzic1", HASLO).session.rola == "wlasciciel"
 
 
 def test_nieznana_rola_odrzucona(tmp_path):
@@ -162,18 +162,18 @@ def test_user_add_z_rola_podglad_i_zmiana_roli(tmp_path, monkeypatch, capsys):
     cfg = tmp_path / "config.yaml"
     cfg.write_text(CONFIG, encoding="utf-8")
     monkeypatch.setattr("sys.stdin", io.StringIO("haslo-ze-stdin-123\n"))
-    assert main(["--config", str(cfg), "user-add", "paulina", "--rola", "podglad",
+    assert main(["--config", str(cfg), "user-add", "rodzic2", "--rola", "podglad",
                  "--password-stdin"]) == 0
     assert "rola podglad" in capsys.readouterr().out
     assert main(["--config", str(cfg), "user-list"]) == 0
     assert "rola: podglad" in capsys.readouterr().out
 
     auth = PanelAuth(tmp_path / "panel-auth.db")
-    token = auth.login("paulina", "haslo-ze-stdin-123").token
+    token = auth.login("rodzic2", "haslo-ze-stdin-123").token
     assert auth.session(token).rola == "podglad"
-    assert main(["--config", str(cfg), "user-rola", "paulina", "wlasciciel"]) == 0
+    assert main(["--config", str(cfg), "user-rola", "rodzic2", "wlasciciel"]) == 0
     assert auth.session(token) is None  # zmiana roli wylogowuje
-    assert auth.login("paulina", "haslo-ze-stdin-123").session.rola == "wlasciciel"
+    assert auth.login("rodzic2", "haslo-ze-stdin-123").session.rola == "wlasciciel"
     assert main(["--config", str(cfg), "user-rola", "nikt", "podglad"]) == 1
     with pytest.raises(SystemExit):
         main(["--config", str(cfg), "user-add", "x", "--rola", "admin"])

@@ -3,8 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { can, isViewer, sectionsFor } from './rola.js';
 
-const OWNER = { login: 'marcin', rola: 'wlasciciel' };
-const VIEW = { login: 'paulina', rola: 'podglad' };
+const OWNER = { login: 'rodzic1', rola: 'wlasciciel' };
+const VIEW = { login: 'rodzic2', rola: 'podglad' };
 const SECTIONS = ['pulpit', 'notifications', 'screens', 'usage', 'trends', 'day', 'mdm']
   .map((key) => ({ key }));
 
@@ -23,7 +23,7 @@ test('podglad bez czasu gry, WhatsAppa, aplikacji TV i MDM; pauza TV zostaje', (
 });
 
 test('brak pola rola (starszy serwer) = jak dotad, wlasciciel', () => {
-  assert.equal(isViewer({ login: 'marcin' }), false);
-  assert.equal(can({ login: 'marcin' }, 'mdm'), true);
+  assert.equal(isViewer({ login: 'rodzic1' }), false);
+  assert.equal(can({ login: 'rodzic1' }, 'mdm'), true);
   assert.equal(isViewer(VIEW), true);
 });
