@@ -6,7 +6,8 @@ w osobnym watku procesu `run`, a kazde zapytanie otwiera WLASNE polaczenie
 SQLite w trybie tylko do odczytu (`mode=ro`). Petla glowna pozostaje jedynym
 pisarzem bazy.
 
-Logowanie jest wlasne: haslo + opcjonalny TOTP (panel_auth.py). Kazde
+Logowanie jest wlasne: haslo + opcjonalny TOTP (panel_auth.py), a przy
+`SSO_NAGLOWKI=1` takze sesja z naglowka Authelii (panel_sso.py). Kazde
 /api/* poza /api/health, /api/auth/login i /api/auth/mfa wymaga sesji, a bez
 niej dostaje 401. Konto z wlaczonym TOTP dostaje sesje dopiero po kodzie.
 POST-y zmieniajace stan konta wymagaja tez tokenu CSRF — tak samo
@@ -14,6 +15,9 @@ POST /api/game (czas gry) i POST /api/tv/pause|resume (pauza monitoringu TV),
 ktore NIE pisza do kidwatch.db, tylko dopisuja zadanie do kolejki
 w panel-auth.db (gametime.py, tvpause.py). Konta i sesje leza
 w osobnej bazie — panel_auth.py tlumaczy, dlaczego nie w kidwatch.db.
+Konto z rola `podglad` (panel_auth.ROLES) tylko oglada: czas gry, aplikacja
+TV, WhatsApp/powiadomienia i MDM (takze odczyt) dostaja 403 — _owner().
+Zostaje mu wlasne haslo i 2FA oraz pauza telewizora.
 Statyczny front jest dostepny bez sesji: to sam kod ekranu logowania, zadnych
 danych.
 """
@@ -47,6 +51,7 @@ from .mdm import MdmApi, MdmError, build_api
 from .panel_auth import (
     CSRF_COOKIE,
     CSRF_HEADER,
+    ROLE_OWNER,
     SESSION_COOKIE,
     AuthError,
     PanelAuth,
@@ -54,6 +59,8 @@ from .panel_auth import (
     box_from_env,
     csrf_ok,
 )
+from .panel_sso import SsoConfig
+from .panel_sso import config_from_env as sso_from_env
 from .store import from_iso, to_iso
 from .tvpause import MAX_PAUSE_DAYS, TvPauseRequests, parse_until
 from .tvpause import TooManyRequests as TooManyPauseRequests
@@ -920,7 +927,9 @@ def make_handler(
     cookie_secure: bool = True,
     bramka: BramkaAdmin | None = None,
     mdm: MdmApi | None = None,
+    sso: SsoConfig | None = None,
 ):
+    """`sso` = None: naglowki `Remote-*` ignorowane w calosci (panel_sso.py)."""
     static_root = static_dir.resolve()
 
     def session_cookies(token: str, session: Session, max_age: int) -> list[str]:
@@ -931,6 +940,13 @@ def make_handler(
             # Sam w sobie nic nie otwiera.
             _cookie(CSRF_COOKIE, session.csrf, max_age, http_only=False, secure=cookie_secure),
         ]
+
+    def _bez_sso(session: Session | None) -> Session | None:
+        """Sesja `sso` zyje tylko z naglowkiem Authelii. Bez niego (port-forward,
+        flaga wylaczona po wycofaniu SSO) to zwykly token na okaziciela, ktory
+        nie przeszedl hasla ani TOTP panelu: skopiowane ciasteczko nie moze
+        ominac drogi awaryjnej, ktora zada hasla i TOTP."""
+        return None if session is not None and session.kind == "sso" else session
 
     def cleared_cookies() -> list[str]:
         return [
@@ -944,6 +960,11 @@ def make_handler(
         #: Timeout gniazda: bez niego wolny klient (slowloris) trzymal watek
         #: do timeoutu Traefika.
         timeout = 30
+        #: Ciasteczka nowej sesji SSO, doklejane do odpowiedzi na to zadanie.
+        _sso_cookies: tuple[str, ...] | list[str] = ()
+        #: Zadanie przyszlo z `Remote-User` przy wlaczonym SSO, czyli przez
+        #: Authelie — wylogowanie musi skonczyc tez jej sesje.
+        _via_sso = False
 
         def log_message(self, fmt: str, *args) -> None:  # noqa: D102
             log.debug("panel: " + fmt, *args)
@@ -963,7 +984,7 @@ def make_handler(
                 self.send_header(k, v)
             # Set-Cookie osobnym naglowkiem na kazde ciasteczko — w slowniku
             # `extra` drugie nadpisaloby pierwsze.
-            for c in cookies or ():
+            for c in [*self._sso_cookies, *(cookies or ())]:
                 self.send_header("Set-Cookie", c)
             self.end_headers()
             if self.command != "HEAD":
@@ -983,7 +1004,47 @@ def make_handler(
             return {k: m.value for k, m in jar.items()}
 
         def _session(self) -> Session | None:
-            return auth.session(self._cookies().get(SESSION_COOKIE))
+            """Sesja z ciasteczka, a przy SSO — uzytkownika z `Remote-User`.
+
+            Bez naglowka (port-forward, gdy Authelia lezy) dziala zwykla sesja
+            z hasla. Z naglowkiem: sesja tego samego uzytkownika zostaje,
+            brak sesji albo sesja KOGOS INNEGO (zmiana konta w Authelii w tej
+            samej przegladarce) — nowa sesja `sso`. SsoError/AuthError (400
+            podwojny naglowek, 403 brak grupy albo konta) leca wyzej."""
+            session = auth.session(self._cookies().get(SESSION_COOKIE))
+            if sso is None:
+                return _bez_sso(session)
+            self._via_sso = bool(self.headers.get_all("Remote-User"))
+            ident = sso.identity(self.headers)
+            if ident is None:
+                return _bez_sso(session)
+            if session is not None and session.login == ident.login:
+                return session
+            if session is not None:
+                auth.logout(session)
+            token, session = auth.sso_login(
+                ident.login, ip=self._client_ip(), user_agent=self.headers.get("User-Agent")
+            )
+            self._sso_cookies = session_cookies(token, session, int(auth.session_seconds))
+            return session
+
+        def _owner(self, session: Session) -> Session:
+            """Czynnosc tylko dla roli `wlasciciel`. Rola z bazy panelu (sesja),
+            nigdy z `Remote-Groups`."""
+            if session.rola != ROLE_OWNER:
+                log.warning("panel: %r (rola %s) bez uprawnien do %s %s",
+                            session.login, session.rola, self.command,
+                            urlparse(self.path).path)
+                raise AuthError(
+                    403, "To konto ma tylko podgląd — ta czynność wymaga konta właściciela."
+                )
+            return session
+
+        def _deny(self, exc: AuthError) -> None:
+            payload = {"error": exc.message}
+            if self._via_sso:
+                payload["logout_url"] = sso.logout_url
+            self._json(exc.status, payload)
 
         def _client_ip(self) -> str:
             # Za Traefikiem prawdziwy adres jest w X-Forwarded-For. Od niego
@@ -1023,6 +1084,7 @@ def make_handler(
             return data
 
         def do_POST(self) -> None:  # noqa: N802
+            self._sso_cookies, self._via_sso = [], False
             path = urlparse(self.path).path
             try:
                 if path == "/api/auth/login":
@@ -1054,7 +1116,7 @@ def make_handler(
                 else:
                     self._json(404, {"error": "nie ma takiego endpointu"})
             except AuthError as exc:
-                self._json(exc.status, {"error": exc.message})
+                self._deny(exc)
             except Exception:
                 log.exception("panel: blad przy POST %s", path)
                 self._json(500, {"error": "blad serwera"})
@@ -1122,7 +1184,7 @@ def make_handler(
         def _game_request(self) -> None:
             """Zadanie czasu gry. NIE wykonuje go — dopisuje do kolejki,
             ktora odbiera petla glowna (jedyny pisarz kidwatch.db)."""
-            session = self._authed()
+            session = self._owner(self._authed())
             if queries.requests is None:
                 raise AuthError(404, "Czas gry jest wyłączony w konfiguracji")
             data = self._read_json()
@@ -1182,7 +1244,7 @@ def make_handler(
             i parowanie kodem z jej ekranu. Wykonuje petla serwisu."""
             from .sources import tv_app  # noqa: PLC0415
 
-            session = self._authed()
+            session = self._owner(self._authed())
             app = tv_app.AKTYWNA
             if app is None:
                 raise AuthError(404, "Aplikacja TV jest wyłączona w konfiguracji")
@@ -1216,7 +1278,7 @@ def make_handler(
         def _profile_post(self, path: str) -> None:
             """Akcje WhatsAppa. Sesja + CSRF jak kazda zmiana stanu; bramke
             wola serwer swoim kluczem — przegladarka go nie zna."""
-            session = self._authed()
+            session = self._owner(self._authed())
             data = self._read_json()
             b = self._bramka()
             try:
@@ -1322,7 +1384,7 @@ def make_handler(
                     self._json(_mdm_status(exc.status), {"error": str(exc)})
 
         def _mdm_post(self, path: str) -> None:
-            session = self._authed()
+            session = self._owner(self._authed())
             data = self._read_json()
             udid = data.get("udid")
             if udid is not None and (
@@ -1365,19 +1427,31 @@ def make_handler(
             self._json(200, result)
 
         def _logout(self) -> None:
-            session = self._session()
+            # Sama sesja z ciasteczka: wylogowanie nie zaklada sesji SSO tylko
+            # po to, zeby ja zaraz skasowac.
+            session = auth.session(self._cookies().get(SESSION_COOKIE))
+            self._via_sso = sso is not None and bool(self.headers.get_all("Remote-User"))
+            portal = {"logout_url": sso.logout_url} if self._via_sso else {}
             if session is None:
-                self._unauthorized()
+                if portal:
+                    # Sesji panelu juz nie ma, ale Authelia wpuscilaby dalej —
+                    # front i tak ma przejsc przez portal.
+                    self._json(200, {"ok": True, **portal}, cleared_cookies())
+                else:
+                    self._unauthorized()
                 return
             if not csrf_ok(session, self.headers.get(CSRF_HEADER)):
                 raise AuthError(403, "Nieprawidłowy token CSRF")
             auth.logout(session)
-            self._json(200, {"ok": True}, cleared_cookies())
+            if portal:
+                log.info("panel: wylogowanie SSO %r", session.login)
+            self._json(200, {"ok": True, **portal}, cleared_cookies())
 
         def do_HEAD(self) -> None:  # noqa: N802
             self.do_GET()
 
         def do_GET(self) -> None:  # noqa: N802
+            self._sso_cookies, self._via_sso = [], False
             url = urlparse(self.path)
             if url.path.startswith("/api/"):
                 self._api(url.path, {k: v[-1] for k, v in parse_qs(url.query).items()})
@@ -1394,6 +1468,11 @@ def make_handler(
                 log.warning("panel: baza logowania niedostepna: %s", exc)
                 self._json(503, {"error": "baza logowania niedostepna"})
                 return
+            except AuthError as exc:
+                # Tylko SSO: podwojny naglowek, brak grupy albo konta w panelu.
+                log.warning("panel: odmowa SSO z %s: %s", self._client_ip(), exc.message)
+                self._deny(exc)
+                return
             if session is None:
                 self._unauthorized()
                 return
@@ -1402,12 +1481,28 @@ def make_handler(
                     "login": session.login,
                     "session_expires_at": datetime.fromtimestamp(
                         session.expires_at, UTC).isoformat(),
+                    # sso: sesja z Authelii; logout_url: "Wyloguj" ma przejsc
+                    # przez portal, inaczej nastepne zadanie zalogowaloby od nowa.
+                    "sso": session.kind == "sso",
+                    # Front chowa przyciski, ktorych rola nie moze uzyc; serwer
+                    # i tak odmawia (403) niezaleznie od frontu.
+                    "rola": session.rola,
+                    "logout_url": sso.logout_url if self._via_sso else None,
                     **auth.account(session),
                 })
                 return
             if path == "/api/meta":
                 self._json(200, queries.meta())
                 return
+            if (path.startswith(("/api/profile/", "/api/mdm/")) or path == "/api/mdm"
+                    or path == "/api/tv/aplikacja"):
+                # Numery WhatsAppa, UDID-y i zdarzenia MDM, stan aplikacji TV —
+                # to ekrany zarzadzania, nie podgladu.
+                try:
+                    self._owner(session)
+                except AuthError as exc:
+                    self._json(exc.status, {"error": exc.message})
+                    return
             if path.startswith("/api/profile/"):
                 try:
                     self._profile_get(path, session)
@@ -1547,11 +1642,15 @@ def start_panel(cfg: Config) -> ThreadingHTTPServer:
             "panel: brak kont — nikt sie nie zaloguje. Zaloz konto: "
             "python -m kidwatch user-add <login>"
         )
+    sso = sso_from_env()
+    if sso is not None:
+        log.info("panel: SSO wlaczone — sesja z naglowka Remote-User (grupy: %s)",
+                 ", ".join(sso.groups))
     server = ThreadingHTTPServer(
         (cfg.panel.host, cfg.panel.port),
         make_handler(
             queries, Path(cfg.panel.static_dir), auth, cookie_secure=cfg.panel.cookie_secure,
-            bramka=_bramka_admin(cfg), mdm=build_api(cfg.mdm),
+            bramka=_bramka_admin(cfg), mdm=build_api(cfg.mdm), sso=sso,
         ),
     )
     server.daemon_threads = True

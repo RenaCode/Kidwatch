@@ -145,7 +145,7 @@ ingress:
   # Klucz szyfrujacy sekrety TOTP (PANEL_TOTP_KEY) idzie z `secretName` wyzej.
 
 # SSO: logowanie z wymuszonym 2FA (Authelia, renacode-infra
-# k3s/platforma/authelia.yaml, grupy `admins` i `rodzina`) PRZED wlasnym
+# k3s/platforma/authelia.yaml, grupy z `sso.grupy`) PRZED wlasnym
 # logowaniem panelu. Middleware forwardAuth na routerze HTTPS panelu - caly
 # host, bez wyjatkow: sonda kubeleta (`/api/health`) idzie wprost do poda,
 # TV i iPady nie wolaja tego hosta (TV jest serwerem, do ktorego laczy sie
@@ -154,7 +154,10 @@ ingress:
 #
 # WYLACZONE DOMYSLNIE: wlacza `valuesObject` w argocd-apps.yaml (renacode-infra)
 # dopiero po rejestracji 2FA w Authelii. Bez dzialajacej Authelii = 500 na
-# panelu (fail-closed). Wlasne logowanie panelu (haslo + TOTP) zostaje.
+# panelu (fail-closed). Wlasne logowanie panelu (haslo + TOTP) zostaje jako
+# droga awaryjna (port-forward). Ten sam przelacznik ustawia w podzie
+# SSO_NAGLOWKI=1: panel zaklada sesje z `Remote-User` bez hasla i TOTP, dla
+# ISTNIEJACEGO konta o tym loginie (src/kidwatch/panel_sso.py).
 sso:
   enabled: false
   # Middleware'y z renacode-infra, W TEJ KOLEJNOSCI: najpierw usuniecie
@@ -165,6 +168,13 @@ sso:
   middlewares:
     - default-authelia-naglowki@kubernetescrd
     - default-authelia-sso@kubernetescrd
+  # Grupy Authelii wpuszczane do panelu (SSO_GRUPY). Musza sie zgadzac z regula
+  # dla tego hosta w authelia.yaml. Konto administracyjne (`admins`) celowo
+  # poza lista. Grupa tylko wpuszcza: co konto moze, mowi jego rola w bazie
+  # panelu (`user-add --rola podglad` dla rodziny, README "Roles").
+  grupy:
+    - wlasciciel
+    - rodzina
 
 # ------------------------------------------------------------ NETWORKPOLICY
 # Kto moze otworzyc polaczenie do poda kidwatch (templates/networkpolicy.yaml).

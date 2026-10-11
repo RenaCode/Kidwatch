@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { reloadAllowed } from './sso.js';
 
 /* Warstwa HTTP, ten sam model co w Trader-AI.
 
@@ -6,9 +7,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
    XSS. Token CSRF jest w osobnym, czytelnym ciasteczku i doklejamy go do kazdego
    POST - serwer porownuje go z tokenem zapisanym przy sesji. */
 export class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, data = null) {
     super(message);
     this.status = status;
+    // Cala odpowiedz bledu - np. `logout_url` przy odmowie SSO.
+    this.data = data;
   }
 }
 
@@ -22,6 +25,25 @@ function csrfToken() {
    jak klikniecie, i w obu przypadkach App ma wrocic do ekranu logowania. */
 let sessionExpired = null;
 export function setSessionExpiredHandler(fn) { sessionExpired = fn; }
+
+/* Panel za Authelia (/api/auth/me z `logout_url`). Wygasla sesja Authelii
+   konczy fetch bledem sieci (przekierowanie na portal w innej domenie), a 401
+   panelu - zgubionym ciasteczkiem. W obu przypadkach przeladowanie strony
+   przechodzi przez logowanie Authelii i wraca tutaj; ekran hasla panelu
+   bylby za Authelia slepa uliczka. */
+let ssoMode = false;
+export function setSsoMode(on) { ssoMode = !!on; }
+const RELOAD_KEY = 'kidwatch_sso_reload';
+function reloadThroughSso() {
+  if (!ssoMode) return false;
+  let last = 0;
+  try { last = Number(window.sessionStorage.getItem(RELOAD_KEY)) || 0; } catch { /* bez pamieci */ }
+  const now = Date.now();
+  if (!reloadAllowed(now, last)) return false;
+  try { window.sessionStorage.setItem(RELOAD_KEY, String(now)); } catch { /* trudno */ }
+  window.location.reload();
+  return true;
+}
 
 /* 401 z POST /api/auth/* znaczy "zle dane" (zle haslo), nie "sesja wygasla".
    Ten blad nalezy do formularza logowania - wyrzucenie na ekran logowania
@@ -51,19 +73,25 @@ async function request(path, { method = 'GET', body } = {}) {
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (method !== 'GET' && method !== 'HEAD') headers['X-CSRF-Token'] = csrfToken();
 
-  const res = await fetch(path, {
-    method,
-    headers,
-    credentials: 'same-origin',
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      headers,
+      credentials: 'same-origin',
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (e) {
+    reloadThroughSso();
+    throw e;
+  }
 
   let payload = null;
   try { payload = await res.json(); } catch { /* np. 502 z Traefika */ }
 
   if (!res.ok) {
-    if (res.status === 401 && !isLoginFlow(path, method)) sessionExpired?.();
-    throw new ApiError(res.status, payload?.error || `HTTP ${res.status}`);
+    if (res.status === 401 && !isLoginFlow(path, method) && !reloadThroughSso()) sessionExpired?.();
+    throw new ApiError(res.status, payload?.error || `HTTP ${res.status}`, payload);
   }
   return payload;
 }

@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { TvPauseControl } from './TvPause';
 import { TvAppControl } from './TvApp';
 import { get, post } from '../utils/api';
+import { can } from '../utils/rola';
 import {
   MAX_LABEL, MAX_RECIPIENTS, SOURCES_ALL, SOURCES_FAMILY, getsEverything, newRecipient,
   partialFailure, recipientsFromState, recipientsPayload, sameRecipients, sourcesKey,
@@ -416,12 +417,12 @@ function WhatsApp() {
 
 // Telewizor: wstrzymanie monitoringu i aplikacja Kidwatch TV.
 // Do 2026-10-09 te przyciski siedzialy na karcie TV w widoku urzadzen.
-function TvSettings({ tvPause, onTvPauseChanged }) {
+function TvSettings({ tvPause, onTvPauseChanged, canTvApp }) {
   return (
     <div className="glass-card">
       <div className="card-title"><span>Telewizor</span></div>
       <TvPauseControl pause={tvPause} onChanged={onTvPauseChanged} />
-      <TvAppControl />
+      {canTvApp && <TvAppControl />}
     </div>
   );
 }
@@ -438,10 +439,16 @@ export default function Profile({ user, onChanged, onClose, tvPause, onTvPauseCh
         <TwoFactor user={user} onChanged={onChanged} />
         <PasswordForm />
       </div>
-      <div className="stat-label">Powiadomienia / WhatsApp</div>
-      <WhatsApp />
+      {/* Konto `podglad`: wlasne haslo i 2FA oraz pauza TV; kanaly
+          powiadomien i aplikacja TV naleza do wlasciciela. */}
+      {can(user, 'whatsapp') && (
+        <>
+          <div className="stat-label">Powiadomienia / WhatsApp</div>
+          <WhatsApp />
+        </>
+      )}
       <div className="stat-label">Telewizor</div>
-      <TvSettings tvPause={tvPause} onTvPauseChanged={onTvPauseChanged} />
+      <TvSettings tvPause={tvPause} onTvPauseChanged={onTvPauseChanged} canTvApp={can(user, 'tvApp')} />
     </div>
   );
 }

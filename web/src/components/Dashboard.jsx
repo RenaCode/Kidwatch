@@ -142,6 +142,7 @@ function TvQuick({ pause, tvDevice, onChanged, onOpenSettings }) {
 
 export default function Dashboard({
   child, devices, onDevicesChanged, tvPause, onTvPauseChanged, notes, onOpenSection, onOpenSettings,
+  canGame = true,
 }) {
   const tvDevice = (devices || []).find((d) => d.kind === 'tv');
   const showTv = tvPause?.available;
@@ -154,7 +155,7 @@ export default function Dashboard({
             <h2 id="dev-title">Urządzenia</h2>
             <button className="pill-link" onClick={() => onOpenSection('screens')}>Wszystkie ekrany</button>
           </div>
-          <Devices devices={devices} onChanged={onDevicesChanged} />
+          <Devices devices={devices} onChanged={onDevicesChanged} canGame={canGame} />
         </section>
         {showTv && (
           <section aria-labelledby="quick-title" className="dash-quick">
