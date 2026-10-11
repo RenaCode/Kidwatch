@@ -742,54 +742,54 @@ def generated_password(out: str) -> str:
 def test_user_add_losuje_haslo_wypisuje_je_raz_i_da_sie_nim_zalogowac(
     config_file, tmp_path, capsys
 ):
-    assert main(["--config", str(config_file), "user-add", "marcin"]) == 0
+    assert main(["--config", str(config_file), "user-add", "opiekun"]) == 0
     password = generated_password(capsys.readouterr().out)
     # Domyslnie obok bazy glownej — w klastrze to /data/panel-auth.db.
     auth = PanelAuth(tmp_path / "panel-auth.db", box=new_box())
-    token, _ = zaloguj_haslem(auth, "marcin", password)
-    assert auth.session(token).login == "marcin"
+    token, _ = zaloguj_haslem(auth, "opiekun", password)
+    assert auth.session(token).login == "opiekun"
 
 
 def test_user_add_z_haslem_ze_stdin_nie_wypisuje_go(config_file, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO("haslo-ze-stdin-123\n"))
-    assert main(["--config", str(config_file), "user-add", "marcin", "--password-stdin"]) == 0
+    assert main(["--config", str(config_file), "user-add", "opiekun", "--password-stdin"]) == 0
     assert "haslo-ze-stdin-123" not in capsys.readouterr().out
-    zaloguj_haslem(PanelAuth(tmp_path / "panel-auth.db"), "marcin", "haslo-ze-stdin-123")
+    zaloguj_haslem(PanelAuth(tmp_path / "panel-auth.db"), "opiekun", "haslo-ze-stdin-123")
 
 
 def test_user_add_odrzuca_duplikat_i_krotkie_haslo(config_file, monkeypatch, capsys):
-    assert main(["--config", str(config_file), "user-add", "marcin"]) == 0
-    assert main(["--config", str(config_file), "user-add", "marcin"]) == 1
+    assert main(["--config", str(config_file), "user-add", "opiekun"]) == 0
+    assert main(["--config", str(config_file), "user-add", "opiekun"]) == 1
     monkeypatch.setattr("sys.stdin", io.StringIO("krotkie\n"))
     assert main(["--config", str(config_file), "user-add", "inny", "--password-stdin"]) == 1
 
 
 def test_user_reset_zmienia_haslo_i_wylogowuje(config_file, tmp_path, monkeypatch, capsys):
-    assert main(["--config", str(config_file), "user-add", "marcin"]) == 0
+    assert main(["--config", str(config_file), "user-add", "opiekun"]) == 0
     old = generated_password(capsys.readouterr().out)
     auth = PanelAuth(tmp_path / "panel-auth.db")
-    token, _ = zaloguj_haslem(auth, "marcin", old)
+    token, _ = zaloguj_haslem(auth, "opiekun", old)
 
     monkeypatch.setattr("sys.stdin", io.StringIO("zupelnie-nowe-haslo\n"))
-    assert main(["--config", str(config_file), "user-reset", "marcin", "--password-stdin"]) == 0
+    assert main(["--config", str(config_file), "user-reset", "opiekun", "--password-stdin"]) == 0
     assert auth.session(token) is None
     with pytest.raises(AuthError):
-        auth.login("marcin", old)
-    zaloguj_haslem(auth, "marcin", "zupelnie-nowe-haslo")
+        auth.login("opiekun", old)
+    zaloguj_haslem(auth, "opiekun", "zupelnie-nowe-haslo")
     assert main(["--config", str(config_file), "user-reset", "nikt"]) == 1
 
 
 def test_user_reset_totp_zdejmuje_2FA(config_file, tmp_path, capsys, clock):
-    assert main(["--config", str(config_file), "user-add", "marcin"]) == 0
+    assert main(["--config", str(config_file), "user-add", "opiekun"]) == 0
     password = generated_password(capsys.readouterr().out)
     auth = PanelAuth(tmp_path / "panel-auth.db", box=new_box(), clock=clock)
-    wlacz_2fa(auth, clock, "marcin", password)
+    wlacz_2fa(auth, clock, "opiekun", password)
     assert main(["--config", str(config_file), "user-list"]) == 0
     assert "2FA wlaczone, kodow zapasowych: 8" in capsys.readouterr().out
 
-    assert main(["--config", str(config_file), "user-reset", "marcin", "--totp"]) == 0
+    assert main(["--config", str(config_file), "user-reset", "opiekun", "--totp"]) == 0
     assert "haslo: " not in capsys.readouterr().out  # haslo bez zmian
-    zaloguj_haslem(auth, "marcin", password)
+    zaloguj_haslem(auth, "opiekun", password)
 
     assert main(["--config", str(config_file), "user-list"]) == 0
     assert "bez 2FA" in capsys.readouterr().out
