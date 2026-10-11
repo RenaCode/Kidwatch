@@ -61,6 +61,7 @@ const PREVIEW_META = {
   devices: [
     { name: 'iPad Jan', child: 'Jan', icon: 'tablet' },
     { name: 'iPad Anna', child: 'Anna', icon: 'tablet' },
+    { name: 'Telefon Anna', child: 'Anna', icon: 'phone' },
     { name: 'Telewizor', child: null, icon: 'tv' },
   ],
 };

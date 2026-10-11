@@ -97,7 +97,7 @@ export default function Usage({ child, meta }) {
       <div className="hint dim" style={{ fontSize: '0.74rem', marginTop: 12 }}>
         Minuty to dolne oszacowanie z zapytań DNS: czas od pierwszego do ostatniego
         zapytania w sesji, przypisany do dnia, w którym sesja się zaczęła. Gra offline
-        albo odpowiedzi z pamięci podręcznej iPada nie zostawiają śladu. Telewizor
+        albo odpowiedzi z pamięci podręcznej iPada czy telefonu nie zostawiają śladu. Telewizor
         liczy czas odtwarzania wprost z odtwarzacza (odczyt co 30 s).
       </div>
     </div>

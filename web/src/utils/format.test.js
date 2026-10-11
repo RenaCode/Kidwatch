@@ -2,7 +2,7 @@
    Audyt runda 4, pkt 11: os doby dzielila przez stale 24 h. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dayPct, defaultPauseUntil, localInputValue, minutes, pauseUntil } from './format.js';
+import { dayPct, defaultPauseUntil, deviceKind, localInputValue, minutes, pauseUntil } from './format.js';
 
 test('doba 25 h (25.10): 23:30 nie przykleja sie do konca osi', () => {
   // 23:30 to 24,5 h od polnocy w dobie 25-godzinnej.
@@ -34,4 +34,11 @@ test('pelne godziny bez "0 min" (audyt 2026-10-10, N-8)', () => {
   assert.equal(minutes(120), '2 h');
   assert.equal(minutes(81), '1 h 21 min');
   assert.equal(minutes(45), '45 min');
+});
+
+test('rodzaj urzadzenia: telefon ma wlasna ikone, nieznany rodzaj to iPad', () => {
+  assert.deepEqual(deviceKind('phone'), { icon: 'phone', genitive: 'telefonu' });
+  assert.equal(deviceKind('tv').icon, 'tv');
+  assert.equal(deviceKind('ipad').genitive, 'iPada');
+  assert.equal(deviceKind(undefined).icon, 'tablet');
 });

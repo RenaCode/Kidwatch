@@ -634,6 +634,7 @@ def build_unifi_watcher(cfg, store):
         window_minutes=cfg.unifi.window_minutes,
         alarm_mb=cfg.unifi.alarm_mb,
         repeat_backoff_max_minutes=cfg.unifi.repeat_backoff_max_minutes,
+        kinds={d.display_name: d.kind for d in cfg.devices},
     )
 
 

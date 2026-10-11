@@ -19,6 +19,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .devicekind import DeviceKindName
+
 
 class MissingSecretError(RuntimeError):
     """Podnoszony, gdy komponent ma wystartowac, a jego sekretu nie ma w srodowisku."""
@@ -88,6 +90,11 @@ class DeviceConfig(_Base):
     display_name: str
     child: str
     source_ids: list[str] = Field(min_length=1)
+    #: "ipad" albo "phone" (telefon z Androidem, zwykle pod Family Link).
+    #: Oba ida przez DNS; telefon nie ma odczytu wprost (udid/host/known_apps
+    #: to uslugi lockdown iOS). Zmienia teksty pushy i podpowiedzi czujek —
+    #: patrz devicekind.py i docs/telefon-android.md.
+    kind: DeviceKindName = "ipad"
 
     # --- odczyt wprost z iPada (opcjonalny; bez tego dziala sama warstwa DNS)
     #: UDID urzadzenia. Identyfikujemy WYLACZNIE po nim — nazwy zwodza: te same
@@ -190,6 +197,18 @@ class DeviceConfig(_Base):
                 f"uzyj adresu IPv4 iPada w sieci lokalnej (rezerwacja DHCP)"
             )
         return candidate
+
+    @model_validator(mode="after")
+    def _phone_has_no_lockdown(self) -> DeviceConfig:
+        """Odczyt wprost (lockdown) istnieje tylko na iOS. Telefon z udid
+        i hostem wlaczalby petle, ktora nigdy sie nie polaczy, a jej cisza
+        wyglada jak spiace urzadzenie."""
+        if self.kind == "phone" and (self.udid or self.host or self.known_apps):
+            raise ValueError(
+                f"{self.display_name}: kind=phone nie ma odczytu wprost — usun "
+                f"'udid', 'host' i 'known_apps' (to uslugi iOS)"
+            )
+        return self
 
     @model_validator(mode="after")
     def _udid_and_host_go_together(self) -> DeviceConfig:
@@ -724,7 +743,7 @@ class WatchedDevice:
 
     name: str
     child: str | None
-    kind: str  # "ipad" | "tv"
+    kind: str  # "ipad" | "phone" | "tv"
     reads_device: bool
 
 
@@ -812,7 +831,7 @@ class Config(_Base):
     @model_validator(mode="after")
     def _tv_name_unique(self) -> Config:
         if self.tv.enabled and any(d.display_name == self.tv.name for d in self.devices):
-            raise ValueError(f"tv.name {self.tv.name!r} jest juz nazwa iPada w devices")
+            raise ValueError(f"tv.name {self.tv.name!r} jest juz nazwa urzadzenia w devices")
         return self
 
     @property
@@ -821,9 +840,10 @@ class Config(_Base):
 
     @property
     def watched(self) -> list[WatchedDevice]:
-        """Wszystko, co panel pokazuje: iPady dzieci, potem telewizor."""
+        """Wszystko, co panel pokazuje: urzadzenia dzieci (iPady, telefony),
+        potem telewizor."""
         out = [
-            WatchedDevice(d.display_name, d.child, "ipad", d.reads_device) for d in self.devices
+            WatchedDevice(d.display_name, d.child, d.kind, d.reads_device) for d in self.devices
         ]
         if self.tv.enabled:
             out.append(WatchedDevice(self.tv.name, None, "tv", True))

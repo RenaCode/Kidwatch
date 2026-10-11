@@ -17,6 +17,7 @@ from typing import Protocol
 
 from .classifier import UNKNOWN_LABEL, Classifier, registrable
 from .config import Config
+from .devicekind import kind_of
 from .formatting import payload, section, sections_text, short_title
 from .models import DEVICE_KINDS, Classification, DnsEvent, Kind, Notification, NotifyKind
 from .rollup import refresh_rollups
@@ -562,14 +563,16 @@ class Engine:
             # dostaje wylacznie informacje o sesjach — a SESSION_START szedl
             # do niej z priorytetem nocnym (audyt 2026-10-09, S5).
             kind = NotifyKind.NIGHT
-            title = f"\U0001F319 {device_cfg.child} uzywa iPada w nocy"
+            noun = kind_of(device_cfg.kind).genitive
+            title = f"\U0001F319 {device_cfg.child} uzywa {noun} w nocy"
             text = ", ".join(x for x in (f"{local:%H:%M}", what, self._presence(device, ts)) if x)
             priority = self._night_priority()
             self.store.set_json(f"night:{session_id}", {"n": 1, "last": to_iso(ts)})
         elif quiet:
             title = f"{device} aktywny W CICHYCH GODZINACH"
 
-        tags = ("warning", "ipad") if quiet or night else ("iphone", "ipad")
+        tag = kind_of(device_cfg.kind).tag
+        tags = ("warning", tag) if quiet or night else ("iphone", tag)
         return self._emit(
             Notification(
                 kind=kind,
@@ -878,6 +881,13 @@ class Engine:
             data=payload("daily", sections, note=note),
         )
 
+    def _kind_by_name(self, name: str) -> str | None:
+        """Rodzaj urzadzenia z konfiguracji po nazwie z bazy (None = nieznane)."""
+        for dev in self.cfg.devices:
+            if dev.display_name == name:
+                return dev.kind
+        return None
+
     def _device_label(self, dev) -> str:
         """Imie dziecka, a gdy ma kilka iPadow — z nazwa urzadzenia."""
         siblings = sum(1 for d in self.cfg.devices if d.child == dev.child)
@@ -956,6 +966,7 @@ class Engine:
                 continue
             device = row["device"]
             child = row["child"]
+            dev_kind = kind_of(self._kind_by_name(device))
             started = from_iso(row["started_at"])
             app = self.store.last_app(session_id, exclude=UNKNOWN_LABEL)
             stamp = f"{last_act.astimezone(tz):%H:%M}"
@@ -968,7 +979,7 @@ class Engine:
                         kind=NotifyKind.NIGHT,
                         title=(
                             f"\U0001F319 {child} "
-                            f"{'nadal uzywa' if n else 'uzywa'} iPada w nocy"
+                            f"{'nadal uzywa' if n else 'uzywa'} {dev_kind.genitive} w nocy"
                         ),
                         text=", ".join(x for x in parts if x),
                         dedup_key=f"night:{session_id}:{n}",
@@ -976,7 +987,7 @@ class Engine:
                         device=device,
                         app=app,
                         priority=self._night_priority(),
-                        tags=("warning", "ipad"),
+                        tags=("warning", dev_kind.tag),
                     )
                 )
             )
@@ -1224,8 +1235,7 @@ class Engine:
                     title=f"{name} nie zglasza sie do DNS",
                     text=(
                         f"Cisza od {fmt_duration(silence)}, a inne urzadzenia raportuja "
-                        f"normalnie.\nNajczestsza przyczyna: zdjety profil DNS albo "
-                        f"wylaczony szyfrowany DNS w Ustawieniach tego iPada."
+                        f"normalnie.\nNajczestsza przyczyna: {kind_of(dev.kind).dns_off}."
                     ),
                 )
             )
