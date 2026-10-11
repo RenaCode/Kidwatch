@@ -15,9 +15,10 @@ POST /api/game (czas gry) i POST /api/tv/pause|resume (pauza monitoringu TV),
 ktore NIE pisza do kidwatch.db, tylko dopisuja zadanie do kolejki
 w panel-auth.db (gametime.py, tvpause.py). Konta i sesje leza
 w osobnej bazie — panel_auth.py tlumaczy, dlaczego nie w kidwatch.db.
-Konto z rola `podglad` (panel_auth.ROLES) tylko oglada: czas gry, aplikacja
-TV, WhatsApp/powiadomienia i MDM (takze odczyt) dostaja 403 — _owner().
-Zostaje mu wlasne haslo i 2FA oraz pauza telewizora.
+Kazda trasa /api/* ma w POST_TRASY albo GET_TRASY jedno uprawnienie
+(uprawnienia.py), sprawdzane w jednym miejscu — _wymaga(). Konto `podglad`
+tylko oglada: kazda zmiana stanu poza wlasnym haslem i 2FA dostaje 403,
+takze pauza telewizora.
 Statyczny front jest dostepny bez sesji: to sam kod ekranu logowania, zadnych
 danych.
 """
@@ -51,7 +52,6 @@ from .mdm import MdmApi, MdmError, build_api
 from .panel_auth import (
     CSRF_COOKIE,
     CSRF_HEADER,
-    ROLE_OWNER,
     SESSION_COOKIE,
     AuthError,
     PanelAuth,
@@ -64,6 +64,17 @@ from .panel_sso import config_from_env as sso_from_env
 from .store import from_iso, to_iso
 from .tvpause import MAX_PAUSE_DAYS, TvPauseRequests, parse_until
 from .tvpause import TooManyRequests as TooManyPauseRequests
+from .uprawnienia import (
+    CZAS_GRY,
+    KONTO_WLASNE,
+    MDM_KOMENDY,
+    MDM_PODGLAD,
+    OPISY,
+    PODGLAD,
+    TV_APLIKACJA,
+    TV_PAUZA,
+    WHATSAPP,
+)
 
 log = logging.getLogger(__name__)
 
@@ -910,6 +921,73 @@ def _mdm_status(status: int) -> int:
     return 502 if status in (401, 403) else status
 
 
+# ================================================================= uprawnienia
+#: Trasa bez sesji panelu: logowanie i drugi skladnik. Wylogowanie tez —
+#: samo sprawdza sesje i CSRF, a bez sesji odsyla jeszcze na portal SSO.
+PUBLICZNA = "publiczna"
+
+#: Router POST: sciezka -> (uprawnienie, metoda handlera). Innych sciezek
+#: do_POST nie zna (404). Metoda trasy PUBLICZNA nie dostaje argumentow,
+#: pozostale — (sciezka, sesja) po sprawdzeniu sesji, CSRF i uprawnienia.
+#: Nowa trasa wymaga tu decyzji; test_uprawnienia.py pilnuje, ze kazda jest
+#: przypisana i ze `podglad` dostaje 403 na kazda, ktorej nie ma jego rola.
+POST_TRASY: dict[str, tuple[str, str]] = {
+    "/api/auth/login": (PUBLICZNA, "_login"),
+    "/api/auth/mfa": (PUBLICZNA, "_mfa"),
+    "/api/auth/logout": (PUBLICZNA, "_logout"),
+    "/api/auth/totp/setup": (KONTO_WLASNE, "_totp_setup"),
+    "/api/auth/totp/confirm": (KONTO_WLASNE, "_totp_confirm"),
+    "/api/auth/totp/disable": (KONTO_WLASNE, "_totp_disable"),
+    "/api/auth/password": (KONTO_WLASNE, "_change_password"),
+    "/api/game": (CZAS_GRY, "_game_request"),
+    "/api/tv/pause": (TV_PAUZA, "_tv_pause_request"),
+    "/api/tv/resume": (TV_PAUZA, "_tv_pause_request"),
+    "/api/tv/aplikacja/instaluj": (TV_APLIKACJA, "_tv_aplikacja"),
+    "/api/tv/aplikacja/paruj": (TV_APLIKACJA, "_tv_aplikacja"),
+    "/api/profile/whatsapp/start": (WHATSAPP, "_profile_post"),
+    "/api/profile/whatsapp/logout": (WHATSAPP, "_profile_post"),
+    "/api/profile/whatsapp/recipient": (WHATSAPP, "_profile_post"),
+    "/api/profile/whatsapp/recipients": (WHATSAPP, "_profile_post"),
+    "/api/profile/test": (WHATSAPP, "_profile_post"),
+    "/api/mdm/refresh": (MDM_KOMENDY, "_mdm_post"),
+    "/api/mdm/command": (MDM_KOMENDY, "_mdm_post"),
+    "/api/mdm/enroll": (MDM_KOMENDY, "_mdm_post"),
+    "/api/mdm/os-update": (MDM_KOMENDY, "_mdm_post"),
+}
+
+#: GET /api/*: sciezka -> uprawnienie; klucz z "/" na koncu to prefiks
+#: (UDID w sciezce). Numery WhatsAppa, UDID-y i stan aplikacji TV to ekrany
+#: zarzadzania — maja uprawnienia czynnosci, nie podgladu.
+GET_TRASY: dict[str, str] = {
+    "/api/health": PUBLICZNA,
+    "/api/auth/me": KONTO_WLASNE,
+    "/api/meta": PODGLAD,
+    "/api/screens": PODGLAD,
+    "/api/trends": PODGLAD,
+    "/api/devices": PODGLAD,
+    "/api/notifications": PODGLAD,
+    "/api/day": PODGLAD,
+    "/api/usage": PODGLAD,
+    "/api/export.csv": PODGLAD,
+    "/api/tv/pause": PODGLAD,
+    "/api/tv/aplikacja": TV_APLIKACJA,
+    "/api/profile/notify": WHATSAPP,
+    "/api/profile/whatsapp/qr": WHATSAPP,
+    "/api/mdm": MDM_PODGLAD,
+    "/api/mdm/devices/": MDM_PODGLAD,
+}
+
+
+def get_uprawnienie(path: str) -> str | None:
+    """Uprawnienie trasy GET albo None, gdy takiej trasy nie ma."""
+    if path in GET_TRASY and not path.endswith("/"):
+        return GET_TRASY[path]
+    for klucz, upr in GET_TRASY.items():
+        if klucz.endswith("/") and path.startswith(klucz) and len(path) > len(klucz):
+            return upr
+    return None
+
+
 def _cookie(name: str, value: str, max_age: int, *, http_only: bool, secure: bool) -> str:
     parts = [f"{name}={value}", "Path=/", f"Max-Age={max_age}", "SameSite=Strict"]
     if http_only:
@@ -1028,15 +1106,16 @@ def make_handler(
             self._sso_cookies = session_cookies(token, session, int(auth.session_seconds))
             return session
 
-        def _owner(self, session: Session) -> Session:
-            """Czynnosc tylko dla roli `wlasciciel`. Rola z bazy panelu (sesja),
-            nigdy z `Remote-Groups`."""
-            if session.rola != ROLE_OWNER:
-                log.warning("panel: %r (rola %s) bez uprawnien do %s %s",
-                            session.login, session.rola, self.command,
+        def _wymaga(self, session: Session, uprawnienie: str) -> Session:
+            """Jedyne miejsce sprawdzania uprawnien. Uprawnienia z bazy panelu
+            (rola + odstepstwa konta, panel_auth), nigdy z `Remote-Groups`."""
+            if uprawnienie not in session.uprawnienia:
+                log.warning("panel: %r (rola %s) bez uprawnienia %s do %s %s",
+                            session.login, session.rola, uprawnienie, self.command,
                             urlparse(self.path).path)
                 raise AuthError(
-                    403, "To konto ma tylko podgląd — ta czynność wymaga konta właściciela."
+                    403, f"To konto nie ma uprawnienia „{uprawnienie}” "
+                    f"({OPISY.get(uprawnienie, '?')}) — poproś właściciela panelu.",
                 )
             return session
 
@@ -1087,34 +1166,15 @@ def make_handler(
             self._sso_cookies, self._via_sso = [], False
             path = urlparse(self.path).path
             try:
-                if path == "/api/auth/login":
-                    self._login()
-                elif path == "/api/auth/mfa":
-                    self._mfa()
-                elif path == "/api/auth/totp/setup":
-                    self._json(200, auth.totp_setup(self._authed()))
-                elif path == "/api/auth/totp/confirm":
-                    self._totp_confirm()
-                elif path == "/api/auth/totp/disable":
-                    self._totp_disable()
-                elif path == "/api/auth/logout":
-                    self._logout()
-                elif path == "/api/game":
-                    self._game_request()
-                elif path == "/api/tv/pause":
-                    self._tv_pause_request("pause")
-                elif path == "/api/tv/resume":
-                    self._tv_pause_request("resume")
-                elif path in ("/api/tv/aplikacja/instaluj", "/api/tv/aplikacja/paruj"):
-                    self._tv_aplikacja(path)
-                elif path == "/api/auth/password":
-                    self._change_password()
-                elif path.startswith("/api/profile/"):
-                    self._profile_post(path)
-                elif path.startswith("/api/mdm/"):
-                    self._mdm_post(path)
-                else:
+                trasa = POST_TRASY.get(path)
+                if trasa is None:
                     self._json(404, {"error": "nie ma takiego endpointu"})
+                    return
+                uprawnienie, metoda = trasa
+                if uprawnienie == PUBLICZNA:
+                    getattr(self, metoda)()
+                else:
+                    getattr(self, metoda)(path, self._wymaga(self._authed(), uprawnienie))
             except AuthError as exc:
                 self._deny(exc)
             except Exception:
@@ -1168,23 +1228,23 @@ def make_handler(
             )
             self._start_session(token, session, {})
 
-        def _totp_confirm(self) -> None:
-            session = self._authed()
+        def _totp_setup(self, _path: str, session: Session) -> None:
+            self._json(200, auth.totp_setup(session))
+
+        def _totp_confirm(self, _path: str, session: Session) -> None:
             codes = auth.totp_confirm(session, self._str(self._read_json(), "code", 32))
             self._json(200, {"ok": True, "backup_codes": codes})
 
-        def _totp_disable(self) -> None:
-            session = self._authed()
+        def _totp_disable(self, _path: str, session: Session) -> None:
             data = self._read_json()
             auth.totp_disable(
                 session, self._str(data, "password", 512), self._str(data, "code", 32)
             )
             self._json(200, {"ok": True})
 
-        def _game_request(self) -> None:
+        def _game_request(self, _path: str, session: Session) -> None:
             """Zadanie czasu gry. NIE wykonuje go — dopisuje do kolejki,
             ktora odbiera petla glowna (jedyny pisarz kidwatch.db)."""
-            session = self._owner(self._authed())
             if queries.requests is None:
                 raise AuthError(404, "Czas gry jest wyłączony w konfiguracji")
             data = self._read_json()
@@ -1209,10 +1269,10 @@ def make_handler(
             log.info("panel: %s zleca czas gry %s dla %s", session.login, action, child)
             self._json(202, {"ok": True, "id": req_id})
 
-        def _tv_pause_request(self, action: str) -> None:
+        def _tv_pause_request(self, path: str, session: Session) -> None:
             """Pauza monitoringu TV. Jak czas gry: tylko zadanie w kolejce,
             wykonuje je tik petli glownej (tvpause.py) — po kilkunastu s."""
-            session = self._authed()
+            action = "pause" if path.endswith("/pause") else "resume"
             if queries.tv_requests is None:
                 raise AuthError(404, "Czujnik TV jest wyłączony w konfiguracji")
             data = self._read_json()
@@ -1239,12 +1299,11 @@ def make_handler(
                      f" do {to_iso(until)}" if until else "")
             self._json(202, {"ok": True, "id": req_id})
 
-        def _tv_aplikacja(self, path: str) -> None:
+        def _tv_aplikacja(self, path: str, session: Session) -> None:
             """Aplikacja Kidwatch TV (sources/tv_app.py): instalacja przez ADB
             i parowanie kodem z jej ekranu. Wykonuje petla serwisu."""
             from .sources import tv_app  # noqa: PLC0415
 
-            session = self._owner(self._authed())
             app = tv_app.AKTYWNA
             if app is None:
                 raise AuthError(404, "Aplikacja TV jest wyłączona w konfiguracji")
@@ -1261,8 +1320,7 @@ def make_handler(
                 raise AuthError(409, str(exc)) from exc
             self._json(200, {**stan_aplikacji(), "message": komunikat})
 
-        def _change_password(self) -> None:
-            session = self._authed()
+        def _change_password(self, _path: str, session: Session) -> None:
             data = self._read_json()
             closed = auth.change_password(
                 session, self._str(data, "old", 512), self._str(data, "new", 512)
@@ -1275,10 +1333,9 @@ def make_handler(
                 raise AuthError(404, "Bramka powiadomień nie jest skonfigurowana")
             return bramka
 
-        def _profile_post(self, path: str) -> None:
+        def _profile_post(self, path: str, session: Session) -> None:
             """Akcje WhatsAppa. Sesja + CSRF jak kazda zmiana stanu; bramke
             wola serwer swoim kluczem — przegladarka go nie zna."""
-            session = self._owner(self._authed())
             data = self._read_json()
             b = self._bramka()
             try:
@@ -1383,8 +1440,7 @@ def make_handler(
                 else:
                     self._json(_mdm_status(exc.status), {"error": str(exc)})
 
-        def _mdm_post(self, path: str) -> None:
-            session = self._owner(self._authed())
+        def _mdm_post(self, path: str, session: Session) -> None:
             data = self._read_json()
             udid = data.get("udid")
             if udid is not None and (
@@ -1476,6 +1532,15 @@ def make_handler(
             if session is None:
                 self._unauthorized()
                 return
+            uprawnienie = get_uprawnienie(path)
+            if uprawnienie is None:
+                self._json(404, {"error": "nie ma takiego endpointu"})
+                return
+            try:
+                self._wymaga(session, uprawnienie)
+            except AuthError as exc:
+                self._json(exc.status, {"error": exc.message})
+                return
             if path == "/api/auth/me":
                 self._json(200, {
                     "login": session.login,
@@ -1484,9 +1549,10 @@ def make_handler(
                     # sso: sesja z Authelii; logout_url: "Wyloguj" ma przejsc
                     # przez portal, inaczej nastepne zadanie zalogowaloby od nowa.
                     "sso": session.kind == "sso",
-                    # Front chowa przyciski, ktorych rola nie moze uzyc; serwer
-                    # i tak odmawia (403) niezaleznie od frontu.
+                    # Front chowa przyciski wedlug `uprawnienia` (nie nazwy
+                    # roli); serwer i tak odmawia (403) niezaleznie od frontu.
                     "rola": session.rola,
+                    "uprawnienia": sorted(session.uprawnienia),
                     "logout_url": sso.logout_url if self._via_sso else None,
                     **auth.account(session),
                 })
@@ -1494,15 +1560,6 @@ def make_handler(
             if path == "/api/meta":
                 self._json(200, queries.meta())
                 return
-            if (path.startswith(("/api/profile/", "/api/mdm/")) or path == "/api/mdm"
-                    or path == "/api/tv/aplikacja"):
-                # Numery WhatsAppa, UDID-y i zdarzenia MDM, stan aplikacji TV —
-                # to ekrany zarzadzania, nie podgladu.
-                try:
-                    self._owner(session)
-                except AuthError as exc:
-                    self._json(exc.status, {"error": exc.message})
-                    return
             if path.startswith("/api/profile/"):
                 try:
                     self._profile_get(path, session)

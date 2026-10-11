@@ -37,7 +37,8 @@ function failedRequest(pause) {
 
 // Baner nad cala zawartoscia panelu - widoczny przy kazdym dziecku i kazdej
 // zakladce, bo zero minut TV w tym czasie ma nie wygladac na brak ogladania.
-export function TvPauseBanner({ pause, onChanged }) {
+// Bez uprawnienia `tv.pauza` (konto podgladu) baner zostaje, przycisk nie.
+export function TvPauseBanner({ pause, onChanged, canChange = false }) {
   const { busy, error, run } = usePauseAction(onChanged);
   if (!pause?.available || !pause.active) return null;
   const pending = busy || pause.request?.pending;
@@ -50,8 +51,10 @@ export function TvPauseBanner({ pause, onChanged }) {
       </span>
       <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         {pending && <span className="badge loading-pulse">wysyłanie…</span>}
-        <button className="btn-ghost" disabled={pending}
-                onClick={() => run('/api/tv/resume', {})}>Wznów teraz</button>
+        {canChange && (
+          <button className="btn-ghost" disabled={pending}
+                  onClick={() => run('/api/tv/resume', {})}>Wznów teraz</button>
+        )}
       </span>
       {(error || failedRequest(pause)) && (
         <span className="tv-pause-error">{error || failedRequest(pause)}</span>
@@ -62,8 +65,9 @@ export function TvPauseBanner({ pause, onChanged }) {
 
 // Przycisk otwiera wybor konca pauzy - termin (domyslnie za tydzien) albo
 // "do odwolania". `hero`: duza pigulka na karcie szybkiej kontroli w Pulpicie;
-// w Ustawieniach zwykly przycisk. Logika ta sama.
-export function TvPauseControl({ pause, onChanged, hero = false }) {
+// w Ustawieniach zwykly przycisk. Logika ta sama. Bez `canChange` (brak
+// uprawnienia `tv.pauza`) tylko stan, bez przyciskow - serwer i tak odmawia.
+export function TvPauseControl({ pause, onChanged, hero = false, canChange = false }) {
   const { busy, error, run } = usePauseAction(onChanged);
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState('until');
@@ -71,6 +75,16 @@ export function TvPauseControl({ pause, onChanged, hero = false }) {
   if (!pause?.available) return null;
   const pending = busy || pause.request?.pending;
   const failed = error || failedRequest(pause);
+
+  if (!canChange) {
+    return (
+      <div className={hero ? 'tv-hero-action' : 'row-body'} style={hero ? undefined : { marginBottom: 12 }}>
+        <span className={`badge ${pause.active ? 'warn' : ''}`}>
+          {pause.active ? `⏸️ monitoring wstrzymany ${pauseUntil(pause.active.until)}` : 'monitoring TV włączony'}
+        </span>
+      </div>
+    );
+  }
 
   if (pause.active && hero) {
     return (

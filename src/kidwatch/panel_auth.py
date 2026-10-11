@@ -56,6 +56,8 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from . import uprawnienia
+
 log = logging.getLogger(__name__)
 
 # Parametry Argon2id jak w Traderze (64 MiB / t=3 / p=4, powyzej minimum OWASP).
@@ -131,8 +133,17 @@ CREATE TABLE IF NOT EXISTS users (
     -- Ostatni zaakceptowany krok czasowy (RFC 6238 §5.2): kod z krokiem nie
     -- wiekszym jest odrzucany, choc sam w sobie poprawny.
     totp_last_step   INTEGER,
-    -- 'wlasciciel' = wszystko, 'podglad' = tylko ogladanie (ROLE nizej).
+    -- 'wlasciciel' = wszystko, 'podglad' = tylko ogladanie (uprawnienia.py).
     rola             TEXT NOT NULL DEFAULT 'wlasciciel'
+);
+
+-- Pojedyncze odstepstwa od roli (uprawnienia.py): nadane = 1 doklada
+-- uprawnienie, 0 je odbiera. Brak wiersza = jak rola.
+CREATE TABLE IF NOT EXISTS user_uprawnienia (
+    user_id     INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    uprawnienie TEXT NOT NULL,
+    nadane      INTEGER NOT NULL,
+    PRIMARY KEY (user_id, uprawnienie)
 );
 
 -- Nieudane hasla przy logowaniu, per (login, adres). Per adres, nie per
@@ -191,12 +202,9 @@ CREATE INDEX IF NOT EXISTS ix_sessions_expires ON sessions (expires_at);
 """
 
 
-#: Rola konta panelu, z BAZY (nigdy z naglowka SSO). `podglad` widzi historie,
-#: ekrany, uzycie i powiadomienia, ale nie zmienia niczego poza wlasnym
-#: kontem (haslo, 2FA) i pauza telewizora — panel.py, _wlasciciel().
-ROLE_OWNER = "wlasciciel"
-ROLE_VIEWER = "podglad"
-ROLES = (ROLE_OWNER, ROLE_VIEWER)
+#: Rola konta panelu, z BAZY (nigdy z naglowka SSO). Co rola moze, mowi
+#: uprawnienia.ROLE_UPRAWNIENIA; panel.py sprawdza uprawnienia, nie role.
+ROLE_OWNER, ROLE_VIEWER, ROLES = uprawnienia.ROLE_OWNER, uprawnienia.ROLE_VIEWER, uprawnienia.ROLES
 
 
 class AuthError(Exception):
@@ -226,6 +234,9 @@ class Session:
     #: "sso" — sesja z naglowka Authelii (bez hasla i TOTP panelu), "haslo" — zwykla.
     kind: str = "haslo"
     rola: str = ROLE_OWNER
+    #: Uprawnienia z roli i odstepstw konta, czytane przy kazdym zadaniu.
+    #: Domyslnie puste: Session zbudowana recznie niczego nie otwiera.
+    uprawnienia: frozenset[str] = frozenset()
 
 
 # ======================================================================= hasla
@@ -491,9 +502,45 @@ class PanelAuth:
             conn.execute("BEGIN IMMEDIATE")
             uid = self._user_id(conn, login)
             conn.execute("UPDATE users SET rola = ? WHERE id = ?", (rola, uid))
+            # Odstepstwa dotyczyly poprzedniej roli: `-mdm.podglad` u
+            # wlasciciela nie ma przetrwac awansu ani degradacji po cichu.
+            conn.execute("DELETE FROM user_uprawnienia WHERE user_id = ?", (uid,))
             n = self._revoke_all(conn, uid)
             conn.execute("COMMIT")
         return n
+
+    def set_permissions(self, login: str, zmiany: dict[str, bool | None]) -> int:
+        """Pojedyncze nadania (True), odebrania (False) i powroty do roli
+        (None) z CLI. Sesje konta sa uniewazniane jak przy set_role."""
+        for nazwa, nadane in zmiany.items():
+            if nazwa not in uprawnienia.OPISY or (nazwa in uprawnienia.STALE and nadane is False):
+                raise ValueError(f"niedozwolona zmiana uprawnienia {nazwa!r}")
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            uid = self._user_id(conn, login)
+            for nazwa, nadane in zmiany.items():
+                if nadane is None:
+                    conn.execute("DELETE FROM user_uprawnienia WHERE user_id = ? "
+                                 "AND uprawnienie = ?", (uid, nazwa))
+                else:
+                    conn.execute(
+                        "INSERT INTO user_uprawnienia (user_id, uprawnienie, nadane) "
+                        "VALUES (?, ?, ?) ON CONFLICT (user_id, uprawnienie) "
+                        "DO UPDATE SET nadane = excluded.nadane",
+                        (uid, nazwa, int(nadane)),
+                    )
+            n = self._revoke_all(conn, uid)
+            conn.execute("COMMIT")
+        return n
+
+    @staticmethod
+    def _uprawnienia(conn: sqlite3.Connection, uid: int, rola: str) -> frozenset[str]:
+        nadane, odebrane = set(), set()
+        for r in conn.execute(
+            "SELECT uprawnienie, nadane FROM user_uprawnienia WHERE user_id = ?", (uid,)
+        ):
+            (nadane if r["nadane"] else odebrane).add(r["uprawnienie"])
+        return uprawnienia.efektywne(rola, nadane, odebrane)
 
     def reset_user(self, login: str, password: str) -> int:
         """Nowe haslo, zdjeta blokada, WSZYSTKIE sesje i bilety uniewaznione.
@@ -560,7 +607,17 @@ class PanelAuth:
                 " AND b.used_at IS NULL) AS backup_codes_left "
                 "FROM users u ORDER BY u.login"
             ).fetchall()
-        return [dict(r) for r in rows]
+            users = [dict(r) for r in rows]
+            for u in users:
+                uid = self._user_id(conn, u["login"])
+                u["uprawnienia"] = sorted(self._uprawnienia(conn, uid, u["rola"]))
+                u["odstepstwa"] = [
+                    ("+" if r["nadane"] else "-") + r["uprawnienie"]
+                    for r in conn.execute(
+                        "SELECT uprawnienie, nadane FROM user_uprawnienia WHERE user_id = ? "
+                        "ORDER BY uprawnienie", (uid,))
+                ]
+        return users
 
     def has_users(self) -> bool:
         with self._conn() as conn:
@@ -1041,6 +1098,7 @@ class PanelAuth:
             expires_at=now + self.session_seconds,
             kind=kind,
             rola=rola,
+            uprawnienia=self._uprawnienia(conn, row["user_id"], rola),
         )
         conn.execute(
             "INSERT INTO sessions (token_hash, user_id, csrf, created_at, expires_at, "
@@ -1093,8 +1151,9 @@ class PanelAuth:
                 "FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?",
                 (token_hash(token),),
             ).fetchone()
-        if row is None or row["expires_at"] <= self.clock():
-            return None
+            if row is None or row["expires_at"] <= self.clock():
+                return None
+            upr = self._uprawnienia(conn, row["id"], row["rola"])
         return Session(
             login=row["login"],
             user_id=row["id"],
@@ -1103,6 +1162,7 @@ class PanelAuth:
             expires_at=row["expires_at"],
             kind=row["kind"] or "haslo",
             rola=row["rola"],
+            uprawnienia=upr,
         )
 
     def account(self, session: Session) -> dict:

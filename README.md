@@ -383,7 +383,8 @@ Panel accounts are managed from the CLI (in the cluster via
 
 ```bash
 python -m kidwatch user-add <login> [--password-stdin] [--rola podglad]  # random password printed ONCE
-python -m kidwatch user-rola <login> wlasciciel|podglad   # change role, log the account out
+python -m kidwatch user-rola <login> wlasciciel|podglad   # change role, clear overrides, log out
+python -m kidwatch user-uprawnienia <login> [+perm] [-perm] [=perm]  # per-account overrides, log out
 python -m kidwatch user-reset <login> [--password-stdin]  # new password, unlock, log out everywhere
 python -m kidwatch user-reset <login> --totp              # remove 2FA (lost phone)
 python -m kidwatch user-del <login>
@@ -413,8 +414,8 @@ renacode-infra) in front of the panel **and** the same switch sets
 - Sensitive actions still need the panel password or panel 2FA code exactly
   as before (password change, disabling 2FA, WhatsApp sender/recipients, bot
   QR) — an SSO session is not a fresh confirmation. MDM commands, game time
-  and TV pause need a session + CSRF (and the `wlasciciel` role, except TV
-  pause), as with a password session.
+  and TV pause need a session + CSRF and the matching permission (see
+  "Roles and permissions" below), as with a password session.
 - "Wyloguj (SSO)" deletes the panel session and goes to
   `https://auth.renacode.com/logout?rd=https://<host>/`, which ends the
   Authelia session for all RenaCode apps.
@@ -435,22 +436,44 @@ Adding a family member (two steps, same lowercase login in both places):
    read -rs HASLO && printf '%s\n' "$HASLO" | kubectl -n default exec -i deploy/kidwatch \
      -c kidwatch -- python -m kidwatch user-add <login> --rola podglad --password-stdin; unset HASLO
    ```
-   The password is the break-glass login and the confirmation for her own
+   The password is the break-glass login and the confirmation for their own
    password/2FA changes. `user-add` warns when the login could never match
    `Remote-User`.
 
-**Roles** (from the panel database, never from `Remote-Groups`):
+**Roles and permissions** (from the panel database, never from
+`Remote-Groups`; code: `src/kidwatch/uprawnienia.py`). Every panel route is
+declared once with one permission (`POST_TRASY` / `GET_TRASY` in
+`panel.py`) and checked in one place; `/api/auth/me` returns the account's
+`uprawnienia` and the web UI hides buttons by permission, not by role name.
+A test walks the router tables: a new route without a permission decision
+fails CI, and every route the `podglad` role lacks is checked for 403.
 
-| | `wlasciciel` (default; all accounts that existed before roles) | `podglad` |
-|---|---|---|
-| Pulpit, Ekrany, Użycie, Trendy, Dzień, Powiadomienia, CSV export | yes | yes |
-| Own password and 2FA, log out | yes | yes |
-| TV monitoring pause / resume | yes | yes — an action for an adult watching TV themselves; the banner shows who paused it, and it is time-limited |
-| Game time (block/allow/bonus) | yes | no (403, buttons hidden) |
-| MDM (read and commands), Kidwatch TV app, WhatsApp/notification channels and bot QR | yes | no (403, section/buttons hidden) |
+| Permission | What it opens | `wlasciciel` (default; all accounts that existed before roles) | `podglad` |
+|---|---|---|---|
+| `konto.wlasne` | own password and 2FA (cannot be revoked) | yes | yes |
+| `podglad.historia` | Pulpit, Ekrany, Użycie, Trendy, Dzień, Powiadomienia, device and TV-pause state, CSV export | yes | yes |
+| `tv.pauza` | TV monitoring pause / resume | yes | no (403, buttons hidden; the pause banner stays visible) |
+| `czas_gry.zmiana` | game time (block/allow/bonus) | yes | no |
+| `mdm.podglad` | MDM section: iPads, UDIDs, events | yes | no (section hidden) |
+| `mdm.komendy` | MDM refresh/lock/restart, enrollment link, forced iPadOS update | yes | no |
+| `tv.aplikacja` | Kidwatch TV app (state, install, pairing) | yes | no |
+| `whatsapp.konfiguracja` | WhatsApp/notification channels, recipients, bot QR | yes | no |
 
-`python -m kidwatch user-rola <login> wlasciciel|podglad` changes a role and
-logs that account out; `user-list` shows roles.
+Logging out needs no permission. `python -m kidwatch user-rola <login>
+wlasciciel|podglad` changes a role, clears that account's overrides and logs
+it out. Single permissions can be granted above or revoked below the role:
+
+```bash
+python -m kidwatch user-uprawnienia <login>                         # show effective permissions
+python -m kidwatch user-uprawnienia <login> +tv.pauza               # e.g. let a viewer pause TV
+python -m kidwatch user-uprawnienia <login> -mdm.komendy            # owner without MDM commands
+python -m kidwatch user-uprawnienia <login> =tv.pauza               # back to what the role gives
+```
+
+Overrides live in the `user_uprawnienia` table of `panel-auth.db` (created on
+start, existing accounts keep their role and get no overrides), every change
+logs the account out so the UI redraws its buttons, and `user-list` shows
+them next to the role.
 
 ### Profile: password and WhatsApp
 
@@ -751,7 +774,7 @@ restart needed. It is the only reliable way to get good game coverage.
 | `tv-pauza` | TV monitoring pause (see above) |
 | `unifi [--fingerprint]` | who is on home Wi-Fi per UniFi; `--fingerprint` prints the controller's SHA-256 certificate fingerprint for `unifi.cert_sha256` |
 | `device`, `device-watch` | one-off / looping read of iPad state over lockdown (`device_read`, requires pairing and the same LAN) |
-| `user-add`, `user-reset`, `user-del`, `user-list` | panel accounts |
+| `user-add`, `user-reset`, `user-del`, `user-list`, `user-rola`, `user-uprawnienia` | panel accounts, roles and permissions |
 
 Global options: `--config <path>` (default `$KIDWATCH_CONFIG` or
 `config.yaml`), `-v/--verbose`.

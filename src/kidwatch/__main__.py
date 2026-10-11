@@ -13,6 +13,7 @@ import sys
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+from . import uprawnienia
 from .classifier import Classifier, registrable
 from .config import Config, MissingSecretError
 from .engine import Engine
@@ -1075,6 +1076,34 @@ async def cmd_user_rola(args) -> int:
     return 0
 
 
+async def cmd_user_uprawnienia(args) -> int:
+    from .panel_auth import UnknownUser  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    if not args.zmiany:
+        # Samo `user-uprawnienia <login>`: podglad stanu, bez zmian.
+        u = next((u for u in _auth(cfg).list_users() if u["login"] == args.login.strip()), None)
+        if u is None:
+            print(f"nie ma konta {args.login!r}", file=sys.stderr)
+            return 1
+        print(f"konto {u['login']!r}, rola {u['rola']}, odstepstwa: "
+              f"{' '.join(u['odstepstwa']) or 'brak'}")
+        for nazwa, opis in uprawnienia.OPISY.items():
+            print(f"  [{'x' if nazwa in u['uprawnienia'] else ' '}] {nazwa:24} {opis}")
+        return 0
+    try:
+        zmiany = uprawnienia.parsuj_zmiany(args.zmiany)
+        n = _auth(cfg).set_permissions(args.login, zmiany)
+    except ValueError as exc:
+        print(f"odrzucone: {exc}", file=sys.stderr)
+        return 1
+    except UnknownUser:
+        print(f"nie ma konta {args.login!r}", file=sys.stderr)
+        return 1
+    print(f"konto {args.login!r}: {' '.join(args.zmiany)}, wylogowano sesji: {n}")
+    return 0
+
+
 async def cmd_user_list(args) -> int:
     cfg = Config.load(args.config)
     users = _auth(cfg).list_users()
@@ -1095,13 +1124,14 @@ async def cmd_user_list(args) -> int:
             f"2FA wlaczone, kodow zapasowych: {u['backup_codes_left']}"
             if u["totp"] else "bez 2FA"
         )
-        print(f"{u['login']:24} rola: {u['rola']}, ostatnie logowanie: {last}, {totp}, "
+        odst = f" ({' '.join(u['odstepstwa'])})" if u["odstepstwa"] else ""
+        print(f"{u['login']:24} rola: {u['rola']}{odst}, ostatnie logowanie: {last}, {totp}, "
               f"nieudane proby: {u['failed_logins']}{lock}")
     return 0
 
 
 # ========================================================================= main
-PANEL_ROLES = ("wlasciciel", "podglad")
+PANEL_ROLES = uprawnienia.ROLES
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1192,17 +1222,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="zamiast hasla zdejmij drugi skladnik (zgubiony telefon, zmiana "
         "PANEL_TOTP_KEY); haslo zostaje, 2FA mozna wlaczyc od nowa w panelu",
     )
-    # Rola z bazy panelu: `podglad` tylko oglada. Lista jak panel_auth.ROLES —
-    # przepisana, bo import panel_auth (argon2, cryptography) przy kazdym
-    # poleceniu CLI bylby zbedny; zgodnosc pilnuje test.
+    # Rola z bazy panelu: `podglad` tylko oglada (uprawnienia.py — bez
+    # zaleznosci, wiec CLI nie laduje argon2 przy kazdym poleceniu).
     users["user-add"].add_argument(
         "--rola", choices=PANEL_ROLES, default=PANEL_ROLES[0],
         help="wlasciciel (domyslnie) albo podglad: tylko ogladanie, bez MDM, czasu gry, "
-        "WhatsAppa i aplikacji TV",
+        "pauzy TV, WhatsAppa i aplikacji TV",
     )
-    user_rola = sub.add_parser("user-rola", help="zmien role konta (wylogowuje jego sesje)")
+    user_rola = sub.add_parser(
+        "user-rola", help="zmien role konta (wylogowuje jego sesje, kasuje odstepstwa uprawnien)"
+    )
     user_rola.add_argument("login")
     user_rola.add_argument("rola", choices=PANEL_ROLES)
+    user_upr = sub.add_parser(
+        "user-uprawnienia",
+        help="pojedyncze uprawnienia konta ponad role albo ponizej niej (wylogowuje)",
+        description="+nazwa nadaje, -nazwa odbiera, =nazwa wraca do roli; bez zmian — "
+        "wypisuje stan. Uprawnienia: " + ", ".join(uprawnienia.UPRAWNIENIA)
+        + ". Zmiana roli (user-rola) kasuje odstepstwa.",
+    )
+    user_upr.add_argument("login")
+    # REMAINDER: `-mdm.podglad` to zmiana, nie opcja argparse.
+    user_upr.add_argument("zmiany", nargs=argparse.REMAINDER)
     user_del = sub.add_parser("user-del", help="usun konto panelu WWW razem z sesjami")
     user_del.add_argument("login")
     sub.add_parser("user-list", help="konta panelu WWW, ostatnie logowanie i blokady")
@@ -1233,6 +1274,7 @@ def main(argv: list[str] | None = None) -> int:
         "user-reset": cmd_user_reset,
         "user-del": cmd_user_del,
         "user-rola": cmd_user_rola,
+        "user-uprawnienia": cmd_user_uprawnienia,
         "user-list": cmd_user_list,
     }
     try:
