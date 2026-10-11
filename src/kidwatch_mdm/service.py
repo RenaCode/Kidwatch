@@ -512,7 +512,7 @@ class MDMService:
     def reconcile(self, now: datetime | None = None) -> dict[str, int]:
         """Jeden obieg: odswiezenie stanu, profile i DDM zgodne z polityka, pushe."""
         now = now or now_utc()
-        stats = {"devices": 0, "enqueued": 0, "pushed": 0}
+        stats = {"devices": 0, "enqueued": 0, "pushed": 0, "push_failed": 0}
         refresh_after = timedelta(hours=self.policy.refresh_hours)
         for device in self.store.devices():
             if device["checked_out_at"] or device["push_token"] is None:
@@ -561,8 +561,12 @@ class MDMService:
                 )
             )
             stats["enqueued"] += after - before
-            if after and self._push_due(device, now) and self.push(udid, now=now):
-                stats["pushed"] += 1
+            if after and self._push_due(device, now):
+                pushed = self._push(udid, now=now)
+                if pushed:
+                    stats["pushed"] += 1
+                elif pushed is False:
+                    stats["push_failed"] += 1
         # Trwale w bazie: liveness restartuje pod, a czujka Kidwatch ma widziec,
         # ze uzgadnianie nie przeszlo od godziny, takze po restarcie.
         self.store.set_setting("last_reconcile_ok_at", iso(now))
@@ -588,14 +592,24 @@ class MDMService:
         return sum(1 for udid in pending if self.push(udid, force=True))
 
     def push(self, udid: str, *, now: datetime | None = None, force: bool = False) -> bool:
+        return bool(self._push(udid, now=now, force=force))
+
+    def _push(self, udid: str, *, now: datetime | None = None, force: bool = False) -> bool | None:
+        """True/False = wynik APNs, None = push pominiety (bez tokenu, za wczesnie)."""
         now = now or now_utc()
         device = self.store.device(udid)
         if device is None or device["checked_out_at"] or not device["push_token"]:
-            return False
+            return None
         last = from_iso(device["last_push_at"])
         if not force and last is not None and now - last < MIN_PUSH_INTERVAL:
-            return False
+            return None
         result = self.pusher.push(device["push_token"], device["push_magic"])
+        # Stan calego serwera: push() nie rzuca, wiec bez tego APNs
+        # nieosiagalne (egress, adresy Apple) bylo widac tylko w push_error
+        # urzadzenia, a uzgadnianie uchodzilo za udane (audyt 2026-10-10, S-2).
+        self.store.record_push(
+            result.ok, now, None if result.ok else f"{result.status} {result.reason}"
+        )
         fields: dict[str, Any] = {"last_push_at": iso(now)}
         if result.ok:
             fields["push_error"] = None

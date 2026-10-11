@@ -2,7 +2,7 @@
    Audyt runda 4, pkt 11: os doby dzielila przez stale 24 h. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dayPct, defaultPauseUntil, localInputValue, pauseUntil } from './format.js';
+import { dayPct, defaultPauseUntil, localInputValue, minutes, pauseUntil } from './format.js';
 
 test('doba 25 h (25.10): 23:30 nie przykleja sie do konca osi', () => {
   // 23:30 to 24,5 h od polnocy w dobie 25-godzinnej.
@@ -27,4 +27,11 @@ test('pauza TV: domyslny termin za 7 dni o pelnej godzinie, w czasie lokalnym', 
 test('pauza TV: etykieta terminu', () => {
   assert.equal(pauseUntil(null), 'do odwołania');
   assert.match(pauseUntil('2026-10-10T18:00:00+02:00'), /^do 10 .*18:00$/);
+});
+
+test('pelne godziny bez "0 min" (audyt 2026-10-10, N-8)', () => {
+  assert.equal(minutes(60), '1 h');
+  assert.equal(minutes(120), '2 h');
+  assert.equal(minutes(81), '1 h 21 min');
+  assert.equal(minutes(45), '45 min');
 });

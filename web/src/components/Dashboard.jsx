@@ -7,6 +7,7 @@
 import React, { useMemo } from 'react';
 import { useApi, qs } from '../utils/api';
 import { minutes } from '../utils/format';
+import { loadState } from '../utils/loadState';
 import Devices from './Devices';
 import { TvPauseControl } from './TvPause';
 import Icon from './Icons';
@@ -66,8 +67,12 @@ function ScreenTime({ child, devices, notes, onOpenSection }) {
         )}
       </div>
 
-      {res.error && <span className="badge bad">błąd: {res.error}</span>}
-      {!res.data ? (
+      {res.error && res.data && <span className="badge bad">błąd: {res.error}</span>}
+      {loadState(res) === 'error' ? (
+        // Blad pierwszego odczytu (np. 503): bez danych nie ma czego ladowac -
+        // wieczne „Wczytywanie…" obok plakietki bledu udawalo, ze cos przyjdzie.
+        <div className="notice">Nie udało się pobrać danych: {res.error}</div>
+      ) : loadState(res) === 'loading' ? (
         <div className="empty loading-pulse">Wczytywanie…</div>
       ) : rows.length === 0 ? (
         <div className="empty">Brak urządzeń dla tego wyboru.</div>

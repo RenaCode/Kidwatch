@@ -31,9 +31,9 @@ const Segments = memo(function Segments({ tl, range, hl }) {
   const runs = hl ? [...tl.runs].sort((a, b) => (groupOf(a.app) === hl) - (groupOf(b.app) === hl)) : tl.runs;
   return (
     <>
-      {tl.sessions.map((s) => <span key={`s${s.start}`} className="seg-session" style={span(s)} />)}
+      {tl.sessions.map((s) => <span key={s.id} className="seg-session" style={span(s)} />)}
       {runs.map((r) => (
-        <span key={`${r.app}-${r.start}`} style={span(r)}
+        <span key={r.id} style={span(r)}
               className={`seg-run c-${colorKey(tl.top, r.app)} ${hl && groupOf(r.app) === hl ? 'hl' : ''}`} />
       ))}
     </>

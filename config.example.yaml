@@ -98,6 +98,9 @@ mdm:
   poll_seconds: 60
   silent_alert_hours: 24        # iPad bez kontaktu z MDM dluzej = alarm (raz na dobe)
   cert_warn_days: 30            # ostrzezenie przed wygasnieciem certyfikatu APNs
+  # reconcile_alert_minutes: 30  # uzgadnianie na serwerze MDM stoi dluzej = alarm
+  # push_alert_minutes: 60       # komendy czekaja, a zaden push APNs nie przeszedl = alarm
+  # stuck_alert_hours: 24        # komenda wisi na odzywajacym sie iPadzie = alarm
 
 # -------------------------------------------------------- UniFi (opcja)
 # Klucz API w zmiennej UNIFI_API_KEY. Odcisk certyfikatu UDM:

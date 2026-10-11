@@ -188,6 +188,14 @@ def _describe(event: dict, name: str) -> tuple[NotifyKind, int, str, str] | None
     return None
 
 
+#: Podpowiedz do alarmu wiszacej komendy, wg jej stanu w kolejce serwera.
+_STUCK_HINT = {
+    "not_now": "iPad odpowiada „nie teraz” (np. zablokowany ekran) — wykona ja po odblokowaniu.",
+    "queued": "iPad laczy sie z MDM, ale jej nie pobral — sprawdz pushe.",
+    "sent": "iPad ja pobral, ale nie odpowiedzial.",
+}
+
+
 class MdmWatcher:
     def __init__(self, api: MdmApi, store: Store, cfg: MdmConfig) -> None:
         self.api = api
@@ -240,10 +248,16 @@ class MdmWatcher:
         out += self._silent(devices, now)
         out += self._certificate(data["health"], now)
         out += self._reconcile(data["health"], now)
+        out += self._push(data["health"], devices, now)
+        out += self._stuck(devices, now)
         server = data["health"].get("instance")
         if server and server != self.store.get_meta(INSTANCE_KEY):
             self.store.set_meta(INSTANCE_KEY, server)
-        return out
+        # Klucze z data ("raz na dobe") nic nie dawaly bez zapisu: mdm_loop
+        # wysyla przez Outbox, ktory kluczy nie sprawdza, wiec stan trwajacy
+        # (iPad wylaczony, uzgadnianie stoi) dawal ten sam push co obieg,
+        # czyli co minute (audyt 2026-10-10, W1). Zapis tu, w watku petli.
+        return [n for n in out if self.store.mark_sent(n.dedup_key, now)]
 
     def poll(self, now: datetime) -> list[Notification]:
         """Wszystko w biezacym watku (CLI, testy)."""
@@ -408,6 +422,71 @@ class MdmWatcher:
                 tags=("mdm",),
             )
         ]
+
+    def _push(self, health: dict, devices: list[dict], now: datetime) -> list[Notification]:
+        """Komendy czekaja, a pushe do APNs padaja: uzgadnianie wyglada na
+        zdrowe, a zaden iPad nie przychodzi po blokade, profil ani DDM."""
+        since = health.get("push_failing_since")
+        if not since:
+            return []
+        pending = sum(
+            d.get("pending_commands") or 0 for d in devices if not d.get("checked_out_at")
+        )
+        stalled = now - datetime.fromisoformat(since)
+        if not pending or stalled < timedelta(minutes=self.cfg.push_alert_minutes):
+            return []
+        hours = int(stalled.total_seconds() // 3600)
+        return [
+            Notification(
+                kind=NotifyKind.MDM,
+                title=f"MDM: pushe do iPadow nie wychodza od {hours} h",
+                text=(
+                    f"Czeka komend: {pending}. APNs odrzuca albo jest nieosiagalny "
+                    f"({health.get('push_failures') or '?'} nieudanych z rzedu, ostatni "
+                    f"blad: {health.get('last_push_error') or '?'}). Sprawdz egress "
+                    "kidwatch-mdm do api.push.apple.com:443 i certyfikat APNs."
+                ),
+                dedup_key=f"mdm-push:{now.date().isoformat()}",
+                ts=now,
+                priority=4,
+                tags=("mdm",),
+            )
+        ]
+
+    def _stuck(self, devices: list[dict], now: datetime) -> list[Notification]:
+        """Komenda wiszaca dobami na iPadzie, ktory sie odzywa (NotNow bez
+        konca, zgubiony push). iPad milczacy ma juz alarm ciszy."""
+        limit = timedelta(hours=self.cfg.stuck_alert_hours)
+        silent = timedelta(hours=self.cfg.silent_alert_hours)
+        out: list[Notification] = []
+        for d in devices:
+            oldest = d.get("oldest_pending")
+            if d.get("checked_out_at") or not oldest or not d.get("last_seen_at"):
+                continue
+            if now - datetime.fromisoformat(d["last_seen_at"]) >= silent:
+                continue
+            waiting = now - datetime.fromisoformat(oldest["created_at"])
+            if waiting < limit:
+                continue
+            name = self._name(d, d["udid"])
+            hours = int(waiting.total_seconds() // 3600)
+            out.append(
+                Notification(
+                    kind=NotifyKind.MDM,
+                    title=f"{name}: komenda {oldest['request_type']} czeka od {hours} h",
+                    text=(
+                        f"Czeka komend: {d.get('pending_commands') or 1}, najstarsza w stanie "
+                        f"{oldest['status']}. "
+                        + _STUCK_HINT.get(oldest["status"], "")
+                    ),
+                    dedup_key=f"mdm-stuck:{d['udid']}:{now.date().isoformat()}",
+                    ts=now,
+                    device=name,
+                    priority=3,
+                    tags=("mdm",),
+                )
+            )
+        return out
 
 
 async def mdm_loop(
