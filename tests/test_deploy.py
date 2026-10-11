@@ -8,6 +8,7 @@ w testach. Ten plik na to nie pozwala.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -486,7 +487,8 @@ def test_egress_bez_adresow_domu_niczego_nie_wycina():
     assert swiat == {"to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}]}
     assert len(spec["egress"]) == 3
     values = (CHART / "values.yaml").read_text(encoding="utf-8")
-    assert "192.168." not in values and "10.13.13" not in values
+    # Zadnych adresow prywatnych (RFC 1918) — bez wymieniania tych prawdziwych.
+    assert not re.search(r"\b(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+", values)
 
 
 @pytestmark_helm
