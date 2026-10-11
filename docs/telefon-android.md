@@ -50,9 +50,10 @@ przed ekranem); Google nie udostepnia ich przez publiczne API.
 ### b) UniFi — telefon w domowym Wi-Fi
 
 Android od 10 uzywa **losowego, ale stalego** adresu MAC dla kazdej sieci
-(zmienia sie dopiero po przywroceniu ustawien fabrycznych albo zapomnieniu
-sieci). Losowanie przy kazdym polaczeniu (Android 12+) dotyczy tylko sieci
-otwartych i sugestii aplikacji albo opcji programisty
+(wg AOSP zmienia sie dopiero po przywroceniu ustawien fabrycznych — samo
+zapomnienie i ponowne dodanie sieci go nie zmienia; tak bylo tylko w Androidzie
+10). Losowanie przy kazdym polaczeniu (Android 12+) dotyczy tylko sieci
+otwartych (gdy producent to wlaczyl) i sugestii aplikacji albo opcji programisty
 ([AOSP: MAC randomization](https://source.android.com/docs/core/connect/wifi-mac-randomization-behavior)).
 Do `unifi_mac` wpisujesz wiec adres z Ustawien Wi-Fi telefonu dla domowej sieci
 (jak u iPada z prywatnym adresem Wi-Fi).
@@ -182,6 +183,16 @@ Adres MAC (przy „Uzyj losowego MAC” — to ten losowy, staly dla tej sieci).
   i czujka UniFi w domu (ruch bez zapytan DNS). Poza domem zostaje sama cisza.
 - **Cisza ≠ obejscie:** wylaczony telefon, tryb samolotowy i rozladowana
   bateria wygladaja tak samo. Tekst alarmu to wymienia.
+- **Doze (uspienie Androida):** telefon lezacy bez ruchu, z wylaczonym ekranem
+  i nie na ladowarce wchodzi w Doze — siec dostaja aplikacje tylko w oknach
+  serwisowych, ktore z czasem system planuje coraz rzadziej
+  ([Android Developers: Doze](https://developer.android.com/training/monitoring-device-state/doze-standby)).
+  Push FCM idzie juz otwartym polaczeniem, bez DNS. Telefon zostawiony w dzien
+  na kilka godzin moze wiec milczec dluzej niz `device_silence_minutes` (180)
+  bez zadnego obejscia — iPad tak nie milknie (odpytuje Apple nawet spiac).
+  Pierwszy tydzien: porownaj alarmy ciszy z tym, gdzie telefon lezal; przy
+  falszywych alarmach podnies prog. Kidwatch nie ma progu per urzadzenie —
+  `device_silence_minutes` dotyczy tez iPadow.
 - **VPN** (takze wbudowany w niektore przegladarki) omija Prywatny DNS — przed
   tym chroni tylko zatwierdzanie aplikacji w Family Link.
 - **Szum Androida** (`app_map.yaml`, sekcja `noise`, wpisy z 2026-10-11) jest
