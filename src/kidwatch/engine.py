@@ -16,7 +16,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 
 from .classifier import UNKNOWN_LABEL, Classifier, registrable
-from .config import Config
+from .config import HomeConfig
 from .devicekind import kind_of
 from .formatting import payload, section, sections_text, short_title
 from .models import DEVICE_KINDS, Classification, DnsEvent, Kind, Notification, NotifyKind
@@ -206,7 +206,7 @@ class Engine:
 
     def __init__(
         self,
-        cfg: Config,
+        cfg: HomeConfig,
         store: Store,
         classifier: Classifier,
         clock: Clock | None = None,

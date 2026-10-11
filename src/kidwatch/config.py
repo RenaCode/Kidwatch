@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .devicekind import DeviceKindName
+from .devicekind import ALIASY, DeviceKindName
 
 
 class MissingSecretError(RuntimeError):
@@ -132,6 +132,13 @@ class DeviceConfig(_Base):
     #: do "czasu gry": blokady uslug w NextDNS sa ustawieniem PROFILU, wiec
     #: na wspolnym profilu zablokowanie gier jednemu dziecku blokuje je obu.
     nextdns_profile: str | None = None
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _kind_alias(cls, v: object) -> object:
+        """`phone-android` (nazwa z modelu domow) = `phone`. Do czasu zmiany
+        frontu panel i API dalej dostaja `phone` (devicekind.ALIASY)."""
+        return ALIASY.get(v, v) if isinstance(v, str) else v
 
     @field_validator("nextdns_profile")
     @classmethod
@@ -423,13 +430,24 @@ class BramkaConfig(_Base):
         return _require_env("BRAMKA_KLUCZ", "klucz administracyjny bramki"), True
 
 
-class NotifiersConfig(_Base):
+class HomeNotifiersConfig(_Base):
+    """Kanaly domu (wlasny temat ntfy, wlasny Home Assistant)."""
+
     ntfy: NtfyConfig | None = None
     homeassistant: HomeAssistantConfig | None = None
+
+
+class InstanceNotifiersConfig(_Base):
+    """Bramka jest jedna na instancje: jeden klucz wysylkowy, jeden bot."""
+
     bramka: BramkaConfig | None = None
 
 
-class DeviceReadConfig(_Base):
+class NotifiersConfig(HomeNotifiersConfig, InstanceNotifiersConfig):
+    pass
+
+
+class HomeDeviceReadConfig(_Base):
     """Odczyt stanu iPadow wprost z urzadzen (lockdown po TCP).
 
     Warstwa niezalezna od DNS. Daje wiecej szczegolow (lista zainstalowanych
@@ -438,9 +456,6 @@ class DeviceReadConfig(_Base):
     """
 
     enabled: bool = False
-    #: Katalog z rekordami parowania <UDID>.plist, wygenerowanymi JEDNORAZOWO
-    #: przy parowaniu po kablu. Rekordy sa przenosne miedzy maszynami.
-    pair_record_dir: str = "~/.pymobiledevice3"
     poll_seconds: float = Field(default=60.0, ge=5.0)
     timeout_seconds: float = Field(default=20.0, ge=1.0)
     #: Budzet godzinowy WARSTWY URZADZEN, oddzielony od engine.max_notifications_
@@ -455,9 +470,19 @@ class DeviceReadConfig(_Base):
     #: Disney+ chodzi jako `Dominguez`, "Logika i Matematyka" jako `academy`.
     process_aliases: dict[str, str] = Field(default_factory=dict)
 
+
+class InstanceDeviceReadConfig(_Base):
+    #: Katalog z rekordami parowania <UDID>.plist, wygenerowanymi JEDNORAZOWO
+    #: przy parowaniu po kablu. Rekordy sa przenosne miedzy maszynami.
+    pair_record_dir: str = "~/.pymobiledevice3"
+
     @property
     def records_path(self) -> Path:
         return Path(self.pair_record_dir).expanduser()
+
+
+class DeviceReadConfig(HomeDeviceReadConfig, InstanceDeviceReadConfig):
+    pass
 
 
 class TvConfig(_Base):
@@ -657,7 +682,7 @@ class GameTimeConfig(_Base):
         return sorted(set(self.services) - NEXTDNS_SERVICES)
 
 
-class MdmConfig(_Base):
+class HomeMdmConfig(_Base):
     """Wlasny serwer MDM (kidwatch-mdm, osobny pod): alarmy i zakladka panelu.
 
     Token API idzie z MDM_ADMIN_TOKEN (Sekret kidwatch-mdm-admin) — ten sam,
@@ -665,8 +690,6 @@ class MdmConfig(_Base):
     """
 
     enabled: bool = False
-    #: Service admina w klastrze (port 8081, niewystawiony przez Ingress).
-    url: str = "http://kidwatch-mdm-admin:8081"
     poll_seconds: float = Field(default=60.0, ge=10.0)
     timeout_seconds: float = Field(default=10.0, ge=1.0)
     #: iPad bez kontaktu z MDM dluzej niz tyle = alarm (raz na dobe).
@@ -691,8 +714,21 @@ class MdmConfig(_Base):
         return os.environ.get("MDM_ADMIN_TOKEN", "").strip() or None
 
 
-class StoreConfig(_Base):
-    path: str = "kidwatch.db"
+class InstanceMdmConfig(_Base):
+    """Serwer MDM jest jeden na instancje (jeden certyfikat APNs, jedna CA)."""
+
+    #: Service admina w klastrze (port 8081, niewystawiony przez Ingress).
+    url: str = "http://kidwatch-mdm-admin:8081"
+
+
+class MdmConfig(HomeMdmConfig, InstanceMdmConfig):
+    pass
+
+
+class HomeStoreConfig(_Base):
+    """Retencja danych domu. Sciezka bazy domu wynika z jego numeru
+    (domy.sciezka_bazy_domu), wiec tu jej nie ma."""
+
     retention_days: int = Field(default=30, ge=0)
     #: Historia powiadomien w panelu. Osobno od zdarzen DNS, bo jest malutka,
     #: a to ona odpowiada na "co sie dzialo w zeszlym miesiacu". 0 = bez limitu.
@@ -702,6 +738,11 @@ class StoreConfig(_Base):
     #: domyslnie BEZ LIMITU — to one przechowuja historie, gdy surowe zdarzenia
     #: i sesje znikaja po retention_days. 0 = bez limitu.
     rollup_retention_days: int = Field(default=0, ge=0)
+
+
+class StoreConfig(HomeStoreConfig):
+    #: Baza Domu 1. Kolejne domy maja bazy obok: <katalog>/domy/<id>/kidwatch.db.
+    path: str = "kidwatch.db"
 
 
 class PanelConfig(_Base):
@@ -751,21 +792,51 @@ class WatchedDevice:
     reads_device: bool
 
 
-class Config(_Base):
+def _panel_auth_path(panel: PanelConfig, store: StoreConfig) -> str:
+    """Sciezka bazy logowania panelu — jawna albo obok bazy glownej."""
+    if panel.auth_db:
+        return panel.auth_db
+    return str(Path(store.path).parent / "panel-auth.db")
+
+
+class InstanceConfig(_Base):
+    """Czesc konfiguracji wspolna dla calej instalacji, niezalezna od domu:
+    panel, baza Domu 1 i domyslna retencja, bramka powiadomien, adres serwera
+    MDM, mapa aplikacji, katalog rekordow parowania (docs/architektura-domy.md
+    §2.5). Pola maja te same nazwy i znaczenie co w `Config`."""
+
+    notifiers: InstanceNotifiersConfig = Field(default_factory=InstanceNotifiersConfig)
+    device_read: InstanceDeviceReadConfig = Field(default_factory=InstanceDeviceReadConfig)
+    store: StoreConfig = Field(default_factory=StoreConfig)
+    panel: PanelConfig = Field(default_factory=PanelConfig)
+    mdm: InstanceMdmConfig = Field(default_factory=InstanceMdmConfig)
+    app_map_path: str = "app_map.yaml"
+
+    @property
+    def panel_auth_path(self) -> str:
+        return _panel_auth_path(self.panel, self.store)
+
+
+class HomeConfig(_Base):
+    """Konfiguracja JEDNEGO domu: dzisiejszy `Config` bez czesci instancji.
+
+    Silnik, magazyn, kolejka i czujki domu dostaja ten model. `Config`
+    (plik config.yaml) jest jego podklasa, wiec wszystko, co przyjmuje
+    `HomeConfig`, przyjmuje tez stary `Config` — a `Config.split()` daje
+    `HomeConfig` bez pol instancji. Walidatory dzialaja per dom."""
+
     timezone: str = "Europe/Warsaw"
     source: SourceConfig
     devices: list[DeviceConfig] = Field(min_length=1)
     engine: EngineConfig = Field(default_factory=EngineConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
-    notifiers: NotifiersConfig = Field(default_factory=NotifiersConfig)
-    device_read: DeviceReadConfig = Field(default_factory=DeviceReadConfig)
-    store: StoreConfig = Field(default_factory=StoreConfig)
-    panel: PanelConfig = Field(default_factory=PanelConfig)
+    notifiers: HomeNotifiersConfig = Field(default_factory=HomeNotifiersConfig)
+    device_read: HomeDeviceReadConfig = Field(default_factory=HomeDeviceReadConfig)
+    store: HomeStoreConfig = Field(default_factory=HomeStoreConfig)
     tv: TvConfig = Field(default_factory=TvConfig)
     unifi: UnifiConfig = Field(default_factory=UnifiConfig)
     game_time: GameTimeConfig = Field(default_factory=GameTimeConfig)
-    mdm: MdmConfig = Field(default_factory=MdmConfig)
-    app_map_path: str = "app_map.yaml"
+    mdm: HomeMdmConfig = Field(default_factory=HomeMdmConfig)
 
     @field_validator("timezone")
     @classmethod
@@ -777,7 +848,7 @@ class Config(_Base):
         return v
 
     @model_validator(mode="after")
-    def _device_read_needs_targets(self) -> Config:
+    def _device_read_needs_targets(self) -> HomeConfig:
         if self.device_read.enabled and not any(d.reads_device for d in self.devices):
             raise ValueError(
                 "device_read.enabled=true, ale zadne urzadzenie nie ma 'udid' i 'host'"
@@ -794,7 +865,7 @@ class Config(_Base):
         return self
 
     @model_validator(mode="after")
-    def _device_ids_unique(self) -> Config:
+    def _device_ids_unique(self) -> HomeConfig:
         """Ten sam identyfikator u dwoch dzieci to cicha pomylka w atrybucji."""
         seen: dict[str, str] = {}
         for dev in self.devices:
@@ -808,7 +879,7 @@ class Config(_Base):
         return self
 
     @model_validator(mode="after")
-    def _profiles_need_nextdns(self) -> Config:
+    def _profiles_need_nextdns(self) -> HomeConfig:
         """Profil per urzadzenie ma sens tylko przy zrodle NextDNS. A dziecko
         z dwoma iPadami na roznych profilach nie da sie sterowac jednym
         przyciskiem — blokada trafilaby tylko w polowe jego urzadzen."""
@@ -833,7 +904,7 @@ class Config(_Base):
         return self
 
     @model_validator(mode="after")
-    def _tv_name_unique(self) -> Config:
+    def _tv_name_unique(self) -> HomeConfig:
         if self.tv.enabled and any(d.display_name == self.tv.name for d in self.devices):
             raise ValueError(f"tv.name {self.tv.name!r} jest juz nazwa urzadzenia w devices")
         return self
@@ -852,13 +923,6 @@ class Config(_Base):
         if self.tv.enabled:
             out.append(WatchedDevice(self.tv.name, None, "tv", True))
         return out
-
-    @property
-    def panel_auth_path(self) -> str:
-        """Sciezka bazy logowania panelu — jawna albo obok bazy glownej."""
-        if self.panel.auth_db:
-            return self.panel.auth_db
-        return str(Path(self.store.path).parent / "panel-auth.db")
 
     # ------------------------------------------------------------- NextDNS
     def profile_of(self, dev: DeviceConfig) -> str:
@@ -889,6 +953,51 @@ class Config(_Base):
             if needle in dev.source_ids:
                 return dev
         return None
+
+
+#: Pola `Config` nalezace do instancji, wylaczane z `HomeConfig` przy split().
+_TYLKO_INSTANCJA: dict = {
+    "panel": True,
+    "app_map_path": True,
+    "store": {"path"},
+    "notifiers": {"bramka"},
+    "device_read": {"pair_record_dir"},
+    "mdm": {"url"},
+}
+
+
+class Config(HomeConfig):
+    """Plik config.yaml: dom (Dom 1) i instancja w jednym. Plik bez sekcji
+    domow jest poprawny na zawsze (docs/architektura-domy.md §6)."""
+
+    notifiers: NotifiersConfig = Field(default_factory=NotifiersConfig)
+    device_read: DeviceReadConfig = Field(default_factory=DeviceReadConfig)
+    store: StoreConfig = Field(default_factory=StoreConfig)
+    panel: PanelConfig = Field(default_factory=PanelConfig)
+    mdm: MdmConfig = Field(default_factory=MdmConfig)
+    app_map_path: str = "app_map.yaml"
+
+    @property
+    def panel_auth_path(self) -> str:
+        """Sciezka bazy logowania panelu — jawna albo obok bazy glownej."""
+        return _panel_auth_path(self.panel, self.store)
+
+    def split(self) -> tuple[InstanceConfig, HomeConfig]:
+        """(czesc instancji, konfiguracja Domu 1). Obie walidowane od nowa
+        z wartosci tego obiektu — po `load`, wiec ze sciezkami juz
+        bezwzglednymi i tematem ntfy juz wzietym ze srodowiska."""
+        home = HomeConfig.model_validate(
+            self.model_dump(include=set(HomeConfig.model_fields), exclude=_TYLKO_INSTANCJA)
+        )
+        instance = InstanceConfig.model_validate({
+            "notifiers": self.notifiers.model_dump(include={"bramka"}),
+            "device_read": {"pair_record_dir": self.device_read.pair_record_dir},
+            "store": self.store.model_dump(),
+            "panel": self.panel.model_dump(),
+            "mdm": {"url": self.mdm.url},
+            "app_map_path": self.app_map_path,
+        })
+        return instance, home
 
     @classmethod
     def load(cls, path: str | Path) -> Config:

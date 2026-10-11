@@ -56,7 +56,7 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from . import uprawnienia
+from . import domy, uprawnienia
 
 log = logging.getLogger(__name__)
 
@@ -441,6 +441,12 @@ class PanelAuth:
                 conn.execute(
                     "ALTER TABLE users ADD COLUMN rola TEXT NOT NULL DEFAULT 'wlasciciel'"
                 )
+            # Domy (domy.py): Dom 1 i czlonkostwa z rol kont. Blad migracji nie
+            # zatrzymuje logowania — panel liczy uprawnienia z `users` jak dotad.
+            try:
+                domy.migruj_conn(conn)
+            except sqlite3.Error:
+                log.exception("panel: migracja domow nie powiodla sie")
         if new:
             # Hashe hasel i sesji nie sa dla innych uzytkownikow systemu.
             with contextlib.suppress(OSError):
@@ -476,15 +482,21 @@ class PanelAuth:
             raise ValueError("pusty login")
         _check_role(rola)
         check_password_policy(password)
+        password_hash = hash_password(password)
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             try:
-                conn.execute(
+                cur = conn.execute(
                     "INSERT INTO users (login, password_hash, created_at, rola) "
                     "VALUES (?, ?, ?, ?)",
-                    (login, hash_password(password), self.clock(), rola),
+                    (login, password_hash, self.clock(), rola),
                 )
             except sqlite3.IntegrityError as exc:
+                conn.execute("ROLLBACK")
                 raise UserExists(login) from exc
+            # Kazde konto to (do panelu domow) czlonek Domu 1 z ta sama rola.
+            domy.uzgodnij_konto_conn(conn, int(cur.lastrowid), self.clock())
+            conn.execute("COMMIT")
 
     @staticmethod
     def _user_id(conn: sqlite3.Connection, login: str) -> int:
@@ -505,6 +517,7 @@ class PanelAuth:
             # Odstepstwa dotyczyly poprzedniej roli: `-mdm.podglad` u
             # wlasciciela nie ma przetrwac awansu ani degradacji po cichu.
             conn.execute("DELETE FROM user_uprawnienia WHERE user_id = ?", (uid,))
+            domy.uzgodnij_konto_conn(conn, uid, self.clock())
             n = self._revoke_all(conn, uid)
             conn.execute("COMMIT")
         return n
@@ -529,6 +542,7 @@ class PanelAuth:
                         "DO UPDATE SET nadane = excluded.nadane",
                         (uid, nazwa, int(nadane)),
                     )
+            domy.uzgodnij_konto_conn(conn, uid, self.clock())
             n = self._revoke_all(conn, uid)
             conn.execute("COMMIT")
         return n

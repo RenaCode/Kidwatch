@@ -117,6 +117,10 @@ class Notification:
     #: Tresc w postaci strukturalnej dla panelu (formatting.py: sekcje,
     #: aplikacje z minutami, tytuly). None = panel pokazuje sam `text`.
     data: dict | None = None
+    #: Dom, z ktorego pochodzi powiadomienie. Ustawia kolejka domu
+    #: (Outbox z `dom_id`), nie silnik; kolejka odrzuca notke z cudzym domem.
+    #: None = jeszcze nie przeszla przez kolejke domu.
+    dom_id: int | None = None
 
 
 @dataclass
