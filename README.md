@@ -851,6 +851,7 @@ restart needed. It is the only reliable way to get good game coverage.
 | `unifi [--fingerprint]` | who is on home Wi-Fi per UniFi; `--fingerprint` prints the controller's SHA-256 certificate fingerprint for `unifi.cert_sha256` |
 | `device`, `device-watch` | one-off / looping read of iPad state over lockdown (`device_read`, requires pairing and the same LAN) |
 | `user-add`, `user-reset`, `user-del`, `user-list`, `user-rola`, `user-uprawnienia` | panel accounts, roles and permissions |
+| `domy` | households in `panel-auth.db` and their members (runs the idempotent migration to "Dom 1"; see `docs/architektura-domy.md`) |
 
 Global options: `--config <path>` (default `$KIDWATCH_CONFIG` or
 `config.yaml`), `-v/--verbose`.

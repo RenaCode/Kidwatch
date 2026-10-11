@@ -10,6 +10,11 @@ Prywatny DNS (DNS-over-TLS) na host `<nazwa>-<profil>.dns.nextdns.io`.
 NextDNS zamienia `--` w nazwie na spacje, wiec `Telefon--Dziecka-1-abc123`
 pokazuje sie w logach jako "Telefon Dziecka 1" (docs/telefon-android.md).
 Telewizor ma osobna sciezke (sources/tv*.py) i nie jest tu rodzajem.
+
+Model domow (docs/architektura-domy.md §2.4) nazywa telefon `phone-android`.
+W konfiguracji obie nazwy znacza to samo; wewnatrz i w API panelu zostaje
+`phone`, dopoki front nie zna nowej nazwy. Tabela `urzadzenia` w bazie
+panelu uzywa nazw z modelu domow (RODZAJ_W_BAZIE).
 """
 
 from __future__ import annotations
@@ -60,6 +65,13 @@ KINDS: dict[str, DeviceKind] = {
 }
 
 
+#: Nazwa z modelu domow -> nazwa uzywana w konfiguracji, silniku i API.
+ALIASY: dict[str, str] = {"phone-android": "phone"}
+#: Rodzaj z konfiguracji -> `urzadzenia.rodzaj` w bazie panelu (domy.py).
+RODZAJ_W_BAZIE: dict[str, str] = {"ipad": "ipad", "phone": "phone-android"}
+
+
 def kind_of(kind: str | None) -> DeviceKind:
     """Nieznany albo brak rodzaju = iPad (konfiguracje sprzed telefonow)."""
-    return KINDS.get(kind or "ipad", KINDS["ipad"])
+    kind = ALIASY.get(kind or "ipad", kind or "ipad")
+    return KINDS.get(kind, KINDS["ipad"])

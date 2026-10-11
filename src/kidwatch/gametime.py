@@ -50,7 +50,7 @@ from pathlib import Path
 
 import httpx
 
-from .config import Config
+from .config import HomeConfig
 from .models import Notification, NotifyKind
 from .store import Store, from_iso, to_iso
 
@@ -83,6 +83,9 @@ CREATE TABLE IF NOT EXISTS game_requests (
 );
 CREATE INDEX IF NOT EXISTS ix_game_requests_open ON game_requests (done_at, id);
 """
+#: Baza sprzed domow: kolumna dochodzi z domyslnym Domem 1, wiec stare
+#: wiersze i wiersze wstawione przez obraz sprzed domow naleza do Domu 1.
+DOM_COLUMN = "ALTER TABLE game_requests ADD COLUMN dom_id INTEGER NOT NULL DEFAULT 1"
 
 
 class TooManyRequests(RuntimeError):
@@ -92,14 +95,23 @@ class TooManyRequests(RuntimeError):
 # ================================================================ kolejka zadan
 class GameRequests:
     """Zadania z panelu w panel-auth.db. Kazda operacja na wlasnym polaczeniu
-    — panel wola z watkow ThreadingHTTPServer, petla z watku glownego."""
+    — panel wola z watkow ThreadingHTTPServer, petla z watku glownego.
 
-    def __init__(self, path: str | Path, clock: Callable[[], float] = time.time) -> None:
+    Kolejka jest wspolna dla domow, obiekt widzi tylko wiersze swojego
+    `dom_id` (zlecenie, odczyt, odhaczenie)."""
+
+    def __init__(
+        self, path: str | Path, clock: Callable[[], float] = time.time, *, dom_id: int = 1
+    ) -> None:
         self.path = str(path)
         self.clock = clock
+        self.dom_id = dom_id
         new = not Path(self.path).exists()
         with self._conn() as conn:
             conn.executescript(REQUESTS_SCHEMA)
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(game_requests)")}
+            if "dom_id" not in cols:
+                conn.execute(DOM_COLUMN)
         if new:
             # Ten sam plik co konta panelu (hashe hasel) — jak w PanelAuth.
             with contextlib.suppress(OSError):
@@ -119,35 +131,40 @@ class GameRequests:
             raise ValueError(f"nieznana akcja {action!r}")
         with self._conn() as conn:
             pending = conn.execute(
-                "SELECT COUNT(*) FROM game_requests WHERE child=? AND done_at IS NULL", (child,)
+                "SELECT COUNT(*) FROM game_requests WHERE dom_id=? AND child=? "
+                "AND done_at IS NULL", (self.dom_id, child)
             ).fetchone()[0]
             if pending >= MAX_PENDING_PER_CHILD:
                 raise TooManyRequests(child)
             cur = conn.execute(
-                "INSERT INTO game_requests (child, action, minutes, login, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (child, action, minutes, login, self.clock()),
+                "INSERT INTO game_requests (dom_id, child, action, minutes, login, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (self.dom_id, child, action, minutes, login, self.clock()),
             )
             return int(cur.lastrowid)
 
     def pending(self) -> list[sqlite3.Row]:
         with self._conn() as conn:
             return list(
-                conn.execute("SELECT * FROM game_requests WHERE done_at IS NULL ORDER BY id")
+                conn.execute(
+                    "SELECT * FROM game_requests WHERE dom_id=? AND done_at IS NULL ORDER BY id",
+                    (self.dom_id,),
+                )
             )
 
     def finish(self, request_id: int, ok: bool, error: str | None = None) -> None:
         with self._conn() as conn:
             conn.execute(
-                "UPDATE game_requests SET done_at=?, ok=?, error=? WHERE id=?",
-                (self.clock(), int(ok), error, request_id),
+                "UPDATE game_requests SET done_at=?, ok=?, error=? WHERE id=? AND dom_id=?",
+                (self.clock(), int(ok), error, request_id, self.dom_id),
             )
 
     def latest(self, child: str) -> dict | None:
         """Ostatnie zadanie dziecka — panel pokazuje "wysylanie..." albo blad."""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT * FROM game_requests WHERE child=? ORDER BY id DESC LIMIT 1", (child,)
+                "SELECT * FROM game_requests WHERE dom_id=? AND child=? ORDER BY id DESC LIMIT 1",
+                (self.dom_id, child),
             ).fetchone()
         if row is None:
             return None
@@ -163,8 +180,9 @@ class GameRequests:
     def purge(self, older_than_days: int = 30) -> None:
         with self._conn() as conn:
             conn.execute(
-                "DELETE FROM game_requests WHERE done_at IS NOT NULL AND done_at < ?",
-                (self.clock() - older_than_days * 86400,),
+                "DELETE FROM game_requests WHERE dom_id=? AND done_at IS NOT NULL "
+                "AND done_at < ?",
+                (self.dom_id, self.clock() - older_than_days * 86400),
             )
 
 
@@ -283,7 +301,7 @@ def observed_state(data: dict, services: list[str], categories: list[str]) -> st
 class GameTime:
     def __init__(
         self,
-        cfg: Config,
+        cfg: HomeConfig,
         store: Store,
         requests: GameRequests,
         client: ParentalControlClient,

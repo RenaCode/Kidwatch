@@ -12,6 +12,7 @@ import contextlib
 import contextvars
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
 
@@ -250,6 +251,7 @@ class Outbox:
         konta: ProfilePowiadomien | None = None,
         dziecko: Mapping[str, str] | None = None,
         tz: ZoneInfo | None = None,
+        dom_id: int | None = None,
     ) -> None:
         self.dispatcher = dispatcher
         self.store = store
@@ -258,13 +260,32 @@ class Outbox:
         self.konta = konta
         self.dziecko = dict(dziecko or {})
         self.tz = tz or UTC
+        #: Dom tej kolejki (domy.HomeRuntime). Notka bez domu dostaje go tutaj,
+        #: notka z innym domem jest odrzucana — druga bariera obok osobnej
+        #: bazy domu na wypadek wspolnego kodu, ktory zgubi kontekst.
+        self.dom_id = dom_id
         self._tryb_log: str | None = None
 
     @property
     def notifiers(self) -> list[Notifier]:
         return self.dispatcher.notifiers
 
+    def _domu(self, notes: Sequence[Notification]) -> list[Notification]:
+        if self.dom_id is None:
+            return list(notes)
+        out = []
+        for note in notes:
+            if note.dom_id is None:
+                out.append(replace(note, dom_id=self.dom_id))
+            elif note.dom_id == self.dom_id:
+                out.append(note)
+            else:
+                log.error("kolejka domu %d: odrzucam powiadomienie domu %d (%s)",
+                          self.dom_id, note.dom_id, note.dedup_key)
+        return out
+
     async def send_all(self, notes: Sequence[Notification]) -> None:
+        notes = self._domu(notes)
         if not notes:
             return
         self.store.outbox_put(notes, self._now())
@@ -459,7 +480,7 @@ class Outbox:
         titles = "\n".join(f"- {i.note.title}" for i in lost[:5])
         more = f"\n(i {len(lost) - 5} wiecej)" if len(lost) > 5 else ""
         self.store.outbox_put(
-            [
+            self._domu([
                 Notification(
                     kind=NotifyKind.WATCHDOG,
                     title="kidwatch nie dostarczyl powiadomien",
@@ -474,7 +495,7 @@ class Outbox:
                     priority=4,
                     tags=("rotating_light",),
                 )
-            ],
+            ]),
             now,
         )
         self._wake.set()

@@ -22,7 +22,7 @@ import json
 import logging
 from datetime import date, datetime, time, timedelta
 
-from .config import Config
+from .config import HomeConfig
 from .store import Store, from_iso, to_iso
 
 log = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ def _session_minutes(row) -> int:
     return max(0, round((from_iso(end) - from_iso(row["started_at"])).total_seconds() / 60))
 
 
-def compute_day(cfg: Config, store: Store, day: date, now: datetime) -> list[dict]:
+def compute_day(cfg: HomeConfig, store: Store, day: date, now: datetime) -> list[dict]:
     """Wiersze daily_rollup dla wszystkich obserwowanych urzadzen w dniu `day`.
     Urzadzenie bez aktywnosci dostaje wiersz z zerami — dzien bez uzycia to
     tez informacja, a ponowne przeliczenie musi umiec "wyzerowac" dzien."""
@@ -88,7 +88,7 @@ def compute_day(cfg: Config, store: Store, day: date, now: datetime) -> list[dic
     return out
 
 
-def days_to_refresh(cfg: Config, store: Store, now: datetime) -> list[date]:
+def days_to_refresh(cfg: HomeConfig, store: Store, now: datetime) -> list[date]:
     today = now.astimezone(cfg.tz).date()
     days = {today, today - timedelta(days=1)}
     span = store.session_start_range()
@@ -108,7 +108,7 @@ def days_to_refresh(cfg: Config, store: Store, now: datetime) -> list[date]:
     return sorted(days)
 
 
-def refresh_rollups(cfg: Config, store: Store, now: datetime, force: bool = False) -> int:
+def refresh_rollups(cfg: HomeConfig, store: Store, now: datetime, force: bool = False) -> int:
     """Przelicza agregaty, nie czesciej niz co ROLLUP_EVERY. Zwraca liczbe dni."""
     last = store.get_meta("rollup_at")
     if not force and last is not None and now - from_iso(last) < ROLLUP_EVERY:

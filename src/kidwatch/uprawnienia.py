@@ -50,9 +50,24 @@ OPISY: dict[str, str] = {
 }
 UPRAWNIENIA = tuple(OPISY)
 
+#: Role w DOMU (docs/architektura-domy.md §2.3, tabela `czlonkostwa`).
+#: Na razie zakresy jak role konta: `wlasciciel-domu` = `wlasciciel`,
+#: `podglad` = `podglad`. Uprawnienia domu (`dom.*`) i przeniesienie
+#: `whatsapp.konfiguracja` do zakresu instancji dochodza z panelem domow.
+ROLA_WLASCICIEL_DOMU = "wlasciciel-domu"
+ROLA_ZARZADCA = "zarzadca"
+ROLA_PODGLAD = ROLE_VIEWER
+ROLE_DOMU = (ROLA_WLASCICIEL_DOMU, ROLA_ZARZADCA, ROLA_PODGLAD)
+
 ROLE_UPRAWNIENIA: dict[str, frozenset[str]] = {
     ROLE_OWNER: frozenset(UPRAWNIENIA),
     ROLE_VIEWER: frozenset({KONTO_WLASNE, PODGLAD}),
+}
+#: Osobno od ROLE_UPRAWNIENIA: tamta idzie do panelu jako lista rol konta.
+ROLE_DOMU_UPRAWNIENIA: dict[str, frozenset[str]] = {
+    ROLA_WLASCICIEL_DOMU: ROLE_UPRAWNIENIA[ROLE_OWNER],
+    ROLA_ZARZADCA: frozenset(UPRAWNIENIA) - {KONTA, WHATSAPP},
+    ROLA_PODGLAD: ROLE_UPRAWNIENIA[ROLE_VIEWER],
 }
 
 #: Nie do odebrania pojedynczo: konto bez niego nie zmieniloby hasla po
@@ -61,10 +76,12 @@ STALE = frozenset({KONTO_WLASNE})
 
 
 def efektywne(rola: str, nadane: set[str] | frozenset[str] = frozenset(),
-              odebrane: set[str] | frozenset[str] = frozenset()) -> frozenset[str]:
+              odebrane: set[str] | frozenset[str] = frozenset(),
+              role: dict[str, frozenset[str]] = ROLE_UPRAWNIENIA) -> frozenset[str]:
     """Nieznana rola (np. reczna edycja bazy) = brak uprawnien poza STALE:
-    odmowa zamiast domyslnego wlasciciela."""
-    baza = ROLE_UPRAWNIENIA.get(rola, STALE)
+    odmowa zamiast domyslnego wlasciciela. `role` = ROLE_DOMU_UPRAWNIENIA
+    dla roli w domu."""
+    baza = role.get(rola, STALE)
     return frozenset((baza | set(nadane)) - (set(odebrane) - STALE)) & frozenset(UPRAWNIENIA)
 
 

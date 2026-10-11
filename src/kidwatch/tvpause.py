@@ -40,7 +40,7 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from .config import Config
+from .config import HomeConfig
 from .models import Notification, NotifyKind
 from .store import Store, from_iso, to_iso
 
@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS tv_pause_requests (
     error      TEXT
 );
 """
+#: Jak w gametime.DOM_COLUMN: wiersze sprzed domow naleza do Domu 1.
+DOM_COLUMN = "ALTER TABLE tv_pause_requests ADD COLUMN dom_id INTEGER NOT NULL DEFAULT 1"
 
 
 class TooManyRequests(RuntimeError):
@@ -74,14 +76,21 @@ class TooManyRequests(RuntimeError):
 class TvPauseRequests:
     """Zadania pauzy z panelu i CLI w panel-auth.db (jak GameRequests).
     Kazda operacja na wlasnym polaczeniu — panel wola z watkow serwera,
-    petla z watku glownego, CLI z osobnego procesu."""
+    petla z watku glownego, CLI z osobnego procesu. Obiekt widzi tylko
+    wiersze swojego `dom_id`."""
 
-    def __init__(self, path: str | Path, clock: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self, path: str | Path, clock: Callable[[], float] = time.time, *, dom_id: int = 1
+    ) -> None:
         self.path = str(path)
         self.clock = clock
+        self.dom_id = dom_id
         new = not Path(self.path).exists()
         with self._conn() as conn:
             conn.executescript(REQUESTS_SCHEMA)
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(tv_pause_requests)")}
+            if "dom_id" not in cols:
+                conn.execute(DOM_COLUMN)
         if new:
             # Ten sam plik co konta panelu (hashe hasel) — jak w PanelAuth.
             with contextlib.suppress(OSError):
@@ -101,35 +110,38 @@ class TvPauseRequests:
             raise ValueError(f"nieznana akcja {action!r}")
         with self._conn() as conn:
             pending = conn.execute(
-                "SELECT COUNT(*) FROM tv_pause_requests WHERE done_at IS NULL"
+                "SELECT COUNT(*) FROM tv_pause_requests WHERE dom_id=? AND done_at IS NULL",
+                (self.dom_id,),
             ).fetchone()[0]
             if pending >= MAX_PENDING:
                 raise TooManyRequests(action)
             cur = conn.execute(
-                "INSERT INTO tv_pause_requests (action, until, login, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (action, to_iso(until) if until else None, login, self.clock()),
+                "INSERT INTO tv_pause_requests (dom_id, action, until, login, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (self.dom_id, action, to_iso(until) if until else None, login, self.clock()),
             )
             return int(cur.lastrowid)
 
     def pending(self) -> list[sqlite3.Row]:
         with self._conn() as conn:
             return list(conn.execute(
-                "SELECT * FROM tv_pause_requests WHERE done_at IS NULL ORDER BY id"
+                "SELECT * FROM tv_pause_requests WHERE dom_id=? AND done_at IS NULL ORDER BY id",
+                (self.dom_id,),
             ))
 
     def finish(self, request_id: int, ok: bool, error: str | None = None) -> None:
         with self._conn() as conn:
             conn.execute(
-                "UPDATE tv_pause_requests SET done_at=?, ok=?, error=? WHERE id=?",
-                (self.clock(), int(ok), error, request_id),
+                "UPDATE tv_pause_requests SET done_at=?, ok=?, error=? WHERE id=? AND dom_id=?",
+                (self.clock(), int(ok), error, request_id, self.dom_id),
             )
 
     def latest(self) -> dict | None:
         """Ostatnie zadanie — panel pokazuje "wysylanie..." albo blad."""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT * FROM tv_pause_requests ORDER BY id DESC LIMIT 1"
+                "SELECT * FROM tv_pause_requests WHERE dom_id=? ORDER BY id DESC LIMIT 1",
+                (self.dom_id,),
             ).fetchone()
         if row is None:
             return None
@@ -193,7 +205,9 @@ class TvPause:
     silnika (Engine._tv_pause_step), ktory przepuszcza powiadomienia przez
     wlasna bramke dedupu. Pushe niskim priorytetem: to informacja, nie alarm."""
 
-    def __init__(self, cfg: Config, store: Store, requests: TvPauseRequests | None = None) -> None:
+    def __init__(
+        self, cfg: HomeConfig, store: Store, requests: TvPauseRequests | None = None
+    ) -> None:
         self.cfg = cfg
         self.store = store
         self.requests = requests

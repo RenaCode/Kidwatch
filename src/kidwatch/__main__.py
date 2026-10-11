@@ -1,4 +1,4 @@
-"""CLI: run | replay | test-notify | summary | weekly | tv | tv-pauza | unifi | user-add | ..."""
+"""CLI: run | replay | test-notify | summary | weekly | tv | tv-pauza | user-add | domy | ..."""
 
 from __future__ import annotations
 
@@ -9,27 +9,29 @@ import json
 import logging
 import os
 import signal
+import sqlite3
 import sys
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from . import uprawnienia
 from .classifier import Classifier, registrable
-from .config import Config, MissingSecretError
+from .config import BramkaConfig, Config, HomeConfig, InstanceConfig, MissingSecretError
 from .engine import Engine
 from .models import DnsEvent, Notification, NotifyKind
 from .notifiers.base import Dispatcher, Notifier, Outbox
 from .notifiers.bramka import BramkaNotifier
 from .notifiers.homeassistant import HomeAssistantNotifier
 from .notifiers.ntfy import NtfyNotifier
-from .scheduler import device_loop, source_loop, tick_loop
+from .scheduler import device_loop
 from .store import Store, from_iso
 
 log = logging.getLogger("kidwatch")
 
 
 # ======================================================================= montaz
-def build_notifiers(cfg: Config) -> list[Notifier]:
+def build_notifiers(cfg: HomeConfig, bramka: BramkaConfig | None) -> list[Notifier]:
+    """Kanaly domu (ntfy, Home Assistant) i wspolna bramka instancji."""
     notifiers: list[Notifier] = []
     ntfy = cfg.notifiers.ntfy
     if ntfy and ntfy.enabled:
@@ -37,28 +39,30 @@ def build_notifiers(cfg: Config) -> list[Notifier]:
     ha = cfg.notifiers.homeassistant
     if ha and ha.enabled:
         notifiers.append(HomeAssistantNotifier(ha, webhook_id=ha.webhook_id()))
-    bramka = cfg.notifiers.bramka
     if bramka and bramka.enabled:
         notifiers.append(BramkaNotifier(bramka, key=bramka.key()))
     return notifiers
 
 
-def build_outbox(cfg: Config, store: Store) -> Outbox:
+def build_outbox(
+    cfg: HomeConfig, store: Store, *, bramka: BramkaConfig | None, auth_path: str,
+    dom_id: int | None = None,
+) -> Outbox:
     """Kolejka z routingiem per konto (odbiorcy.py), gdy bramka na to
     pozwala w konfiguracji. Tryb (trasy/konta) Outbox ustala przy kazdym
     rozdziale — wlasciciel przelacza go bez restartu."""
     from zoneinfo import ZoneInfo  # noqa: PLC0415
 
-    dispatcher = Dispatcher(build_notifiers(cfg), store=store)
-    bc = cfg.notifiers.bramka
+    dispatcher = Dispatcher(build_notifiers(cfg, bramka), store=store)
     konta = None
-    if bc is not None and bc.enabled and bc.per_konto:
+    if bramka is not None and bramka.enabled and bramka.per_konto:
         from .odbiorcy import ProfilePowiadomien  # noqa: PLC0415
 
-        konta = ProfilePowiadomien(cfg.panel_auth_path)
+        konta = ProfilePowiadomien(auth_path)
     return Outbox(
         dispatcher, store, konta=konta,
         dziecko={d.display_name: d.child for d in cfg.devices}, tz=ZoneInfo(cfg.timezone),
+        dom_id=dom_id,
     )
 
 
@@ -72,7 +76,7 @@ def nextdns_cursor(store: Store, profile: str, primary: str) -> str | None:
     return cursor
 
 
-def build_source(cfg: Config, store: Store):
+def build_source(cfg: HomeConfig, store: Store):
     if cfg.source.kind == "nextdns":
         from .sources.nextdns import (  # noqa: PLC0415
             ConnectGate,
@@ -140,25 +144,135 @@ def render(note: Notification) -> str:
 OUTBOX_FLUSH_ON_STOP_SECONDS = 10.0
 
 
-async def cmd_run(args) -> int:
-    cfg, store, engine = load_parts(args.config)
-    if cfg.tv.enabled:
+def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
+                       classifier: Classifier):
+    """Srodowisko domu (domy.HomeRuntime): baza domu, silnik, kolejka z `dom_id`,
+    zrodlo DNS i petle wlaczone w konfiguracji domu. Kolejnosc budowy jak
+    przed domami — brak sekretu zrodla przerywa start, zanim ruszy panel."""
+    from .domy import HomeRuntime, katalog_domu, sciezka_bazy_domu  # noqa: PLC0415
+    from .scheduler import device_loop, source_loop, tick_loop  # noqa: PLC0415
+
+    auth_path = inst.panel_auth_path
+    store = Store(str(sciezka_bazy_domu(dom_id, inst.store.path)))
+    engine = Engine(home, store, classifier)
+    if home.tv.enabled:
         from .tvpause import TvPauseRequests  # noqa: PLC0415
 
         # Zadania pauzy TV z panelu i z `tv-pauza` wykonuje tik silnika.
-        engine.tv_pause.requests = TvPauseRequests(cfg.panel_auth_path)
+        engine.tv_pause.requests = TvPauseRequests(auth_path, dom_id=dom_id)
     # Petle oddaja powiadomienia do kolejki w bazie; wysyla je osobne zadanie
     # "outbox". Wiszacy kanal nie trzyma tiku (tetno, liveness) ani strumienia.
-    dispatcher = build_outbox(cfg, store)
-    source = build_source(cfg, store)
+    dispatcher = build_outbox(home, store, bramka=inst.notifiers.bramka, auth_path=auth_path,
+                              dom_id=dom_id)
+    source = build_source(home, store)
+    rt = HomeRuntime(dom_id, home, store, engine, dispatcher, source)
+    rt.dodaj_petle("source", lambda: source_loop(source, engine, dispatcher, store))
+    rt.dodaj_petle("tick", lambda: tick_loop(
+        engine,
+        dispatcher,
+        store,
+        retention_days=home.store.retention_days,
+        notifications_retention_days=home.store.notifications_retention_days,
+        rollup_retention_days=home.store.rollup_retention_days,
+    ))
+    rt.dodaj_petle("outbox", dispatcher.run)
+
+    # Odczyt z iPadow jedzie w TYM SAMYM procesie, nie w osobnym kontenerze.
+    # SQLite ma jednego pisarza — dwa procesy na jednej bazie rozjechalyby stan
+    # i zdublowaly powiadomienia. Ten sam powod, dla ktorego Deployment ma
+    # replicas:1 i strategie Recreate.
+    watchers = (build_watchers(home, store, inst.device_read.records_path)
+                if home.device_read.enabled else [])
+    if watchers:
+        log.info(
+            "odczyt z iPadow wlaczony: %s, co %.0f s",
+            [w.device_name for w in watchers],
+            home.device_read.poll_seconds,
+        )
+        rt.dodaj_petle("device", lambda: device_loop(
+            watchers,
+            dispatcher,
+            home.device_read.poll_seconds,
+            unreachable_alert_hours=home.device_read.unreachable_alert_hours,
+            store=store,
+        ))
+    elif home.device_read.enabled:
+        log.warning("device_read.enabled=true, ale zadne urzadzenie nie ma udid i host")
+
+    # Telewizor: ta sama petla co iPady (nieosiagalny = normalny stan, alarm
+    # po wielu godzinach), z wlasnym rytmem i progiem.
+    tv = (build_tv_watcher(home, store, katalog_domu(dom_id, inst.store.path))
+          if home.tv.enabled else None)
+    if tv is not None:
+        log.info("czujnik TV wlaczony: %s (%s), co %.0f s",
+                 home.tv.name, home.tv.host, home.tv.poll_seconds)
+        rt.dodaj_petle("tv", lambda: device_loop(
+            [tv],
+            dispatcher,
+            home.tv.poll_seconds,
+            unreachable_alert_hours=home.tv.unreachable_alert_hours,
+            store=store,
+        ))
+    for watcher in [*watchers, *([tv] if tv else [])]:
+        rt.dodaj_sprzatanie(watcher.probe.aclose)
+
+    unifi = build_unifi_watcher(home, store) if home.unifi.enabled else None
+    if unifi is not None:
+        from .sources.unifi import unifi_loop  # noqa: PLC0415
+
+        log.info("czujka UniFi wlaczona: %s, iPady: %s",
+                 home.unifi.url, [d[0] for d in unifi.devices])
+        rt.dodaj_petle("unifi", lambda: unifi_loop(unifi, dispatcher, home.unifi.poll_seconds))
+
+    # Serwer MDM to osobny pod z wlasna baza — tu tylko czujka po jego API.
+    from .config import MdmConfig  # noqa: PLC0415
+    from .mdm import MdmWatcher, build_api, mdm_loop  # noqa: PLC0415
+
+    mdm_cfg = MdmConfig.model_validate({**home.mdm.model_dump(), "url": inst.mdm.url})
+    mdm_api = build_api(mdm_cfg)
+    if mdm_api is not None:
+        log.info("czujka MDM wlaczona: %s, co %.0f s", mdm_cfg.url, mdm_cfg.poll_seconds)
+        rt.dodaj_petle("mdm", lambda: mdm_loop(
+            MdmWatcher(mdm_api, store, mdm_cfg), dispatcher, mdm_cfg.poll_seconds
+        ))
+
+    game = (build_game_time(home, store, dispatcher, auth_path, dom_id)
+            if home.game_time.enabled else None)
+    if game is not None:
+        from .gametime import game_loop  # noqa: PLC0415
+
+        log.info("czas gry wlaczony: profile %s, uslugi %s, kategorie %s",
+                 sorted(set(game.profiles.values())), home.game_time.services,
+                 home.game_time.categories)
+        rt.dodaj_petle("game", lambda: game_loop(game, home.game_time.poll_seconds))
+        rt.dodaj_sprzatanie(game.client.aclose)
+    return rt
+
+
+async def cmd_run(args) -> int:
+    from .domy import DOM_1, Nadzorca, RejestrDomow  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    inst, home = cfg.split()
+    # Dom 1 i czlonkostwa w panel-auth.db (docs/architektura-domy.md §6).
+    # Monitoring od nich w E1 nie zalezy, wiec blad bazy panelu go nie zatrzyma.
+    try:
+        raport = RejestrDomow(inst.panel_auth_path).migruj(strefa=home.timezone)
+        if raport.zmiany:
+            log.info("domy: Dom 1 %s, uzgodnione czlonkostwa: %d, nowe kolumny: %s",
+                     "zalozony" if raport.dom_1_zalozony else "bez zmian",
+                     len(raport.uzgodnione), list(raport.kolumny) or "-")
+    except sqlite3.Error:
+        log.exception("domy: migracja panel-auth.db nie powiodla sie")
+    runtime = build_home_runtime(DOM_1, inst, home, Classifier(inst.app_map_path))
 
     log.info(
         "start: zrodlo=%s urzadzenia=%s kanaly=%s",
-        source.name,
-        [d.display_name for d in cfg.devices],
-        [n.name for n in dispatcher.notifiers],
+        runtime.source.name,
+        [d.display_name for d in home.devices],
+        [n.name for n in runtime.outbox.notifiers],
     )
-    if not dispatcher.notifiers:
+    if not runtime.outbox.notifiers:
         log.warning("zaden kanal powiadomien nie jest wlaczony — nic nie dotrze")
 
     panel = None
@@ -173,132 +287,13 @@ async def cmd_run(args) -> int:
         with contextlib.suppress(NotImplementedError):  # pragma: no cover
             loop.add_signal_handler(sig, stop.set)
 
-    tasks = [
-        asyncio.create_task(source_loop(source, engine, dispatcher, store), name="source"),
-        asyncio.create_task(
-            tick_loop(
-                engine,
-                dispatcher,
-                store,
-                retention_days=cfg.store.retention_days,
-                notifications_retention_days=cfg.store.notifications_retention_days,
-                rollup_retention_days=cfg.store.rollup_retention_days,
-            ),
-            name="tick",
-        ),
-        asyncio.create_task(dispatcher.run(), name="outbox"),
-        asyncio.create_task(stop.wait(), name="stop"),
-    ]
-
-    # Odczyt z iPadow jedzie w TYM SAMYM procesie, nie w osobnym kontenerze.
-    # SQLite ma jednego pisarza — dwa procesy na jednej bazie rozjechalyby stan
-    # i zdublowaly powiadomienia. Ten sam powod, dla ktorego Deployment ma
-    # replicas:1 i strategie Recreate.
-    watchers = build_watchers(cfg, store) if cfg.device_read.enabled else []
-    if watchers:
-        log.info(
-            "odczyt z iPadow wlaczony: %s, co %.0f s",
-            [w.device_name for w in watchers],
-            cfg.device_read.poll_seconds,
-        )
-        tasks.insert(
-            2,
-            asyncio.create_task(
-                device_loop(
-                    watchers,
-                    dispatcher,
-                    cfg.device_read.poll_seconds,
-                    unreachable_alert_hours=cfg.device_read.unreachable_alert_hours,
-                    store=store,
-                ),
-                name="device",
-            ),
-        )
-    elif cfg.device_read.enabled:
-        log.warning("device_read.enabled=true, ale zadne urzadzenie nie ma udid i host")
-
-    # Telewizor: ta sama petla co iPady (nieosiagalny = normalny stan, alarm
-    # po wielu godzinach), z wlasnym rytmem i progiem.
-    tv = build_tv_watcher(cfg, store) if cfg.tv.enabled else None
-    if tv is not None:
-        log.info("czujnik TV wlaczony: %s (%s), co %.0f s",
-                 cfg.tv.name, cfg.tv.host, cfg.tv.poll_seconds)
-        tasks.insert(2, asyncio.create_task(
-            device_loop(
-                [tv],
-                dispatcher,
-                cfg.tv.poll_seconds,
-                unreachable_alert_hours=cfg.tv.unreachable_alert_hours,
-                store=store,
-            ),
-            name="tv",
-        ))
-
-    unifi = build_unifi_watcher(cfg, store) if cfg.unifi.enabled else None
-    if unifi is not None:
-        from .sources.unifi import unifi_loop  # noqa: PLC0415
-
-        log.info("czujka UniFi wlaczona: %s, iPady: %s",
-                 cfg.unifi.url, [d[0] for d in unifi.devices])
-        tasks.insert(2, asyncio.create_task(
-            unifi_loop(unifi, dispatcher, cfg.unifi.poll_seconds), name="unifi"
-        ))
-
-    # Serwer MDM to osobny pod z wlasna baza — tu tylko czujka po jego API.
-    from .mdm import MdmWatcher, build_api, mdm_loop  # noqa: PLC0415
-
-    mdm_api = build_api(cfg.mdm)
-    if mdm_api is not None:
-        log.info("czujka MDM wlaczona: %s, co %.0f s", cfg.mdm.url, cfg.mdm.poll_seconds)
-        tasks.insert(2, asyncio.create_task(
-            mdm_loop(MdmWatcher(mdm_api, store, cfg.mdm), dispatcher, cfg.mdm.poll_seconds),
-            name="mdm",
-        ))
-
-    game = build_game_time(cfg, store, dispatcher) if cfg.game_time.enabled else None
-    if game is not None:
-        from .gametime import game_loop  # noqa: PLC0415
-
-        log.info("czas gry wlaczony: profile %s, uslugi %s, kategorie %s",
-                 sorted(set(game.profiles.values())), cfg.game_time.services,
-                 cfg.game_time.categories)
-        tasks.insert(2, asyncio.create_task(
-            game_loop(game, cfg.game_time.poll_seconds), name="game"
-        ))
-
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-    for task in pending:
-        task.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
-    # Kazde zadanie poza "stop" jest nieskonczone, wiec jego koniec — z bledem
-    # czy bez — to awaria. Kod 0 udawal w k8s czyste zatrzymanie i ginal
-    # w statystyce restartow; niezerowy widac w `kubectl describe` jako Error.
-    failed = [task for task in done if task.get_name() != "stop"]
-    for task in failed:
-        if task.exception() is not None:
-            log.error(
-                "zadanie %s zakonczylo sie bledem",
-                task.get_name(),
-                exc_info=task.exception(),
-            )
-        else:
-            log.error("zadanie %s zakonczylo sie bez bledu, a nie powinno", task.get_name())
-
+    nadzorca = Nadzorca([runtime])
+    rc = await nadzorca.run(stop)
     if panel is not None:
         panel.shutdown()
-    for watcher in [*watchers, *([tv] if tv else [])]:
-        await watcher.probe.aclose()
-    if game is not None:
-        await game.client.aclose()
-    # Co zostalo w kolejce, probujemy wyslac przed zamknieciem — reszta i tak
-    # wyjdzie po starcie. Krocej niz terminationGracePeriodSeconds (30 s).
-    with contextlib.suppress(Exception):
-        await asyncio.wait_for(dispatcher.flush(), timeout=OUTBOX_FLUSH_ON_STOP_SECONDS)
-    await dispatcher.aclose()
-    await source.aclose()
-    store.close()
+    await nadzorca.zamknij(OUTBOX_FLUSH_ON_STOP_SECONDS)
     log.info("zatrzymano")
-    return 1 if failed else 0
+    return rc
 
 
 # ======================================================================= replay
@@ -325,7 +320,7 @@ async def cmd_replay(args) -> int:
     store = Store(":memory:")
     engine = Engine(cfg, store, Classifier(cfg.app_map_path))
 
-    notifiers = [] if args.dry_run else build_notifiers(cfg)
+    notifiers = [] if args.dry_run else build_notifiers(cfg, cfg.notifiers.bramka)
     dispatcher = Dispatcher(notifiers)
 
     events = list(read_jsonl(Path(args.file)))
@@ -358,7 +353,7 @@ async def cmd_replay(args) -> int:
 # ================================================================== test-notify
 async def cmd_test_notify(args) -> int:
     cfg = Config.load(args.config)
-    dispatcher = Dispatcher(build_notifiers(cfg))
+    dispatcher = Dispatcher(build_notifiers(cfg, cfg.notifiers.bramka))
     if not dispatcher.notifiers:
         print("zaden kanal nie jest wlaczony w konfiguracji", file=sys.stderr)
         return 1
@@ -513,7 +508,7 @@ async def cmd_web(args) -> int:
 
 
 # ======================================================================= device
-def build_tv_watcher(cfg, store):
+def build_tv_watcher(cfg: HomeConfig, store: Store, katalog: Path):
     """Obserwator telewizora albo None (z bledem w logu), gdy brak klucza ADB.
 
     Brak klucza nie zabija procesu — jak przy rekordach parowania iPadow:
@@ -535,7 +530,7 @@ def build_tv_watcher(cfg, store):
         # Aplikacja Kidwatch TV i zapasy dzialaja bez ADB.
         log.warning("%s: bez ADB — %s", cfg.tv.name, exc)
         shell = BrakAdb(str(exc))
-    aplikacja = build_tv_app(cfg, shell)
+    aplikacja = build_tv_app(cfg, shell, katalog)
     probe = TvProbe(shell)
     hybryda = build_tv_traffic(cfg, store, probe, aplikacja)
     return TvWatcher(
@@ -551,15 +546,16 @@ def build_tv_watcher(cfg, store):
     )
 
 
-def build_tv_app(cfg, shell):
+def build_tv_app(cfg: HomeConfig, shell, katalog_domu: Path):
     """Aplikacja Kidwatch TV (sources/tv_app.py) albo None (tv.aplikacja: false).
-    Rejestrowana w `tv_app.AKTYWNA` dla panelu (instalacja, parowanie)."""
+    Rejestrowana w `tv_app.AKTYWNA` dla panelu (instalacja, parowanie). Token
+    w `tv-app/` w katalogu domu (domy.katalog_domu)."""
     from .sources import tv_app  # noqa: PLC0415
     from .sources.tv import AdbTcpShell  # noqa: PLC0415
 
     if not cfg.tv.aplikacja:
         return None
-    katalog = Path(cfg.store.path).expanduser().parent / "tv-app"
+    katalog = katalog_domu / "tv-app"
     app = tv_app.AplikacjaTv(cfg.tv.host, katalog, timeout=cfg.tv.timeout_seconds)
     app.adb = shell if isinstance(shell, AdbTcpShell) else None
     tv_app.AKTYWNA = app
@@ -568,7 +564,7 @@ def build_tv_app(cfg, shell):
     return app
 
 
-def build_tv_traffic(cfg, store, probe, aplikacja=None):
+def build_tv_traffic(cfg: HomeConfig, store: Store, probe, aplikacja=None):
     """Hybryda ADB + Sony REST + ruch sieci (sources/tv_siec.py, sony.py) albo
     None, gdy oba zapasy sa wylaczone - wtedy telewizor czyta samo ADB."""
     from .sources.sony import SonyClient  # noqa: PLC0415
@@ -606,7 +602,7 @@ def build_tv_traffic(cfg, store, probe, aplikacja=None):
                        apps=cfg.tv.apps, aplikacja=aplikacja)
 
 
-def build_game_time(cfg: Config, store: Store, dispatcher):
+def build_game_time(cfg: HomeConfig, store: Store, dispatcher, auth_path: str, dom_id: int):
     """Sterownik czasu gry. Id uslug spoza znanej listy tylko ostrzegaja —
     NextDNS doklada uslugi, a nieistniejace id odrzuci samo API przy zapisie
     (blad widac w panelu, w logu i w pushu)."""
@@ -621,10 +617,10 @@ def build_game_time(cfg: Config, store: Store, dispatcher):
     nx = cfg.source.nextdns
     assert nx is not None
     client = ParentalControlClient(nx.base_url, nx.api_key(), timeout=cfg.game_time.timeout_seconds)
-    return GameTime(cfg, store, GameRequests(cfg.panel_auth_path), client, dispatcher)
+    return GameTime(cfg, store, GameRequests(auth_path, dom_id=dom_id), client, dispatcher)
 
 
-def build_unifi_watcher(cfg, store):
+def build_unifi_watcher(cfg: HomeConfig, store: Store):
     """Czujka UniFi albo None z ostrzezeniem — bez klucza, bez odcisku
     certyfikatu albo bez zadnego MAC-a nie ma czego uruchamiac."""
     from .sources.unifi import UnifiClient, UnifiWatcher  # noqa: PLC0415
@@ -657,7 +653,7 @@ def build_unifi_watcher(cfg, store):
     )
 
 
-def build_watchers(cfg, store):
+def build_watchers(cfg: HomeConfig, store: Store, records_path: Path):
     """Buduje obserwatorow dla urzadzen, ktore maja udid i host.
 
     Brak rekordu parowania POJEDYNCZEGO urzadzenia pomija tylko je. Wczesniej
@@ -679,7 +675,7 @@ def build_watchers(cfg, store):
         try:
             probe = DeviceProbe.over_tcp(
                 DeviceTarget(udid=dev.udid, host=dev.host),
-                cfg.device_read.records_path,
+                records_path,
                 timeout=cfg.device_read.timeout_seconds,
             )
         except DeviceUnavailable as exc:
@@ -706,7 +702,7 @@ async def cmd_device(args) -> int:
     from .sources.device import DeviceUnavailable  # noqa: PLC0415
 
     cfg, store, _ = load_parts(args.config)
-    watchers = build_watchers(cfg, store)
+    watchers = build_watchers(cfg, store, cfg.device_read.records_path)
     if not watchers:
         print(
             "Zadne urzadzenie nie ma 'udid' i 'host' w konfiguracji.\n"
@@ -750,13 +746,13 @@ async def cmd_device(args) -> int:
 async def cmd_device_watch(args) -> int:
     """Petla: odpytuje iPady i wysyla powiadomienia o zmianach."""
     cfg, store, _ = load_parts(args.config)
-    watchers = build_watchers(cfg, store)
+    watchers = build_watchers(cfg, store, cfg.device_read.records_path)
     if not watchers:
         print("Zadne urzadzenie nie ma 'udid' i 'host' — nie ma czego odpytywac.", file=sys.stderr)
         store.close()
         return 1
 
-    dispatcher = Dispatcher(build_notifiers(cfg), store=store)
+    dispatcher = Dispatcher(build_notifiers(cfg, cfg.notifiers.bramka), store=store)
     log.info(
         "odczyt z iPadow: %s, co %.0f s",
         [w.device_name for w in watchers],
@@ -969,7 +965,7 @@ async def cmd_weekly(args) -> int:
     print(render(note))
     rc = 0
     if not args.dry_run:
-        dispatcher = Dispatcher(build_notifiers(cfg))
+        dispatcher = Dispatcher(build_notifiers(cfg, cfg.notifiers.bramka))
         if not dispatcher.notifiers:
             print("zaden kanal nie jest wlaczony — tylko wydruk", file=sys.stderr)
         results = await dispatcher.send(note)
@@ -1249,6 +1245,37 @@ async def cmd_konta_tryb(args) -> int:
     return 0
 
 
+# ========================================================================= domy
+async def cmd_domy(args) -> int:
+    """Domy z panel-auth.db i ich czlonkowie (docs/architektura-domy.md).
+    Uruchamia migracje (idempotentna), wiec dziala tez przed pierwszym `run`."""
+    from .domy import ZRODLO_YAML, RejestrDomow  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    rejestr = RejestrDomow(cfg.panel_auth_path)
+    raport = rejestr.migruj(strefa=cfg.timezone)
+    if raport.zmiany:
+        print(f"migracja: Dom 1 {'zalozony' if raport.dom_1_zalozony else 'bez zmian'}, "
+              f"uzgodnione czlonkostwa: {', '.join(raport.uzgodnione) or '-'}")
+    for dom in rejestr.domy():
+        zrodlo = ("config.yaml" if dom.zrodlo_konfiguracji == ZRODLO_YAML
+                  else dom.zrodlo_konfiguracji)
+        strefa = cfg.timezone if dom.zrodlo_konfiguracji == ZRODLO_YAML else dom.strefa
+        print(f"{dom.id}. {dom.nazwa} — konfiguracja: {zrodlo}, strefa: {strefa}, "
+              f"wersja: {dom.wersja}{', ZAWIESZONY' if dom.zawieszony else ''}")
+        czlonkowie = rejestr.czlonkowie(dom.id)
+        if not czlonkowie:
+            print("   brak czlonkow")
+        for c in czlonkowie:
+            odst = " ".join([f"+{n}" for n in sorted(c.nadane)]
+                            + [f"-{n}" for n in sorted(c.odebrane)])
+            print(f"   {c.login:24} {c.rola}{f' ({odst})' if odst else ''}")
+    bez = rejestr.konta_bez_domu()
+    if bez:
+        print(f"konta bez zadnego domu: {', '.join(bez)}")
+    return 0
+
+
 # ========================================================================= main
 PANEL_ROLES = uprawnienia.ROLES
 
@@ -1381,6 +1408,8 @@ def build_parser() -> argparse.ArgumentParser:
     tryb.add_argument("tryb", nargs="?", choices=("trasy", "konta"),
                       help="bez argumentu: pokaz tryb i kanaly kont")
 
+    sub.add_parser("domy", help="domy i ich czlonkowie (panel-auth.db)")
+
     return parser
 
 
@@ -1411,6 +1440,7 @@ def main(argv: list[str] | None = None) -> int:
         "user-list": cmd_user_list,
         "konta-migruj": cmd_konta_migruj,
         "konta-tryb": cmd_konta_tryb,
+        "domy": cmd_domy,
     }
     try:
         return asyncio.run(handlers[args.command](args))

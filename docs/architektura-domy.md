@@ -1,6 +1,9 @@
 # Wiele domów (gospodarstw) w jednym Kidwatchu — projekt
 
-Stan: **projekt zaakceptowany** (decyzje właściciela z 2026-10-11 w §8), bez kodu. Podstawa: `main` po #43 i #44 oraz
+Stan: **projekt zaakceptowany** (decyzje właściciela z 2026-10-11 w §8);
+**etap E1 zrealizowany** — model, migracja do Domu 1 i `HomeRuntime`,
+kontrakt dla kolejnych etapów w docstringu `src/kidwatch/domy.py` (ustalenia
+z realizacji: §7, E1). Podstawa: `main` po #43 i #44 oraz
 otwarty #45 (powiadomienia per konto), który zostanie scalony wcześniej
 i jest tu traktowany jako punkt wyjścia.
 
@@ -606,7 +609,10 @@ sekund), bez utraty historii, z możliwością cofnięcia obrazu w każdym etapi
 7. **Wycofanie obrazu**: każdy etap dodaje tylko tabele i kolumny
    z wartościami domyślnymi; stary obraz ich nie czyta. `users.rola`
    i `user_uprawnienia` są aktualizowane równolegle (lustro Domu 1) aż do E4,
-   więc cofnięcie do obrazu sprzed E1 zachowuje role.
+   więc cofnięcie do obrazu sprzed E1 zachowuje role. W E1 prawdą jest
+   `users`, a start uzgadnia z niego `czlonkostwa(dom 1)`; E3a przełącza
+   odczyt na `czlonkostwa` i odwraca kierunek uzgadniania przy starcie;
+   lustro `users.rola` usuwa E4 (§7 E1, „Ustalenia z realizacji”).
 8. **Weryfikacja bez przerwy**: przed i po każdym etapie — liczba
    powiadomień i sesji z ostatnich 48 h w panelu (z `notifications`,
    `sessions`), `tests/test_e2e_replay.py` z `fixtures/day.jsonl` daje
@@ -634,6 +640,32 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
   nową bazę (wycofanie); `HomeConfig` z YAML = dzisiejszy `Config` pole w pole.
 - **Gotowe, gdy**: wdrożone, 48 h z tą samą liczbą powiadomień/sesji co
   przed, `kidwatch domy` pokazuje Dom 1 z członkami.
+- **Ustalenia z realizacji** (wiążą E2/E3a/E5):
+  - Tabele założone w E1: `domy`, `czlonkostwa`, `czlonkostwa_uprawnienia`,
+    `dzieci`, `urzadzenia`, `integracje` (bez zapisów), `audyt`; kolumny
+    `users.admin_instancji` oraz `dom_id` w `game_requests`
+    i `tv_pause_requests`. `zaproszenia` zakłada E4 (jedyny użytkownik),
+    `czlonkostwa_powiadomienia` i `tryb:<dom>` — E3a, kiedy preferencje
+    stają się per dom (kopia w E1 rozjechałaby się z oryginałem).
+  - Prawdą o rolach w Domu 1 jest w E1 `users` (panel liczy uprawnienia jak
+    dotąd); każda zmiana konta i każdy start uzgadniają `czlonkostwa(dom 1)`
+    z `users`, więc zmiany zrobione starym obrazem po wycofaniu wracają.
+    `zarzadca` ma w `users` lustro `podglad` + nadania o tych samych
+    uprawnieniach efektywnych. E3a, przełączając odczyt na `czlonkostwa`,
+    odwraca kierunek uzgadniania przy starcie.
+  - `wlasciciel-domu` ma na razie ten sam zbiór co `wlasciciel` (z
+    `whatsapp.konfiguracja`); przeniesienie do zakresu instancji i nowe
+    `dom.*` — E3a (`uprawnienia.ROLE_DOMU_UPRAWNIENIA`).
+  - Telefon: w konfiguracji `phone-android` = `phone`, ale silnik, API
+    i front dalej mówią `phone` (zmiana nazwy razem z frontem w E3a).
+    `urzadzenia.rodzaj` w bazie używa `phone-android`
+    (`devicekind.RODZAJ_W_BAZIE`).
+  - `HomeConfig.store` niesie samą retencję (silnik liczy z niej agregaty);
+    ścieżka bazy domu wynika z `domy.sciezka_bazy_domu`.
+  - `Notification.dom_id` ustawia kolejka domu (`Outbox(dom_id=…)`); notka
+    z cudzym domem jest odrzucana z błędem w logu (alarm instancji — E3b).
+  - `domy.dozwolone_sieci` Domu 1 zostaje puste — wypełnia je E2 (właściciel
+    strażnika sieci) przy `dom-importuj`.
 
 ### E2 — integracje per dom, sekrety w bazie (szyfrowane)
 

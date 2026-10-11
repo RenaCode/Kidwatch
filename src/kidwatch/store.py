@@ -250,12 +250,17 @@ def from_iso(text: str) -> datetime:
 
 
 def note_to_json(note: Notification) -> str:
-    return json.dumps({
+    d = {
         "kind": str(note.kind), "title": note.title, "text": note.text,
         "dedup_key": note.dedup_key, "ts": to_iso(note.ts), "device": note.device,
         "app": note.app, "priority": note.priority, "tags": list(note.tags),
         "data": note.data,
-    }, ensure_ascii=False)
+    }
+    # Klucz tylko, gdy ustawiony: obraz sprzed domow czyta wpisy po nazwach
+    # pol i nadmiarowy klucz pomija (wycofanie bez zmian w kolejce).
+    if note.dom_id is not None:
+        d["dom_id"] = note.dom_id
+    return json.dumps(d, ensure_ascii=False)
 
 
 def note_from_json(text: str) -> Notification:
@@ -266,7 +271,7 @@ def note_from_json(text: str) -> Notification:
         kind=NotifyKind(d["kind"]), title=d["title"], text=d["text"],
         dedup_key=d["dedup_key"], ts=from_iso(d["ts"]), device=d.get("device"),
         app=d.get("app"), priority=int(d.get("priority", 3)), tags=tuple(d.get("tags") or ()),
-        data=d.get("data"),
+        data=d.get("data"), dom_id=d.get("dom_id"),
     )
 
 
