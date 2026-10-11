@@ -124,7 +124,11 @@ def dozwolone(upr: Iterable[str]) -> frozenset[str]:
 
 # ================================================================== kanaly
 KANALY = ("auto", "whatsapp", "email")
-_EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,24}",
+#: Etykieta domeny jak w bramce (charts/bramka: kanaly.EMAIL): 1-63 znaki,
+#: '-' tylko w srodku. Adres, ktory przyjmie panel, a odrzuci bramka (400),
+#: konczylby porzuceniem kazdego powiadomienia tego konta.
+_ETYKIETA = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+_EMAIL = re.compile(rf"[A-Za-z0-9._%+-]{{1,64}}@{_ETYKIETA}(?:\.{_ETYKIETA})*\.[A-Za-z]{{2,24}}",
                     re.ASCII)
 MAX_EMAIL = 254
 

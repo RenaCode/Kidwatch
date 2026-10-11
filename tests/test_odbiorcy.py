@@ -142,6 +142,14 @@ def test_adres_dla_bramki_wg_kanalu():
     assert pub["email"] == "a…@b.pl"
 
 
+@pytest.mark.parametrize("adres", ["a@b-.pl", "a@-b.pl", "a@" + "x" * 64 + ".pl"])
+def test_email_odrzucany_jak_w_bramce(adres):
+    """Bramka (charts/bramka: kanaly.EMAIL) odrzuca etykiete domeny z '-' na
+    brzegu albo dluzsza niz 63 znaki - 400, czyli porzucenie KAZDEGO
+    powiadomienia tego konta. Panel nie moze przyjac takiego adresu."""
+    assert o.normalize_email(adres) is None
+
+
 # =============================================================== baza
 @pytest.fixture
 def konta(tmp_path):
