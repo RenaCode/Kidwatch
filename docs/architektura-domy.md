@@ -30,7 +30,10 @@ klastra (właściciel) ma `kubectl exec`, klucz szyfrujący i bazę — technicz
 może zajrzeć w dane Domu 2. Tego kod nie zmieni; zaproszony dom musi to
 wiedzieć i się na to zgodzić (decyzja 5, §8). Kod gwarantuje natomiast, że
 **żadna ścieżka w panelu, API, pushach ani w pętlach** nie przenosi danych
-ani poleceń między domami, także dla konta właściciela.
+ani poleceń między domami. Jedynym kontem z wglądem w każdy dom jest
+**administrator instalacji** (§2.3) — jawnie, z wpisem w dzienniku audytu
+przy każdym wejściu do domu, w którym nie jest członkiem. Prywatne konto
+właściciela jest zwykłym członkiem Domu 1 i cudzych domów nie widzi.
 
 ## 1. Co w obecnym kodzie jest „jednym domem”
 
@@ -189,8 +192,9 @@ CREATE TABLE IF NOT EXISTS audyt (
 
 Zmiany istniejących tabel:
 
-- `users`: `+ admin_instancji INTEGER NOT NULL DEFAULT 0` (nadawane tylko
-  z CLI). `users.rola` zostaje do końca okresu wycofania (§5) jako lustro roli
+- `users`: `+ admin_instancji INTEGER NOT NULL DEFAULT 0` (nadawane
+  i odbierane wyłącznie z CLI: `kidwatch user-admin <login> on|off`; nigdy
+  z panelu, nigdy z nagłówka SSO, nie przy migracji — §6). `users.rola` zostaje do końca okresu wycofania (§5) jako lustro roli
   w Domu 1 — stary obraz nadal z niej czyta.
 - `game_requests`, `tv_pause_requests`: `+ dom_id INTEGER NOT NULL DEFAULT 1`.
 - #45: `user_powiadomienia` dzielimy logicznie na
@@ -206,8 +210,9 @@ Zmiany istniejących tabel:
 
 Uprawnienia efektywne liczymy dla pary **(konto, dom)**:
 `uprawnienia(rola w domu) + nadane − odebrane`, tą samą funkcją
-`uprawnienia.efektywne`. Konto bez członkostwa w domu ma **pusty zbiór**,
-także `admin_instancji`.
+`uprawnienia.efektywne`. Konto bez członkostwa w domu ma **pusty zbiór** —
+z jednym wyjątkiem: **administrator instalacji** (`admin_instancji`,
+niżej).
 
 | Uprawnienie | Zakres | wlasciciel-domu | zarzadca | podglad |
 |---|---|:-:|:-:|:-:|
@@ -234,9 +239,34 @@ Zasady:
   per dom).
 - Zaproszenie nie może nadać roli wyższej niż rola zapraszającego;
   `wlasciciel-domu` zaprasza dowolną rolę.
-- `admin_instancji` (CLI): zakłada i zawiesza domy, ustawia
-  `dozwolone_sieci`, widzi **listę** domów (nazwa, liczba członków, stan
-  pętli) i alarmy instancji. Danych domu nie widzi bez członkostwa.
+- **Administrator instalacji** (`users.admin_instancji = 1`, decyzja 5, §8)
+  to **osobne konto administracyjne** (w Authelii: grupa `admins`), nie
+  prywatne konto właściciela. Prywatne konto właściciela (grupa
+  `wlasciciel`) jest zwykłym `wlasciciel-domu` w Domu 1 i nie widzi innych
+  domów.
+  - **Zakres**: każdy dom, pełny zestaw uprawnień domu (dane, urządzenia,
+    integracje i ich sekrety — nadal tylko zapis/maska, nigdy odczyt
+    wartości — zaproszenia, członkowie, MDM, czas gry, TV) plus uprawnienia
+    instancji: zakładanie i zawieszanie domów, `dozwolone_sieci`,
+    `whatsapp.konfiguracja`, alarmy instancji.
+  - **Skąd**: wyłącznie flaga w `panel-auth.db`. Nagłówek `Remote-Groups`
+    niczego nie nadaje (jak dziś, `panel_sso.py`), ale działa jako
+    bezpiecznik: przy sesji `sso` uprawnienia administratora są aktywne
+    tylko, gdy `Remote-Groups` zawiera `admins`. Flaga omyłkowo nadana
+    prywatnemu kontu (grupa `wlasciciel`) więc nic nie otwiera. Przy
+    sesji z hasła (droga awaryjna, port-forward) — tylko z włączonym TOTP.
+  - **Audyt**: każde żądanie administratora do `/api/domy/<id>/…` domu,
+    w którym nie ma członkostwa, zapisuje wiersz w `audyt`
+    (`akcja = 'admin.wglad'` dla GET — najwyżej jeden wiersz na dom
+    i sesję na 15 min, żeby przeglądanie nie zalało dziennika;
+    `akcja = 'admin.<akcja>'` dla **każdego** POST). Członkowie domu
+    z `konta.zarzadzanie` widzą te wpisy w panelu (*Dom → Dziennik*).
+  - **Bez członkostwa nie dostaje powiadomień domu** — tylko alarmy
+    instancji. W przełączniku domów widzi wszystkie, cudze oznaczone
+    „administracja”.
+  - Administrator może być jednocześnie członkiem domu (wtedy w tym domu
+    działa jak członek, bez wpisów `admin.wglad`), ale rekomendacja jest
+    odwrotna: konto administracyjne bez członkostw.
 
 ### 2.4 Rodzaje urządzeń
 
@@ -371,9 +401,10 @@ właściciela. Dlatego:
   (`/api/domy/2/day`, `/api/domy/2/mdm/command`). Dom pochodzi ze ścieżki,
   nie z ciasteczka ani z ciała żądania — karta przeglądarki ze starym domem
   nie wyśle polecenia „do domu z sesji”.
-- `_wymaga(session, dom_id, uprawnienie)`: najpierw członkostwo (brak = **404**
-  „nie ma takiego domu”, żeby nie zdradzać istnienia cudzych domów), potem
-  uprawnienie w tym domu (403).
+- `_wymaga(session, dom_id, uprawnienie)`: najpierw członkostwo albo
+  aktywne uprawnienie administratora instalacji (§2.3; wtedy wpis w `audyt`);
+  brak obu = **404** „nie ma takiego domu”, żeby nie zdradzać istnienia
+  cudzych domów; potem uprawnienie w tym domu (403).
 - `POST_TRASY`/`GET_TRASY` dostają trzeci element: zakres `konto` |
   `dom` | `instancja`. Test przechodzi po wszystkich trasach i pada na trasie
   bez zakresu albo na trasie `dom` poza prefiksem `/api/domy/<id>/`.
@@ -454,7 +485,12 @@ Jeden `kidwatch-mdm` (jeden certyfikat APNs właściciela, jedna CA, jedno
    i CSV).
 2. **Macierz członkostwa**: konto z rolą w A, bez członkostwa w B — każda
    trasa `/api/domy/B/…` = 404, w tym POST-y (czas gry, pauza TV, MDM,
-   integracje, zaproszenia), także dla `admin_instancji`.
+   integracje, zaproszenia) — także dla prywatnego konta właściciela
+   i dla konta z flagą `admin_instancji`, gdy sesja SSO nie ma grupy
+   `admins`. Administrator z grupą `admins`: dostęp do B, a **każde**
+   żądanie ma odpowiadający wpis w `audyt` (test liczy wpisy POST 1:1,
+   GET — co najmniej jeden na sesję i dom); administrator nie jest
+   adresatem żadnej notki domu B.
 3. **Kompletność tras**: każda trasa ma zakres; trasa `dom` bez `<id>` w ścieżce
    = błąd testu (wzorem dzisiejszego pilnowania `POST_TRASY`).
 4. **MDM**: komenda na UDID z B wysłana przez A → 404 w panelu i 404 na
@@ -545,9 +581,11 @@ sekund), bez utraty historii, z możliwością cofnięcia obrazu w każdym etapi
    transakcja zakłada `domy(id=1, nazwa='Dom 1', zrodlo_konfiguracji='yaml')`
    i członkostwa:
    `users.rola = 'wlasciciel'` → `wlasciciel-domu`, `podglad` → `podglad`;
-   `user_uprawnienia` → `czlonkostwa_uprawnienia(dom 1)`; pierwszy (najstarszy)
-   właściciel dostaje `admin_instancji = 1`. Idempotentne (drugi start nic
-   nie zmienia).
+   `user_uprawnienia` → `czlonkostwa_uprawnienia(dom 1)`. Migracja **nie**
+   nadaje `admin_instancji` nikomu — robi to operator jednym poleceniem
+   `kidwatch user-admin <login konta administracyjnego> on` po założeniu
+   tego konta w panelu (`user-add`). Idempotentne (drugi start nic nie
+   zmienia).
 3. **Konfiguracja przez pierwszy etap**: Dom 1 dalej z `config.yaml` +
    zmienne środowiskowe — `Config.load` działa bez zmian, a z niego powstają
    `InstanceConfig` i `HomeConfig(dom 1)`. **Plik `config.yaml` bez sekcji
@@ -623,7 +661,10 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
   rejestr `PanelQueries`, zakresy tras, aliasy starych tras), `uprawnienia.py`
   (role domowe, nowe uprawnienia, zakresy), `panel_auth.py`
   (`uprawnienia(konto, dom)`, `/api/auth/me` z listą domów i uprawnień
-  per dom), `odbiorcy.py`/`panel_konta.py` z #45 (preferencje per
+  per dom, rola administratora instalacji z bezpiecznikiem grupy `admins`,
+  wpisy `audyt`), `panel_sso.py` + `charts/kidwatch/values.yaml` +
+  `tests/test_chart_sso.py` (grupa `admins` wpuszczana — §8, decyzja 5),
+  `__main__.py` (CLI `user-admin`), `odbiorcy.py`/`panel_konta.py` z #45 (preferencje per
   członkostwo, tryb per dom, `trasy` tylko Dom 1), `web/src/utils/api.js`
   (prefiks domu), `web/src/components/*` (przełącznik domu w nagłówku,
   zapamiętany w `localStorage`, ukryty przy jednym domu; ekran integracji
@@ -634,7 +675,10 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
   przycisków per dom.
 - **Gotowe, gdy**: na produkcji istnieje **Dom testowy** (dane syntetyczne,
   założony przez `admin_instancji`), konto `podglad` z Domu 1 go nie widzi
-  (404), konto członka obu domów przełącza się bez przeładowania strony.
+  (404), prywatne konto właściciela też nie (404), konto administracyjne
+  (grupa `admins`) go widzi, a każde wejście jest w `audyt`; konto członka
+  obu domów przełącza się bez przeładowania strony. Reguła Authelii dla
+  hosta panelu dopuszcza `admins` w tym samym oknie wdrożenia.
 
 ### E3b — MDM per dom + izolacja awarii pętli
 
@@ -771,14 +815,36 @@ Wszystkie pytania rozstrzygnięte zgodnie z rekomendacjami projektu.
 3. **Authelia: nowa grupa `kidwatch-goscie`** z dostępem wyłącznie do hosta
    panelu Kidwatcha; dopisana do `sso.grupy` i reguły hosta w Authelii
    (renacode-infra) w etapie E4. Grupa wpuszcza, niczego w panelu nie nadaje.
+   Do listy wpuszczanych grup dochodzi też **`admins`** (decyzja 5 po
+   korekcie) — patrz niżej.
 4. **UniFi i TV w Domu 2: później.** Start Domu 2 to NextDNS w chmurze;
    `domy.dozwolone_sieci` Domu 2 pozostaje puste do czasu decyzji o tunelu.
    E6 nie obejmuje UniFi ani TV.
 5. **Prywatność i NextDNS.**
-   - Właściciel (także jako `admin_instancji`) **nie widzi danych Domu 2**
-     bez członkostwa w nim — wymagane testami izolacji (§4.4 p. 2).
-   - Zaproszony dostaje **pisemną informację**, że operator klastra ma
-     techniczny dostęp do danych i klucza szyfrującego (§0). Treść w
+   - **Korekta (2026-10-11): administrator instalacji widzi wszystkie
+     domy.** Osobne konto administracyjne (Authelia, grupa `admins`) ma
+     w panelu rolę administratora instalacji (§2.3): dane, integracje,
+     zaproszenia i członkowie każdego domu, z wpisem w `audyt` przy każdym
+     wejściu do domu, w którym nie jest członkiem. Rola pochodzi z flagi
+     `users.admin_instancji` w `panel-auth.db`, nie z nagłówka; grupa
+     `admins` jest tylko warunkiem koniecznym przy sesji SSO.
+   - **Prywatne konto właściciela** (grupa `wlasciciel`) to zwykły członek
+     Domu 1 — **nie widzi danych Domu 2** bez członkostwa (§4.4 p. 2).
+   - **Konsekwencja dla SSO** (zmiana decyzji z 11.10 zapisanej
+     w `panel_sso.py`: „`admins` do Kidwatcha NIE wchodzi”):
+     `DEFAULT_GROUPS` i komentarz w `panel_sso.py`, `sso.grupy` w
+     `charts/kidwatch/values.yaml` (→ `wlasciciel`, `rodzina`,
+     `kidwatch-goscie`, `admins`), test `tests/test_chart_sso.py` oraz
+     reguła hosta panelu w Authelii (renacode-infra) muszą dopuścić
+     `admins`. Do czasu wdrożenia roli administratora (E3a) konto z grupy
+     `admins` bez konta w panelu dostaje 403 jak dziś (`Remote-User` bez
+     dopasowania), a z kontem — tylko to, co daje jego członkostwo; dlatego
+     zmianę grup wdrażamy **razem z E3a**, nie wcześniej. Zakres plików E3a
+     rozszerza się o `panel_sso.py`, chart i CLI `user-admin`.
+   - Zaproszony dostaje **pisemną informację**, że **administrator
+     instalacji ma wgląd we wszystkie dane domu** w panelu (z dziennikiem
+     audytu widocznym dla właściciela domu), a operator klastra ma
+     dodatkowo techniczny dostęp do bazy i klucza szyfrującego (§0). Treść w
      `docs/nowy-dom.md` (E6) i pokazywana na ekranie przyjęcia zaproszenia
      (E4) przed utworzeniem członkostwa — przyjęcie = potwierdzenie
      przeczytania.
