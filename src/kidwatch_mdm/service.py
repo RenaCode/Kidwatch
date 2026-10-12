@@ -140,15 +140,20 @@ class MDMService:
         """Kwarantanna wpisow iPhone'a (policy.load) przy starcie.
 
         Etykieta zapisanego iPada w kwarantannie = start przerwany: iPad
-        stracilby wlasne ograniczenia wpisu. Inaczej serwer wstaje, a wlasciciel
-        dostaje alarm — raz na zmiane bledow, nie po kazdym restarcie poda.
+        stracilby wlasne ograniczenia wpisu. Urzadzenie bez ProductName tez —
+        nie wiadomo, czy to iPhone, wiec zachowawczo jak iPad. Inaczej serwer
+        wstaje, a wlasciciel dostaje alarm — raz na zmiane bledow, nie po
+        kazdym restarcie poda. Nowy zapis pod taka etykieta odrzuca
+        _refuse_quarantined.
         """
         rejected = self.policy.rejected
         for device in self.store.devices():
-            if device["label"] in rejected and (device["product"] or "").startswith("iPad"):
+            product = device["product"] or ""
+            if device["label"] in rejected and not product.startswith("iPhone"):
                 raise PolicyError(
                     f"polityka odrzucona: wpis {device['label']} (kind: iphone) ma bledy, "
-                    f"a pod ta etykieta jest zapisany iPad ({device['product']}) — "
+                    f"a pod ta etykieta jest zapisane urzadzenie, ktore nie jest pewnym "
+                    f"iPhone'em ({product or 'brak ProductName'}) — "
                     f"kwarantanna zdjelaby mu ograniczenia: " + "; ".join(rejected[device["label"]])
                 )
         before = self.store.setting("policy_rejected") or {}
@@ -160,7 +165,19 @@ class MDMService:
             self.store.set_setting("policy_rejected", rejected)
 
     # ================================================================ zapis
+    def _refuse_quarantined(self, label: str) -> None:
+        """Zapis pod etykieta w kwarantannie: iPad zapisany po starcie nie
+        dostalby ograniczen z wpisu, a iPhone — wlasnych. Najpierw polityka."""
+        if label in self.policy.rejected:
+            raise ServiceError(
+                409,
+                f"wpis {label} w polityce jest w kwarantannie (bledy: "
+                f"{'; '.join(self.policy.rejected[label])}) — popraw polityke "
+                f"(kidwatch-mdm check-policy), zrestartuj serwer i dopiero zapisuj urzadzenie",
+            )
+
     def create_enrollment(self, label: str) -> dict[str, str]:
+        self._refuse_quarantined(label)
         if label not in self.policy.devices:
             log.warning(
                 "zaproszenie dla etykiety %r spoza polityki — dostanie wartosci domyslne", label
@@ -176,6 +193,7 @@ class MDMService:
             raise ServiceError(404, "nieznane zaproszenie")
         if row["udid"]:
             raise ServiceError(410, "zaproszenie juz wykorzystane")
+        self._refuse_quarantined(row["label"])
         if from_iso(row["expires_at"]) < now:
             raise ServiceError(410, "zaproszenie wygaslo")
         if not self.pusher.topic:
@@ -276,6 +294,8 @@ class MDMService:
         if ident is None:
             self.store.event("unknown_identity", udid, {"fingerprint": fp})
             raise ServiceError(401, "certyfikat nie pochodzi z zadnego zaproszenia")
+        # Zaproszenie sprzed kwarantanny (wazne 24 h): profil mogl juz zejsc.
+        self._refuse_quarantined(ident["label"])
         if ident["bound_udid"] and ident["bound_udid"] != udid:
             self.store.event("enrollment_reuse", udid, {"bound_to": ident["bound_udid"]})
             raise ServiceError(403, "zaproszenie przypisane do innego urzadzenia")

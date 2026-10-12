@@ -128,12 +128,15 @@ placeholdery.
    - Start zatrzymują, jak dotąd: błąd we wspólnych ustawieniach albo we
      wpisie iPada; błąd we wpisie `kind: iphone` **z `dns_url`** (iPhone go
      nie używa, więc to najpewniej iPad z pomylonym `kind`); błąd we wpisie,
-     pod którego etykietą jest zapisany iPad.
+     pod którego etykietą jest zapisane urządzenie inne niż pewny iPhone
+     (iPad albo bez ProductName).
+   - Zapis pod etykietą w kwarantannie jest odrzucany (409, także w panelu
+     i `kidwatch-mdm enroll`), łącznie z zaproszeniami sprzed kwarantanny —
+     najpierw popraw politykę.
    - `kind: iphone` pomyłkowo pod etykietą iPada **bez błędów** we wpisie:
      iPad zostaje iPadem z pełnym wpisem (zgłasza się jako iPad) i jest alarm
-     „pomyłka rodzaju”. Jeśli taki wpis jest w kwarantannie, a iPad zapisze się
-     dopiero później, nie dostaje ograniczeń z wpisu — alarm mówi to wprost
-     (priorytet 5).
+     „pomyłka rodzaju”. Wpis w kwarantannie nie przyjmie nowego zapisu (wyżej),
+     więc iPad nie trafi pod niego po starcie serwera.
 7. **Zapis do MDM**: w panelu (zakładka MDM → link do zapisu, etykieta
    `iphone1`) albo `kubectl -n default exec deploy/kidwatch-mdm --
    kidwatch-mdm enroll iphone1`. Link otwórz w Safari **na iPhonie** →

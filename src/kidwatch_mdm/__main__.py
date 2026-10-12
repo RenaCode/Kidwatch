@@ -189,9 +189,15 @@ def cmd_init_ca(args) -> int:
 def cmd_enroll(args) -> int:
     from datetime import timedelta as td
 
+    from .service import ServiceError
+
     service = build_service()
     service.enrollment_ttl = td(hours=args.hours)
-    out = service.create_enrollment(args.label)
+    try:
+        out = service.create_enrollment(args.label)
+    except ServiceError as exc:
+        print(f"BLAD: {exc}", file=sys.stderr)
+        return 1
     print(out["url"])
     print(f"wazny {args.hours} h, jednorazowy (wiaze sie z pierwszym iPadem, ktory sie zapisze)")
     return 0

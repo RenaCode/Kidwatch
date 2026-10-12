@@ -272,3 +272,77 @@ def test_alarm_pomylki_rodzaju_mowi_prawde_przy_kwarantannie():
     zwykly = kw_mdm._describe({"kind": "kind_mismatch", "detail": {
         "label": "test", "product": "iPad7,5"}}, "iPad")[3]
     assert "zostawia blokady" in zwykly
+
+
+# ================================================ ponowny przeglad #53: R1, R2
+def _kwarantanna(tmp_path, label="test", name="iPad testowy"):
+    raw = {**POLITYKA, "devices": {**POLITYKA["devices"], label: {
+        "name": name, "kind": "iphone", "blocked_apps": ["com.example.x"]}}}
+    policy = load(_zapisz(tmp_path, raw), SCHEMA)
+    assert set(policy.rejected) == {label}
+    return policy
+
+
+def _svc(tmp_path, policy, store=None, ca=None):
+    return MDMService(store=store or Store(tmp_path / "m.db"), ca=ca or nowe_ca(tmp_path / "ca"),
+                      policy=policy, public_url="https://mdm.example.invalid",
+                      pusher=FakePusher())
+
+
+def test_zaproszenie_pod_etykieta_w_kwarantannie_odrzucone(tmp_path):
+    """R1: iPad zapisany PO starcie pod blednym wpisem nie dostalby ograniczen
+    z wpisu — zapis pod taka etykieta jest odrzucany od razu i czytelnie."""
+    from kidwatch_mdm.service import ServiceError  # noqa: PLC0415
+
+    svc = _svc(tmp_path, _kwarantanna(tmp_path))
+    with pytest.raises(ServiceError) as exc:
+        svc.create_enrollment("test")
+    assert exc.value.status == 409 and "kwarantann" in str(exc.value)
+    assert svc.create_enrollment("dziecko1")["token"]  # inne etykiety bez zmian
+
+
+def test_zaproszenie_sprzed_kwarantanny_nie_daje_profilu_ani_zapisu(tmp_path):
+    """R1: zaproszenie utworzone, zanim wpis trafil do kwarantanny (wazne 24 h)."""
+    from kidwatch_mdm.service import ServiceError  # noqa: PLC0415
+
+    store = Store(tmp_path / "m.db")
+    ca = nowe_ca(tmp_path / "ca")
+    stary = _svc(tmp_path, Policy.model_validate(POLITYKA), store, ca)
+    token = stary.create_enrollment("test")["token"]
+    ipad = FakeIpad(stary.enrollment_profile(token).body, "00000000-0000000000000004")
+    nowy = _svc(tmp_path, _kwarantanna(tmp_path), store, ca)
+    with pytest.raises(ServiceError) as exc:
+        nowy.enrollment_profile(token)
+    assert exc.value.status == 409
+    with pytest.raises(ServiceError) as exc:
+        nowy.checkin(*ipad.msg(MessageType="Authenticate", Topic=TOPIC, ProductName="iPad7,5"))
+    assert exc.value.status == 409
+    assert store.device("00000000-0000000000000004") is None
+
+
+def test_cli_enroll_pod_etykieta_w_kwarantannie(tmp_path, monkeypatch, capsys):
+    from kidwatch_mdm import __main__ as cli  # noqa: PLC0415
+
+    svc = _svc(tmp_path, _kwarantanna(tmp_path))
+    monkeypatch.setattr(cli, "build_service", lambda: svc)
+    assert cli.main(["enroll", "test"]) == 1
+    assert "kwarantann" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("product", "stop"), [(None, True), ("", True), ("iPad7,5", True),
+                                               ("iPhone16,2", False)])
+def test_urzadzenie_bez_productname_pod_kwarantanna_zatrzymuje_start(tmp_path, product, stop):
+    """R2: brak ProductName = nie wiadomo, czy to iPhone — zachowawczo jak iPad."""
+    policy = _kwarantanna(tmp_path)
+    store = Store(tmp_path / "m.db")
+    token = store.create_enrollment("test", __import__("datetime").timedelta(hours=1))
+    with store.tx() as c:
+        c.execute("INSERT INTO devices (udid, label, enrollment_token, cert_fp, product, "
+                  "enrolled_at, last_seen_at) VALUES ('00000000-0000000000000005', 'test', "
+                  "?, 'fp', ?, '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z')",
+                  (token, product))
+    if stop:
+        with pytest.raises(PolicyError, match="test"):
+            _svc(tmp_path, policy, store)
+    else:
+        assert _svc(tmp_path, policy, store).policy.rejected
