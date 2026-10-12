@@ -1240,6 +1240,18 @@ class RejestrDomow:
                         raport.integracje += 1
         return raport
 
+    def czas_zmiany_sekretu(self, dom_id: int, typ: str, pole: str) -> float | None:
+        """Kiedy ostatnio zapisano TO pole sekretu (z audytu `integracja.zapis`,
+        ktory podaje nazwy zmienionych pol) — nie cala integracja. None, gdy
+        audyt go nie zna."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT MAX(ts) FROM audyt WHERE dom_id = ? AND akcja = 'integracja.zapis' "
+                "AND opis LIKE ? AND opis LIKE ?",
+                (dom_id, f"integracja {typ}:%", f"%sekrety zmienione:%{pole}%"),
+            ).fetchone()
+        return row[0] if row and row[0] is not None else None
+
     # ---------------------------------------------------------- E2: klucze
     def ostatnia_rotacja_kek(self) -> str | None:
         """Data (UTC) ostatniego `klucze-rotuj` albo None. Kopie bazy sprzed

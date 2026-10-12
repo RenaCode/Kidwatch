@@ -35,6 +35,15 @@ def test_testy_maja_historie_dla_testu_wycofania():
     assert WF["jobs"]["testy"]["steps"][0]["with"]["fetch-depth"] == 0
 
 
+def test_zsh_dla_testu_kp_i_pominiecia_w_logu():
+    """tests/test_domy_e2_uwagi.py::test_kp_zwraca_kod_klucze_potwierdz w CI
+    musi sie WYKONAC (bez zsh — fail), a pominiecia maja byc widoczne."""
+    runs = [s.get("run", "") for s in WF["jobs"]["testy"]["steps"]]
+    i_zsh = next(i for i, r in enumerate(runs) if "install" in r and "zsh" in r)
+    i_pytest = next(i for i, r in enumerate(runs) if "pytest" in r)
+    assert i_zsh < i_pytest and "-rs" in runs[i_pytest]
+
+
 def test_front_testowany_w_ci():
     runs = [s.get("run", "") for s in WF["jobs"]["testy"]["steps"]]
     assert "npm test" in runs and "npm run build" in runs and "npm ci" in runs

@@ -749,6 +749,13 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
     jest warunkiem usunięcia klucza poprzedniego; ponowny import nie cofa
     nowszego tokenu aplikacji TV; strażnik rozpoznaje IPv4 w `::/96`
     i `::ffff:0:0:0/96` i próbuje kolejnych sprawdzonych adresów nazwy.
+  - Uwagi z drugiego przeglądu: token aplikacji TV porównywany z czasem
+    zapisu samego tokenu (audyt), nie całej integracji `tv`; ADB przechodzi
+    na kolejny adres także przy `TcpTimeoutException` i zamyka nieudane
+    połączenia; `kp && kubectl … remove` jako jedno polecenie (funkcja `kp`
+    zwraca kod `klucze-potwierdz`); `domy` pokazuje wymuszenie
+    `KIDWATCH_DOM_1_ZRODLO`; `--baza` bez pliku = czytelny błąd; odmowa
+    `klucze-potwierdz` odróżnia klucz domu od uszkodzonej integracji.
 
 ### E3a — izolacja panelu i API + przełącznik domu w UI
 

@@ -62,6 +62,7 @@ uruchamia, z bledem w logu — reszta serwisu dziala.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 from dataclasses import dataclass, replace
@@ -409,6 +410,8 @@ class AdbTcpShell:
                 # nie odpowiada.
                 hosty = [str(ip) for ip in await self.straznik.rozwiaz_wszystkie(
                     self.host, self.port)]
+            from adb_shell import exceptions as adb_exc  # noqa: PLC0415
+
             for i, host in enumerate(hosty):
                 dev = AdbDeviceTcpAsync(host, self.port,
                                         default_transport_timeout_s=self.timeout)
@@ -416,7 +419,10 @@ class AdbTcpShell:
                     await dev.connect(rsa_keys=[self.signer], auth_timeout_s=self.timeout,
                                       read_timeout_s=self.timeout)
                     break
-                except (OSError, TimeoutError):
+                # adb_shell zamienia timeout na TcpTimeoutException (nie OSError).
+                except (OSError, TimeoutError, adb_exc.TcpTimeoutException):
+                    with contextlib.suppress(Exception):
+                        await dev.close()
                     if i == len(hosty) - 1:
                         raise
             self._dev = dev
