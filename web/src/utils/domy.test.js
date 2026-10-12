@@ -1,7 +1,9 @@
 /* Przelacznik domu, prefiks sciezki i chowanie przyciskow per dom. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { domPath, homeLabel, pickHome, roleLabel, showSwitcher, userInHome } from './domy.js';
+import {
+  domPath, homeLabel, noHomeMessage, noHomeOffers2fa, pickHome, roleLabel, showSwitcher, userInHome,
+} from './domy.js';
 import { can, isViewer, sectionsFor } from './uprawnienia.js';
 
 const ME = {
@@ -60,4 +62,18 @@ test('etykiety: rola w domu i wglad administratora', () => {
   assert.equal(roleLabel('zarzadca'), 'zarządca');
   assert.equal(homeLabel({ nazwa: 'Dom 2', administracja: true }), 'Dom 2 · administracja');
   assert.equal(homeLabel({ nazwa: 'Dom 1', administracja: false }), 'Dom 1');
+});
+
+test('brak domu: haslo bez 2FA dostaje wlaczenie 2FA, SSO i konto z 2FA - nie', () => {
+  const haslo = { login: 'konto-admin', sso: false, totp_enabled: false, totp_available: true, domy: [] };
+  assert.equal(noHomeOffers2fa(haslo), true);
+  assert.match(noHomeMessage(haslo), /włącz niżej/);
+  assert.equal(noHomeOffers2fa({ ...haslo, totp_enabled: true }), false);
+  assert.equal(noHomeOffers2fa({ ...haslo, sso: true }), false);
+  // Bez klucza na serwerze: nie pokazujemy formularza, ktory skonczy sie 503.
+  const bezKlucza = { ...haslo, totp_available: false };
+  assert.equal(noHomeOffers2fa(bezKlucza), false);
+  assert.match(noHomeMessage(bezKlucza), /PANEL_TOTP_KEY/);
+  assert.match(noHomeMessage({ ...haslo, totp_enabled: true }), /Poproś osobę/);
+  assert.equal(noHomeOffers2fa(null), false);
 });

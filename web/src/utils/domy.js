@@ -64,3 +64,22 @@ export function userInHome(user, domId) {
 export function homeLabel(dom) {
   return dom.administracja ? `${dom.nazwa} · administracja` : dom.nazwa;
 }
+
+/* Ekran „Brak domu”. Konto administracyjne logujace sie haslem (bez
+   Authelii) widzi domy dopiero z wlaczonym 2FA panelu - a bez domu nie ma
+   Ustawien, wiec wlaczenie 2FA musi byc na tym ekranie. Kazde konto bez
+   domu moze je wlaczyc (konto.wlasne); bez klucza na serwerze - komunikat. */
+export function noHomeOffers2fa(user) {
+  return !!user && !user.sso && !user.totp_enabled && user.totp_available !== false;
+}
+
+export function noHomeMessage(user) {
+  if (user && !user.sso && !user.totp_enabled) {
+    return user.totp_available === false
+      ? 'To konto nie należy do żadnego domu. Konto administracyjne logujące się hasłem '
+        + 'potrzebuje 2FA, a serwer nie ma klucza PANEL_TOTP_KEY — poproś operatora.'
+      : 'To konto nie należy do żadnego domu. Konto administracyjne: włącz niżej '
+        + 'weryfikację dwuetapową — rola administratora działa dopiero z 2FA.';
+  }
+  return 'To konto nie należy do żadnego domu. Poproś osobę zarządzającą domem o dodanie.';
+}

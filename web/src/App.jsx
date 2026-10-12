@@ -12,7 +12,10 @@ import Icon from './components/Icons';
 import ErrorBoundary from './components/ErrorBoundary';
 import { TvPauseBanner } from './components/TvPause';
 import { get, post, qs, useApi, setHome, setSessionExpiredHandler, setSsoMode } from './utils/api';
-import { homeLabel, pickHome, roleLabel, showSwitcher, userInHome } from './utils/domy';
+import {
+  homeLabel, noHomeMessage, noHomeOffers2fa, pickHome, roleLabel, showSwitcher, userInHome,
+} from './utils/domy';
+import TwoFactor from './components/TwoFactor';
 import { signOutLabel, signOutTarget, ssoDenial } from './utils/sso';
 import { ALL, can, isViewer, sectionsFor } from './utils/uprawnienia';
 import { localToday } from './utils/format';
@@ -150,6 +153,7 @@ export default function App() {
    przeladowania strony. */
 function Homes({ user, onSignOut, onUserChanged }) {
   const [saved, setSaved] = useState(readHome);
+  const [twoFactorOpen, setTwoFactorOpen] = useState(false);
   const domId = pickHome(user?.domy, saved);
   setHome(domId);
   const pick = (id) => { saveHome(id); setSaved(String(id)); };
@@ -159,8 +163,16 @@ function Homes({ user, onSignOut, onUserChanged }) {
         <div className="login-card glass-card">
           <div className="login-card-head">
             <h1>Brak domu</h1>
-            <p>To konto nie należy do żadnego domu. Poproś osobę zarządzającą domem o dodanie.</p>
+            <p>{noHomeMessage(user)}</p>
           </div>
+          {/* Konto administracyjne bez Authelii: rola dziala dopiero z 2FA,
+              a bez domu nie ma Ustawien - wlaczenie 2FA jest tutaj. Sesja
+              odswiezana dopiero po "Zapisalem kody" (onClose): od razu po
+              potwierdzeniu konto widzi domy i ekran z kodami by zniknal. */}
+          {(noHomeOffers2fa(user) || twoFactorOpen) && (
+            <TwoFactor user={user} onChanged={() => setTwoFactorOpen(true)}
+                       onClose={() => { setTwoFactorOpen(false); onUserChanged(); }} />
+          )}
           <button className="btn-primary" onClick={onSignOut}>{signOutLabel(user)}</button>
         </div>
       </div>
