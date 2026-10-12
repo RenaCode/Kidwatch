@@ -1129,7 +1129,11 @@ async def cmd_user_add(args) -> int:
               file=sys.stderr)
     if generated:
         _print_generated(args.login, password)
-    print("Weryfikacje dwuetapowa (TOTP) wlaczysz po zalogowaniu: menu konta -> Wlacz 2FA.")
+    if args.bez_domu:
+        print("Konto administracyjne: zaloguj sie na nie TERAZ i wlacz 2FA (ekran „Brak "
+              "domu”), dopiero potem: user-admin " + args.login + " on.")
+    else:
+        print("Weryfikacje dwuetapowa (TOTP) wlaczysz po zalogowaniu: menu konta -> Wlacz 2FA.")
     return 0
 
 
@@ -1591,9 +1595,16 @@ async def cmd_dom_klucz_rotuj(args) -> int:
 
 async def cmd_user_admin(args) -> int:
     """Administrator instalacji (§2.3, decyzja 5): flaga w panel-auth.db,
-    wylacznie z CLI. `on` wypisuje konto ze wszystkich domow (konto
-    administracyjne bez czlonkostw — widzi domy przez role, z wpisem w
-    dzienniku, i nie dostaje ich powiadomien), chyba ze --zostaw-domy."""
+    wylacznie z CLI. `on` wypisuje konto ze wszystkich domow — zawsze:
+    konto prywatne widzi tylko swoje domy (decyzja 5), a przy logowaniu
+    haslem z TOTP flaga dzialalaby na kazdym koncie, ktore ja ma; konto
+    administracyjne jest osobne i nie dostaje powiadomien domow.
+
+    `on` wymaga wlaczonego juz 2FA panelu (przeglad E3a, U-1): kto zna samo
+    haslo, nie wlaczy 2FA za wlasciciela w oknie miedzy `user-add` a jego
+    pierwszym logowaniem — zrobi to wlasciciel, zanim konto cokolwiek otwiera.
+    `--tylko-sso`: konto logujace sie wylacznie przez Authelie (grupa
+    `admins`), bez 2FA panelu; bez Authelii takie konto nic nie widzi."""
     from .domy import OstatniZarzadzajacy, RejestrDomow  # noqa: PLC0415
     from .panel_auth import UnknownUser  # noqa: PLC0415
 
@@ -1606,7 +1617,14 @@ async def cmd_user_admin(args) -> int:
         print(f"nie ma konta {args.login!r}", file=sys.stderr)
         return 1
     wlacz = args.stan == "on"
-    if wlacz and not args.zostaw_domy:
+    totp = next(u["totp"] for u in auth.list_users() if u["login"] == args.login.strip())
+    if wlacz and not totp and not args.tylko_sso:
+        print(f"odrzucone: {args.login!r} nie ma wlaczonego 2FA panelu. Zaloguj sie na to "
+              "konto haslem, wlacz 2FA na ekranie „Brak domu” i zapisz kody — dopiero potem "
+              "user-admin on. (Konto tylko przez Authelie z grupa 'admins': --tylko-sso.)",
+              file=sys.stderr)
+        return 1
+    if wlacz:
         czlonkostwa = rejestr.czlonkostwa(uid)
         # Najpierw sprawdzenie wszystkich domow, potem zmiany — bez polowicznego
         # wypisania, gdy w drugim domu to ostatni zarzadzajacy.
@@ -1675,6 +1693,11 @@ async def cmd_dom_czlonek(args) -> int:
             n = auth.set_role(args.login, args.rola, dom_id=args.dom)
             print(f"konto {args.login!r}: rola {args.rola} w domu {args.dom}, "
                   f"wylogowano sesji: {n}")
+            if any(u["admin_instancji"] for u in auth.list_users()
+                   if u["login"] == args.login.strip()):
+                print("UWAGA: to konto administracyjne — w tym domu dziala teraz jak "
+                      "czlonek i dostaje jego powiadomienia (§2.3 zaleca konto "
+                      "administracyjne bez domow).", file=sys.stderr)
     except UnknownUser:
         print(f"nie ma konta {args.login!r}", file=sys.stderr)
         return 1
@@ -1862,12 +1885,13 @@ def build_parser() -> argparse.ArgumentParser:
     user_admin = sub.add_parser(
         "user-admin",
         help="administrator instalacji: widzi wszystkie domy (z wpisem w dzienniku); "
-        "on wypisuje konto z domow",
+        "on wymaga 2FA i wypisuje konto z domow",
     )
     user_admin.add_argument("login")
     user_admin.add_argument("stan", choices=("on", "off"))
-    user_admin.add_argument("--zostaw-domy", action="store_true",
-                            help="nie wypisuj z domow (niezalecane: §2.3)")
+    user_admin.add_argument("--tylko-sso", action="store_true",
+                            help="bez 2FA panelu: konto loguje sie wylacznie przez Authelie "
+                            "(grupa admins); haslem panelu nie dostanie roli")
     dom_dodaj = sub.add_parser("dom-dodaj", help="zaloz nowy dom (bez czlonkow, pusta baza)")
     dom_dodaj.add_argument("nazwa")
     dom_dodaj.add_argument("--strefa", help="strefa czasowa (domyslnie jak w config.yaml)")

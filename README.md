@@ -404,7 +404,7 @@ python -m kidwatch user-del <login>
 python -m kidwatch user-list
 python -m kidwatch konta-migruj [--przypisz N=login …] [--zapisz [--wlacz]]  # gateway recipients -> accounts
 python -m kidwatch konta-tryb [trasy|konta]               # show / switch notification mode
-python -m kidwatch user-admin <login> on|off [--zostaw-domy]  # installation administrator (see below)
+python -m kidwatch user-admin <login> on|off [--tylko-sso]  # installation administrator (see below)
 python -m kidwatch dom-dodaj <nazwa> [--strefa Europe/Warsaw]  # new household, empty event DB
 python -m kidwatch dom-czlonek <dom> <login> wlasciciel-domu|zarzadca|podglad  # role in a household
 python -m kidwatch dom-czlonek <dom> <login> --usun        # remove from a household
@@ -418,9 +418,12 @@ the account's only household (409 when it sees more than one). The web UI
 shows a household switcher only when the account has more than one.
 
 The **installation administrator** is a separate account (Authelia group
-`admins`), not the owner's private account: `user-add <login>` and then
-`user-admin <login> on` (which removes it from all households, so it gets no
-household notifications). It sees every household, but only when the flag is
+`admins`), not the owner's private account: `user-add <login> --bez-domu`,
+log in with that password **right away** and enable panel 2FA on the "Brak
+domu" screen, then `user-admin <login> on` — it refuses an account without
+2FA (`--tylko-sso` for an account that only ever logs in through Authelia)
+and always removes the account from all households, so it gets no household
+notifications. It sees every household, but only when the flag is
 set in the panel database **and** the request comes through Authelia with
 `admins` in `Remote-Groups` (or, on the break-glass password login, with
 panel 2FA enabled). Every visit to a household it is not a member of is

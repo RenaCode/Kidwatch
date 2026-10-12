@@ -645,13 +645,26 @@ def test_konto_administracyjne_z_CLI_bez_domu_i_bez_powrotu(tmp_path, capsys):
         finally:
             sys.stdin = sys.__stdin__
     path = tmp_path / "panel-auth.db"
-    # §6 p. 2: user-add, potem user-admin on — konto wypada z Domu 1.
-    assert main([*base, "user-admin", "konto-admin", "on"]) == 0
-    # Prywatne konto to teraz jedyny zarzadzajacy: nie zostanie wypisane.
-    assert main([*base, "user-admin", "konto-prywatne", "on"]) == 1
     rejestr = dm.RejestrDomow(path)
-    auth = PanelAuth(path)
+    auth = PanelAuth(path, box=box_from_env())
     uid = auth.user_id("konto-admin")
+    # U-1: bez wlaczonego 2FA panelu — odmowa i ZERO zmian (dalej czlonek, bez flagi).
+    assert main([*base, "user-admin", "konto-admin", "on"]) == 1
+    assert "2FA" in capsys.readouterr().err
+    assert [c.dom_id for c in rejestr.czlonkostwa(uid)] == [DOM_A]
+    assert not rejestr.admin_instancji(uid)
+    # Wlasciciel konta loguje sie haslem i wlacza 2FA, potem dopiero `on`.
+    session = auth.login("konto-admin", "haslo-ze-stdin-123").session
+    auth.totp_confirm(session, pyotp.TOTP(auth.totp_setup(session)["secret"]).now())
+    # §6 p. 2: user-admin on — konto wypada z Domu 1.
+    assert main([*base, "user-admin", "konto-admin", "on"]) == 0
+    # Prywatne konto to teraz jedyny zarzadzajacy: nie zostanie wypisane
+    # (--tylko-sso omija wymog 2FA, nie te regule).
+    assert main([*base, "user-admin", "konto-prywatne", "on", "--tylko-sso"]) == 1
+    assert "jedyne konto zarzadzajace" in capsys.readouterr().err
+    # U-3: nie ma opcji zostawienia kontu domow razem z rola administratora.
+    with pytest.raises(SystemExit):
+        main([*base, "user-admin", "konto-prywatne", "on", "--zostaw-domy"])
     assert rejestr.czlonkostwa(uid) == [] and rejestr.admin_instancji(uid)
     # Lustro dla obrazu sprzed domow: rola nieznana = tylko wlasne konto.
     with sqlite3.connect(path) as conn:
