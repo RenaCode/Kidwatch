@@ -637,9 +637,8 @@ def test_gosc_innego_domu_nie_wpada_do_domu_1_po_restarcie(tmp_path):
     rejestr.dodaj_dom("Dom B")
     auth.add_user("gosc", HASLO, "podglad", dom_id=DOM_B)
     uid = auth.user_id("gosc")
-    for _ in range(2):
-        PanelAuth(path)
-        rejestr.migruj()
+    PanelAuth(path)
+    assert not rejestr.migruj().zmiany  # start niczego nie dopisuje ani nie sprzata
     assert [c.dom_id for c in rejestr.czlonkostwa(uid)] == [DOM_B]
     assert rejestr.uprawnienia(uid, DOM_A) == frozenset()
 

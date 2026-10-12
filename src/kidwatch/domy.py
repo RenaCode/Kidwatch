@@ -335,6 +335,10 @@ def czlonkostwo_conn(conn: sqlite3.Connection, user_id: int,
     return _stan_czlonkostwa(conn, dom_id, user_id)
 
 
+#: Uprawnienia dodane w E3a — obraz E1 i starsze ich nie znaja.
+_NOWE_E3A = frozenset({upr.DOM_URZADZENIA, upr.DOM_INTEGRACJE, upr.DOM_ZAPROSZENIA})
+
+
 def lustro_konta(stan: Stan) -> Stan:
     """Rola w Domu 1 -> to, co ma zobaczyc obraz sprzed domow w `users`.
 
@@ -347,7 +351,10 @@ def lustro_konta(stan: Stan) -> Stan:
     if rola in wprost:
         return wprost[rola], nadane, odebrane
     if rola in upr.ROLE_DOMU_UPRAWNIENIA:
-        cel = upr.efektywne(rola, nadane, odebrane, role=upr.ROLE_DOMU_UPRAWNIENIA)
+        # Bez uprawnien, ktorych obraz sprzed E3a nie zna: on liczy to samo
+        # lustro bez nich i przy roznicy nadpisalby czlonkostwo (zarzadca
+        # po wycofaniu i powrocie stalby sie `podglad` z nadaniami).
+        cel = upr.efektywne(rola, nadane, odebrane, role=upr.ROLE_DOMU_UPRAWNIENIA) - _NOWE_E3A
         baza = upr.ROLE_UPRAWNIENIA[upr.ROLE_VIEWER]
         return upr.ROLE_VIEWER, frozenset(cel - baza), frozenset(baza - cel - upr.STALE)
     return stan

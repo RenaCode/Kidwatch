@@ -408,7 +408,9 @@ def test_zarzadca_w_domu_1_ma_lustro_w_users(tmp_path):
     odst = _sql(path, "SELECT uprawnienie, nadane FROM user_uprawnienia WHERE user_id = ?", (uid,))
     stary = uprawnienia.efektywne("podglad", {n for n, x in odst if x},
                                   {n for n, x in odst if not x})
-    assert stary == oczekiwane  # ...i te same uprawnienia efektywne
+    # ...i te same uprawnienia efektywne, poza nowymi `dom.*`, ktorych obraz
+    # sprzed E3a nie zna (liczy lustro bez nich — inaczej nadpisalby role).
+    assert stary == oczekiwane - domy._NOWE_E3A
     # Panel od E3a pokazuje role w domu.
     assert next(u for u in auth.list_users() if u["login"] == "konto-z")["rola"] == "zarzadca"
     # Start nie spycha zarzadcy do podgladu, mimo ze w users jest `podglad`.
