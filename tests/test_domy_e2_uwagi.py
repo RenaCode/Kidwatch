@@ -123,6 +123,8 @@ def test_kp_zwraca_kod_klucze_potwierdz(tmp_path):
 
     zsh = shutil.which("zsh")
     if zsh is None:
+        if os.environ.get("CI"):
+            pytest.fail("brak zsh — workflow CI musi go instalowac (apt-get install zsh)")
         pytest.skip("brak zsh")
     tekst = (ROOT / "docs/sejf-domow.md").read_text()
     definicja = tekst[tekst.index("kp() {"):]
@@ -190,6 +192,23 @@ def test_testy_e2_nie_polegaja_na_pustej_liscie_bledow():
 
 
 # ================================================================= U9, U10
+def test_kp_bez_globalnej_zmiennej_z_kluczem():
+    """N3: `local K` — po Ctrl-C klucz nie zostaje w powloce."""
+    tekst = (ROOT / "docs/sejf-domow.md").read_text()
+    definicja = tekst[tekst.index("kp() {"):]
+    assert definicja.startswith("kp() { local K rc;")
+
+
+def test_schowek_czyszczony_przed_kp():
+    """N1: klucz wrzucony do schowka trzeba usunac przed `kp`, inaczej `kp`
+    potwierdza schowek, a nie wpis w menedzerze hasel."""
+    tekst = (ROOT / "docs/sejf-domow.md").read_text()
+    for start, kp in (("## 2. Klucz KEK", "## 3."), ("## 7. Rotacja KEK", "kp &&")):
+        sekcja = tekst[tekst.index(start):]
+        wrzut = sekcja.index("| pbcopy")
+        assert wrzut < sekcja.index("pbcopy </dev/null") < sekcja.index(kp), start
+
+
 def test_runbook_powloka_i_schowek():
     tekst = (ROOT / "docs/sejf-domow.md").read_text()
     assert "zsh" in tekst

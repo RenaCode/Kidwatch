@@ -24,9 +24,10 @@ kończy się błędem (kod 2), nie fałszywym potwierdzeniem.
 k() { kubectl -n default exec deploy/kidwatch -c kidwatch -- python -m kidwatch "$@"; }
 # klucz z menedżera haseł na stdin (bez zapisu w historii powłoki):
 # Kod wyjścia kp = kod klucze-potwierdz (od tego zależy `kp && …` w §7).
-kp() { read -rs 'K?KIDWATCH_KEK z menedżera haseł: '; echo
+# `local K`: klucz nie zostaje w powłoce po Ctrl-C i nie trafia do env kubectl.
+kp() { local K rc; read -rs 'K?KIDWATCH_KEK z menedżera haseł: '; echo
        printf '%s\n' "$K" | kubectl -n default exec -i deploy/kidwatch -c kidwatch -- \
-         python -m kidwatch klucze-potwierdz; local rc=$?; unset K; return $rc; }
+         python -m kidwatch klucze-potwierdz; rc=$?; return $rc; }
 ```
 
 Zasady:
@@ -56,6 +57,9 @@ i wolumen w pamięci `/run/kidwatch` na pliki z sekretami.
 ```sh
 KEK=$(openssl rand -base64 32)
 printf '%s' "$KEK" | pbcopy     # do schowka -> menedżer haseł (macOS; Linux: xclip -sel clip)
+# ZAPISZ wpis w menedżerze haseł, potem WYCZYŚĆ schowek (niżej). Bez tego `kp`
+# wkleiłby klucz ze schowka i „potwierdził” wpis, którego w menedżerze nie ma.
+pbcopy </dev/null
 kubectl -n default patch secret kidwatch-secrets --type merge --patch-file /dev/stdin <<EOF
 {"stringData": {"KIDWATCH_KEK": "$KEK"}}
 EOF
@@ -225,6 +229,9 @@ Kidwatchem — tam warunek pilnujesz sam.
    ```sh
    NOWY=$(openssl rand -base64 32)
    printf '%s' "$NOWY" | pbcopy                  # NOWY wpis w menedżerze haseł; stary zostaje
+   # Po zapisaniu wpisu: czyszczenie schowka, zanim cokolwiek wkleisz do `kp`
+   # (krok 3) — `kp` ma dowieść, że klucz JEST w menedżerze, a nie w schowku.
+   pbcopy </dev/null
    read -rs 'STARY?obecny KIDWATCH_KEK z menedżera haseł: '; echo
    kubectl -n default patch secret kidwatch-secrets --type merge --patch-file /dev/stdin <<EOF
    {"stringData": {"KIDWATCH_KEK": "$NOWY", "KIDWATCH_KEK_POPRZEDNI": "$STARY"}}
@@ -241,8 +248,9 @@ Kidwatchem — tam warunek pilnujesz sam.
    ```
 
 3. **Dowód z menedżera haseł i dopiero wtedy usunięcie poprzedniego** —
-   JEDNO polecenie: `kp` (wklej NOWY klucz z menedżera, nie z historii
-   powłoki) przy „ODMOWA” kończy się kodem 1 i `&&` nie wykona usunięcia:
+   JEDNO polecenie: `kp` (skopiuj NOWY klucz ze świeżo otwartego wpisu
+   w menedżerze — schowek jest pusty po kroku 1, więc innego źródła nie ma)
+   przy „ODMOWA” kończy się kodem 1 i `&&` nie wykona usunięcia:
 
    ```sh
    kp && kubectl -n default patch secret kidwatch-secrets --type json \
