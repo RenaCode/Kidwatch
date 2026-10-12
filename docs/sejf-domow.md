@@ -15,10 +15,11 @@ Kod: `src/kidwatch/sejf.py` (szyfrowanie), `src/kidwatch/konfiguracja_domu.py`
 (import, budowa konfiguracji domu z bazy), `src/kidwatch/straznik.py`
 (adresy integracji, SSRF).
 
-Wszystkie polecenia w klastrze uruchamia się w podzie. Składnia jak
-w całej dokumentacji to **zsh** (`read -rs 'ZMIENNA?pytanie'`); w bashu
-`read -rsp 'pytanie' ZMIENNA` — inaczej zmienna zostaje pusta, a `kp`
-kończy się błędem (kod 2), nie fałszywym potwierdzeniem.
+Wszystkie polecenia w klastrze uruchamia się w podzie. Runbook jest dla
+**zsh** (domyślna powłoka macOS; `read -rs 'ZMIENNA?pytanie'`). W bashu
+bloki z kluczem w schowku (pkt 2, pkt 7.1) nie robią nic, a `kp` kończy się
+błędem (kod 2), nie fałszywym potwierdzeniem — sprawdzają to testy na
+`/bin/bash`.
 
 **Bloki wklejaj w całości do zsh.** Bloki nie mają komentarzy: w zsh bez
 `interactivecomments` (domyślnie) `#` w wklejonym tekście nie jest
@@ -71,7 +72,19 @@ dopiero potem Enter. Wtedy schowek jest czyszczony — inaczej `kp` w pkt 3
 wkleiłby klucz ze schowka i „potwierdził” wpis, którego w menedżerze nie ma.
 Klucz trafia do Sekretu dopiero po zapisaniu w menedżerze.
 
+**Tylko w zsh.** W bashu `read -rs '?…'` nie robi pauzy (bash 3.2 z macOS
+nie ma też bracketed paste i połknąłby następną wklejoną linię), więc schowek
+zostałby wyczyszczony, a Sekret zmieniony, zanim zapiszesz klucz. Blok
+sprawdza powłokę i poza zsh nie robi nic („tylko w zsh”).
+
+Przerwałeś pauzę Ctrl-C? Sekret jest nietknięty, ale klucz został w schowku
+(i w zmiennej `KEK`). Jeśli go zapisałeś w menedżerze — albo rezygnujesz —
+wyczyść schowek ręcznie: `pbcopy </dev/null; unset KEK`, i zacznij blok od
+nowa. Blok celowo nie czyści schowka sam po przerwaniu: skasowałby klucz,
+którego może jeszcze nie ma w menedżerze.
+
 ```sh
+if [ -n "$ZSH_VERSION" ]; then
 KEK=$(openssl rand -base64 32)
 printf '%s' "$KEK" | pbcopy
 read -rs '?Zapisz klucz w menedżerze haseł, potem Enter: '; echo
@@ -81,6 +94,7 @@ kubectl -n default patch secret kidwatch-secrets --type merge --patch-file /dev/
 EOF
 unset KEK
 kubectl -n default rollout restart deploy/kidwatch
+else echo "Ten blok tylko w zsh - nic nie wykonano"; fi
 ```
 
 Sprawdzenie (bez wypisywania wartości):
@@ -256,9 +270,14 @@ Kidwatchem — tam warunek pilnujesz sam.
 1. Nowy klucz obok starego. Blok wrzuca NOWY klucz do schowka i **czeka**:
    zapisz go w menedżerze haseł jako NOWY wpis (stary zostaje), potem Enter.
    Wtedy schowek jest czyszczony — `kp` w kroku 3 ma dowieść, że klucz JEST
-   w menedżerze, a nie w schowku. Potem blok pyta o obecny klucz (z menedżera):
+   w menedżerze, a nie w schowku. Potem blok pyta o obecny klucz (z menedżera).
+   **Tylko w zsh** — jak w pkt 2 blok poza zsh nie robi nic. Po Ctrl-C na
+   pauzie Sekret jest nietknięty, a NOWY klucz zostaje w schowku: po
+   zapisaniu go w menedżerze (albo rezygnacji) `pbcopy </dev/null; unset NOWY`
+   i blok od nowa.
 
    ```sh
+   if [ -n "$ZSH_VERSION" ]; then
    NOWY=$(openssl rand -base64 32)
    printf '%s' "$NOWY" | pbcopy
    read -rs '?Zapisz NOWY klucz w menedżerze haseł, potem Enter: '; echo
@@ -269,6 +288,7 @@ Kidwatchem — tam warunek pilnujesz sam.
    EOF
    unset NOWY STARY
    kubectl -n default rollout restart deploy/kidwatch
+   else echo "Ten blok tylko w zsh - nic nie wykonano"; fi
    ```
 
 2. Przepakowanie i sprawdzenie:
