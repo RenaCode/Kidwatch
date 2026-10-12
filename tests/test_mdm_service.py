@@ -21,7 +21,7 @@ from kidwatch_mdm import profiles
 from kidwatch_mdm.apns import PushResult
 from kidwatch_mdm.pki import CA
 from kidwatch_mdm.policy import DEFAULT_RESTRICTIONS, DevicePolicy, OsUpdate, Policy
-from kidwatch_mdm.service import MDMService, ServiceError
+from kidwatch_mdm.service import MDMService, ServiceError, payload_install_profile
 from kidwatch_mdm.store import Store, iso, now_utc
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -356,6 +356,11 @@ def test_reconcile_installs_restrictions_profile_once(svc):
     profile = plistlib.loads(install[0]["Command"]["Payload"])
     restr = profile["PayloadContent"][0]
     assert restr["allowVPNCreation"] is False and restr["allowHostPairing"] is True
+    # Bajt w bajt to, co lintuje tests/test_mdm_plutil.py (jedna serializacja).
+    urzadzenie = svc.store.device(ipad.udid)
+    oczekiwany, _ = profiles.restrictions_profile(svc.policy, urzadzenie["label"],
+                                                  svc.kind_of(urzadzenie))
+    assert install[0]["Command"]["Payload"] == payload_install_profile(oczekiwany)
     state = svc.store.profile_states(ipad.udid)[profiles.RESTRICTIONS_ID]
     assert state["installed_at"] is not None
     run_commands(svc, ipad)

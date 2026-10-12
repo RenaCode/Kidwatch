@@ -101,6 +101,14 @@ class Response:
 EMPTY_OK = Response(200, plistlib.dumps({}))
 
 
+def payload_install_profile(profile: dict) -> bytes:
+    """Profil konfiguracyjny jako `Payload` komendy InstallProfile: plist XML
+    z posortowanymi kluczami. Jedno miejsce serializacji — test `plutil -lint`
+    (tests/test_mdm_plutil.py) sprawdza dokladnie te bajty, ktore dostaje
+    urzadzenie."""
+    return plistlib.dumps(profile, fmt=plistlib.FMT_XML, sort_keys=True)
+
+
 class ServiceError(Exception):
     def __init__(self, status: int, message: str) -> None:
         super().__init__(message)
@@ -599,7 +607,7 @@ class MDMService:
                 cmd = self.store.enqueue(
                     udid,
                     "InstallProfile",
-                    {"Payload": plistlib.dumps(profile, fmt=plistlib.FMT_XML, sort_keys=True)},
+                    {"Payload": payload_install_profile(profile)},
                     origin="policy",
                 )
                 self.store.set_profile_state(udid, profiles.RESTRICTIONS_ID, digest, cmd)
