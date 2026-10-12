@@ -44,6 +44,7 @@ from kidwatch.panel_auth import PanelAuth, box_from_env
 from kidwatch.panel_domy import PREFIKS_DOMU
 from kidwatch.rollup import refresh_rollups
 from kidwatch.store import Store
+from test_domy_e2 import kek  # noqa: F401 — fikstura KIDWATCH_KEK
 from test_panel_sso import call, cookie, jar
 
 HASLO = "haslo-testowe-123"
@@ -742,3 +743,53 @@ def test_front_zna_te_same_trasy_domu_co_serwer():
     front = set(re.findall(r"'([^']+)'", blok))
     serwer = {k.removeprefix(PREFIKS_DOMU + "/") for k in (*DOM_GET, *DOM_POST)}
     assert front == serwer, (front ^ serwer)
+
+
+# ================================================== Dom 1 w trybie `baza`
+@pytest.mark.usefixtures("kek")
+@pytest.mark.parametrize("zrodlo", ["yaml", "baza"])
+def test_run_panel_domu_1_z_bazy_pokazuje_ten_sam_dom(tmp_path, monkeypatch, zrodlo):
+    """Przeglad E3a, B-1: `run` budowal panel bez konfiguracji domu, wiec po
+    `dom-zrodlo 1 baza` (E2) Dom 1 w panelu byl pusty — bez urzadzen, dzieci,
+    czasu gry i pauzy TV. Sciezka produkcyjna: `dom-importuj`, potem
+    `kidwatch run`; panel odpytany w trakcie startu."""
+    import secrets  # noqa: PLC0415
+
+    import kidwatch.__main__ as cli  # noqa: PLC0415
+    from conftest import panel_login  # noqa: PLC0415
+    from kidwatch import panel as panel_mod  # noqa: PLC0415
+    from test_domy_e2 import Puste, _prosta, _zapisz_konfig  # noqa: PLC0415
+
+    monkeypatch.setenv("NEXTDNS_API_KEY", "klucz-" + secrets.token_hex(8))
+    monkeypatch.setenv("KIDWATCH_HEARTBEAT", str(tmp_path / "hb"))
+    data = _prosta(tmp_path)
+    (tmp_path / "web").mkdir()
+    data["panel"] = {"enabled": True, "port": 0, "host": "127.0.0.1",
+                     "static_dir": str(tmp_path / "web"), "cookie_secure": False}
+    data["game_time"] = {"enabled": True}
+    cfg_path = _zapisz_konfig(tmp_path, data)
+    PanelAuth(Config.load(cfg_path).panel_auth_path).add_user("konto-a", HASLO)
+    if zrodlo == "baza":
+        assert main(["--config", str(cfg_path), "dom-importuj", "1", "--zapisz"]) == 0
+        assert dm.RejestrDomow(Config.load(cfg_path).panel_auth_path).dom(
+            DOM_A).zrodlo_konfiguracji == "baza"
+    monkeypatch.setattr(cli, "build_source", lambda cfg, store: Puste())
+    widziane = {}
+    prawdziwy = panel_mod.start_panel
+
+    def start_i_odpytaj(*a, **kw):
+        srv = prawdziwy(*a, **kw)
+        h = {"Cookie": panel_login(srv.server_address[1], "konto-a", HASLO)}
+        h["X-CSRF-Token"] = dict(x.split("=", 1) for x in h["Cookie"].split("; "))[
+            "kidwatch_csrf"]
+        widziane["meta"] = call(srv, "GET", f"/api/domy/{DOM_A}/meta", headers=h)[2]
+        widziane["game"] = call(srv, "POST", f"/api/domy/{DOM_A}/game",
+                                {"child": "Kuba", "action": "block"}, h)[0]
+        widziane["day"] = call(srv, "GET", f"/api/domy/{DOM_A}/day", headers=h)[2]
+        return srv
+
+    monkeypatch.setattr(panel_mod, "start_panel", start_i_odpytaj)
+    assert main(["--config", str(cfg_path), "run"]) == 1  # koniec atrapy zrodla
+    assert widziane["meta"]["children"] == ["Kuba", "Zosia"], widziane
+    assert [d["name"] for d in widziane["day"]["devices"]] == ["iPad Kuby", "iPad Zosi"]
+    assert widziane["game"] == 202  # czas gry wlaczony w Domu 1, dziecko znane

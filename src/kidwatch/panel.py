@@ -1896,17 +1896,18 @@ KonfiguracjaDomu = Callable[[dm.Dom], HomeConfig | None]
 
 def queries_domow(cfg: Config, konfiguracja_domu: KonfiguracjaDomu | None = None,
                   ) -> Callable[[dm.Dom], PanelQueries]:
-    """Fabryka `PanelQueries` domu. Dom 1 w trybie `yaml` — konfiguracja
-    i baza z config.yaml, z kolejkami czasu gry i pauzy TV Domu 1, jak przed
-    domami. Inny dom — jego baza (`domy/<id>/kidwatch.db`) i konfiguracja
-    z `konfiguracja_domu` (miejsce na E2); bez niej — bez urzadzen."""
+    """Fabryka `PanelQueries` domu: baza domu (`sciezka_bazy_domu`)
+    i konfiguracja z `konfiguracja_domu` — `run` podaje te sama, na ktorej
+    chodzi srodowisko domu (dla Domu 1 w trybie `baza`: z bazy, E2). Bez niej
+    Dom 1 w trybie `yaml` bierze config.yaml, jak przed domami; dom bez
+    konfiguracji — panel bez urzadzen."""
 
     def zbuduj(dom: dm.Dom) -> PanelQueries:
         home: HomeConfig | BezKonfiguracji | None = None
-        if dom.id == dm.DOM_1 and dom.zrodlo_konfiguracji == dm.ZRODLO_YAML:
-            home = cfg
-        elif konfiguracja_domu is not None:
+        if konfiguracja_domu is not None:
             home = konfiguracja_domu(dom)
+        if home is None and dom.id == dm.DOM_1 and dom.zrodlo_konfiguracji == dm.ZRODLO_YAML:
+            home = cfg
         if home is None:
             home = BezKonfiguracji(timezone=dom.strefa)
         requests = (GameRequests(cfg.panel_auth_path, dom_id=dom.id)

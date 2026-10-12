@@ -352,7 +352,10 @@ async def cmd_run(args) -> int:
     if cfg.panel.enabled:
         from .panel import start_panel  # noqa: PLC0415
 
-        panel = start_panel(cfg)
+        # Panel Domu 1 z TEJ SAMEJ konfiguracji co jego srodowisko — przy
+        # `baza` (E2) nie z config.yaml, inaczej panel pokazalby pusty dom
+        # (przeglad E3a, B-1). Kolejne domy: E3b.
+        panel = start_panel(cfg, konfiguracja_domu=lambda dom: home if dom.id == DOM_1 else None)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
