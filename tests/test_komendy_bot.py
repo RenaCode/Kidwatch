@@ -859,3 +859,56 @@ async def test_limit_wywolan_druga_doba_z_rzedu_alarmuje(tmp_path):
     for _ in range(6):                               # doba 2: znowu
         await s.pisz(NR_A, "co umiesz")
     assert len(s.alarmy) == 1 and "kolejną dobę" in s.alarmy[0][0]
+
+
+# ============================================== ponowny przeglad #66
+async def test_kopia_tylko_dla_czlonkow_z_podgladem(swiat):
+    _typowy_dom(swiat)
+    swiat.auth.set_permissions("domownik", {upr.PODGLAD: False})
+    # Jedyny inny czlonek z kanalem nie widzi dzieci: luzowanie odmowione...
+    assert "wymaga drugiego członka" in (await swiat.pisz(NR_A, "+15 Dziecko A"))[0]
+    # ...a zaostrzenie przechodzi bez obietnicy i bez kopii.
+    odp = await swiat.pisz(NR_A, "koniec Dziecko A")
+    assert "Kopię" not in odp[0]
+    await swiat.potwierdz(NR_A, odp)
+    assert swiat.kanal.do(NR_P) == []
+
+
+async def test_zmiana_przyczyny_alarmuje_od_razu(tmp_path):
+    g = Dostawca("gemini", blad=_blad_429())
+    s = Swiat(tmp_path, dostawcy=[g])
+    for _ in range(15):                              # 0..7 h ciaglego 429
+        await s.pisz(NR_A, "niech koncza")
+        s.zegar.plus(1800)
+    assert [a[0] for a in s.alarmy] == ["Kidwatch: Gemini odpowiada 429"] * 2
+    # Klucz nagle niewazny (403): alarm od razu, nie po odstepie 429.
+    s.llm._przerwa.clear()
+    g.blad = httpx.HTTPStatusError("403", request=httpx.Request("POST", "http://x"),
+                                   response=httpx.Response(403))
+    await s.pisz(NR_A, "niech koncza")
+    assert len(s.alarmy) == 3 and "bez LLM" in s.alarmy[2][0] and "HTTP 403" in s.alarmy[2][1]
+    # Ta sama przyczyna dalej — juz z odstepem.
+    s.zegar.plus(1800)
+    await s.pisz(NR_A, "niech koncza")
+    assert len(s.alarmy) == 3
+
+
+async def test_bezpiecznik_jeden_alarm_na_5_min(tmp_path):
+    g = Dostawca("gemini", blad=httpx.ConnectError("x"))
+    s = Swiat(tmp_path, cfg=WhatsappKomendyConfig(enabled=True, na_godzine=50), dostawcy=[g])
+    await s.pisz(NR_A, "niech koncza")
+    g.blad = httpx.ReadTimeout("t")
+    await s.pisz(NR_A, "niech koncza")              # inna przyczyna, ale po 0 s
+    assert len(s.alarmy) == 1
+    s.zegar.plus(301)
+    await s.pisz(NR_A, "niech koncza")
+    assert len(s.alarmy) == 2
+
+
+async def test_dwa_odlegle_429_to_nie_ciagle_429(tmp_path):
+    g = Dostawca("gemini", blad=_blad_429())
+    s = Swiat(tmp_path, dostawcy=[g])
+    await s.pisz(NR_A, "niech koncza")
+    s.zegar.plus(7 * 3600)                           # cisza 7 h, potem znowu 429
+    await s.pisz(NR_A, "niech koncza")
+    assert s.alarmy == []

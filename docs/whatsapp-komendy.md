@@ -45,8 +45,9 @@ Bez zapisu na telewizor, bez głośności, bez restartu i wyłączania iPada.
 - `zarzadca` **nie ma** komend domyślnie — tylko po pojedynczym nadaniu
   `whatsapp.komendy`; `wlasciciel-domu` ma je z roli, `podglad` nigdy.
 - **Kopia każdej wykonanej komendy** idzie do WSZYSTKICH pozostałych
-  członków domu z kanałem powiadomień — także w roli podglądu (typowo drugi
-  rodzic) — niezależnie od ich ciszy. Luzowanie bez żadnego takiego
+  członków domu z kanałem powiadomień i prawem `podglad.historia` — także
+  w roli podglądu (typowo drugi rodzic) — niezależnie od ich ciszy. Konto
+  bez podglądu (nie widzi dzieci w panelu) kopii nie dostaje. Luzowanie bez żadnego takiego
   adresata jest odrzucane („użyj panelu”); komendy zaostrzające przechodzą,
   ale bot nie obiecuje wtedy kopii.
 - **Prywatność:** do LLM (Gemini) trafiają imiona dzieci i nazwy urządzeń
@@ -106,10 +107,14 @@ Bez zapisu na telewizor, bez głośności, bez restartu i wyłączania iPada.
     („Nie rozumiem teraz swobodnego tekstu, napisz np. …”) i przerwa
     `llm.przerwa_po_429_seconds` (domyślnie 15 min), w której Gemini nie
     jest wołany wcale;
+  - odstęp alarmów jest **osobny dla każdej przyczyny** (429, limit,
+    konkretna awaria, np. HTTP 403): zmiana przyczyny alarmuje od razu,
+    z bezpiecznikiem najwyżej jeden alarm o LLM na 5 min;
   - **ciągłe 429 nie jest ciche:** gdy od pierwszego 429 nie było ani
     jednego udanego wywołania przez `llm.alarm_429_po_godzinach`
     (domyślnie 6 h), idzie alarm instancji („Gemini odpowiada 429 od X h”)
-    z tym samym rosnącym odstępem; udane wywołanie zeruje licznik;
+    z rosnącym odstępem; udane wywołanie zeruje licznik, a przerwa między
+    dwoma 429 dłuższa niż próg liczy od nowa;
   - dobowy limit wywołań wyczerpany **drugą dobę z rzędu** — alarm
     (spam w dzienniku albo za niski limit).
 - Inna awaria wszystkich dostawców (zły klucz, brak środków, 5xx, timeout):
