@@ -34,6 +34,12 @@ WHATSAPP = "whatsapp.konfiguracja"
 KONTA = "konta.zarzadzanie"
 #: Powiadomienia techniczne (czujka, awarie, inne) per konto (odbiorcy.py).
 POWIADOMIENIA_TECHNICZNE = "powiadomienia.techniczne"
+#: Dzieci i urzadzenia domu (docs/architektura-domy.md §2.3).
+DOM_URZADZENIA = "dom.urzadzenia"
+#: Ustawienia i sekrety integracji domu (zapis i maska, nigdy odczyt wartosci).
+DOM_INTEGRACJE = "dom.integracje"
+#: Tworzenie i odwolywanie zaproszen do domu.
+DOM_ZAPROSZENIA = "dom.zaproszenia"
 
 #: Uprawnienie -> opis (komunikat 403, `user-list`, pomoc CLI).
 OPISY: dict[str, str] = {
@@ -47,13 +53,32 @@ OPISY: dict[str, str] = {
     WHATSAPP: "konfiguracja WhatsAppa i powiadomień",
     KONTA: "zarządzanie kontami (dodaj, usuń, rola, uprawnienia, kanały innych)",
     POWIADOMIENIA_TECHNICZNE: "powiadomienia techniczne (czujka, awarie, inne)",
+    DOM_URZADZENIA: "dzieci i urządzenia domu",
+    DOM_INTEGRACJE: "integracje domu (UniFi, TV, NextDNS…) i ich klucze",
+    DOM_ZAPROSZENIA: "zaproszenia do domu",
 }
 UPRAWNIENIA = tuple(OPISY)
 
+#: Zakres uprawnienia (§2.3, §4.1): `konto` — konto samo o sobie, w kazdym
+#: domu; `instancja` — wspolne dla instalacji (bot WhatsApp bramki); `dom` —
+#: tylko w domu, ktorego dotyczy zadanie (`/api/domy/<id>/...`).
+ZAKRES_KONTO = "konto"
+ZAKRES_DOM = "dom"
+ZAKRES_INSTANCJA = "instancja"
+ZAKRESY: dict[str, str] = {
+    **dict.fromkeys(UPRAWNIENIA, ZAKRES_DOM),
+    KONTO_WLASNE: ZAKRES_KONTO,
+    WHATSAPP: ZAKRES_INSTANCJA,
+}
+UPRAWNIENIA_DOMU = frozenset(u for u, z in ZAKRESY.items() if z == ZAKRES_DOM)
+UPRAWNIENIA_INSTANCJI = frozenset(u for u, z in ZAKRESY.items() if z == ZAKRES_INSTANCJA)
+
 #: Role w DOMU (docs/architektura-domy.md §2.3, tabela `czlonkostwa`).
-#: Na razie zakresy jak role konta: `wlasciciel-domu` = `wlasciciel`,
-#: `podglad` = `podglad`. Uprawnienia domu (`dom.*`) i przeniesienie
-#: `whatsapp.konfiguracja` do zakresu instancji dochodza z panelem domow.
+#: `wlasciciel-domu` ma zbior roli konta `wlasciciel` (takze
+#: `whatsapp.konfiguracja` — tylko dla lustra obrazu sprzed domow; w panelu
+#: to uprawnienie ma zakres instancji i daje je WYLACZNIE aktywny
+#: administrator instalacji, `w_domu` je odfiltrowuje), `zarzadca` jak
+#: w tabeli §2.3, `podglad` = `podglad`.
 ROLA_WLASCICIEL_DOMU = "wlasciciel-domu"
 ROLA_ZARZADCA = "zarzadca"
 ROLA_PODGLAD = ROLE_VIEWER
@@ -66,7 +91,7 @@ ROLE_UPRAWNIENIA: dict[str, frozenset[str]] = {
 #: Osobno od ROLE_UPRAWNIENIA: tamta idzie do panelu jako lista rol konta.
 ROLE_DOMU_UPRAWNIENIA: dict[str, frozenset[str]] = {
     ROLA_WLASCICIEL_DOMU: ROLE_UPRAWNIENIA[ROLE_OWNER],
-    ROLA_ZARZADCA: frozenset(UPRAWNIENIA) - {KONTA, WHATSAPP},
+    ROLA_ZARZADCA: frozenset(UPRAWNIENIA) - {KONTA, WHATSAPP, DOM_INTEGRACJE, DOM_ZAPROSZENIA},
     ROLA_PODGLAD: ROLE_UPRAWNIENIA[ROLE_VIEWER],
 }
 
@@ -83,6 +108,24 @@ def efektywne(rola: str, nadane: set[str] | frozenset[str] = frozenset(),
     dla roli w domu."""
     baza = role.get(rola, STALE)
     return frozenset((baza | set(nadane)) - (set(odebrane) - STALE)) & frozenset(UPRAWNIENIA)
+
+
+def w_domu(upr: frozenset[str] | set[str]) -> frozenset[str]:
+    """Czesc zbioru, ktora dziala w domu: zakres `dom` i `konto`."""
+    return frozenset(u for u in upr if ZAKRESY.get(u) in (ZAKRES_DOM, ZAKRES_KONTO))
+
+
+def rola_konta(rola: str) -> str:
+    """Rola w domu z nazwy roli konta (`wlasciciel` -> `wlasciciel-domu`);
+    rola domu przechodzi bez zmian. Stare wywolania (CLI `user-rola`,
+    front sprzed domow) podaja role konta."""
+    return ROLA_WLASCICIEL_DOMU if rola == ROLE_OWNER else rola
+
+
+def nazwa_roli(rola_domu: str) -> str:
+    """Odwrotnosc `rola_konta` dla wyswietlania i zgodnosci API sprzed domow:
+    `wlasciciel-domu` -> `wlasciciel`, reszta bez zmian."""
+    return ROLE_OWNER if rola_domu == ROLA_WLASCICIEL_DOMU else rola_domu
 
 
 def parsuj_zmiany(zmiany: list[str]) -> dict[str, bool | None]:

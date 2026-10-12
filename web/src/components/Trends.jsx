@@ -2,7 +2,7 @@
    danych. Tydzien do tygodnia i miesiac do miesiaca: biezacy okres jest
    niepelny, wiec obok sumy stoi srednia dzienna, i to ja porownujemy. */
 import React from 'react';
-import { useApi, qs } from '../utils/api';
+import { homeUrl, useApi, qs } from '../utils/api';
 import { LineChart, fmtMinutes } from '../charts';
 
 const COLORS = ['var(--color-primary)', 'var(--color-blue)', 'var(--color-secondary)',
@@ -76,7 +76,7 @@ export default function Trends({ child }) {
     key: w.week, short: dm(w.from), label: `tydzień od ${dm(w.from)}`,
     values: w.values, partial: w.partial,
   }));
-  const csv = `/api/export.csv${qs({ child })}`;
+  const csv = homeUrl(`/api/export.csv${qs({ child })}`);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -97,7 +97,7 @@ export default function Trends({ child }) {
         <div className="hint dim" style={{ fontSize: '0.74rem', marginTop: 12 }}>
           Minuty sesji z agregatów dziennych. Telewizor (przerywana linia) jest wspólny —
           nie wchodzi do sumy dziecka. Pusty punkt = tydzień w toku.
-          Pełny zakres CSV: /api/export.csv?from=RRRR-MM-DD&amp;to=RRRR-MM-DD.
+          Pełny zakres CSV: {homeUrl('/api/export.csv')}?from=RRRR-MM-DD&amp;to=RRRR-MM-DD.
         </div>
       </div>
     </div>

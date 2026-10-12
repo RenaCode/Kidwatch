@@ -5,7 +5,8 @@ Stan: **projekt zaakceptowany** (decyzje właściciela z 2026-10-11 w §8);
 kontrakt dla kolejnych etapów w docstringu `src/kidwatch/domy.py` (ustalenia
 z realizacji: §7, E1); **etap E2 zrealizowany w kodzie** — sejf integracji,
 `dom-importuj`, strażnik sieci (ustalenia: §7, E2; runbook:
-`docs/sejf-domow.md`). Podstawa: `main` po #43 i #44 oraz
+`docs/sejf-domow.md`); **etap E3a zrealizowany** — panel i API per dom,
+administrator instalacji (ustalenia: §7, E3a). Podstawa: `main` po #43 i #44 oraz
 otwarty #45 (powiadomienia per konto), który zostanie scalony wcześniej
 i jest tu traktowany jako punkt wyjścia.
 
@@ -613,10 +614,11 @@ sekund), bez utraty historii, z możliwością cofnięcia obrazu w każdym etapi
 7. **Wycofanie obrazu**: każdy etap dodaje tylko tabele i kolumny
    z wartościami domyślnymi; stary obraz ich nie czyta. `users.rola`
    i `user_uprawnienia` są aktualizowane równolegle (lustro Domu 1) aż do E4,
-   więc cofnięcie do obrazu sprzed E1 zachowuje role. W E1 prawdą jest
-   `users`, a start uzgadnia z niego `czlonkostwa(dom 1)`; E3a przełącza
-   odczyt na `czlonkostwa` i odwraca kierunek uzgadniania przy starcie;
-   lustro `users.rola` usuwa E4 (§7 E1, „Ustalenia z realizacji”).
+   więc cofnięcie do obrazu sprzed E1 zachowuje role. W E1 prawdą był
+   `users`; od E3a prawdą są `czlonkostwa`, a `users` to lustro Domu 1
+   (konto spoza Domu 1: `users.rola = 'bez-domu'`). Start przenosi do
+   `czlonkostwa` tylko zmiany zrobione poza lustrem (starym obrazem po
+   wycofaniu); lustro usuwa E4 (§7 E3a, „Ustalenia z realizacji”).
 8. **Weryfikacja bez przerwy**: przed i po każdym etapie — liczba
    powiadomień i sesji z ostatnich 48 h w panelu (z `notifications`,
    `sessions`), `tests/test_e2e_replay.py` z `fixtures/day.jsonl` daje
@@ -747,6 +749,13 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
     jest warunkiem usunięcia klucza poprzedniego; ponowny import nie cofa
     nowszego tokenu aplikacji TV; strażnik rozpoznaje IPv4 w `::/96`
     i `::ffff:0:0:0/96` i próbuje kolejnych sprawdzonych adresów nazwy.
+  - Uwagi z drugiego przeglądu: token aplikacji TV porównywany z czasem
+    zapisu samego tokenu (audyt), nie całej integracji `tv`; ADB przechodzi
+    na kolejny adres także przy `TcpTimeoutException` i zamyka nieudane
+    połączenia; `kp && kubectl … remove` jako jedno polecenie (funkcja `kp`
+    zwraca kod `klucze-potwierdz`); `domy` pokazuje wymuszenie
+    `KIDWATCH_DOM_1_ZRODLO`; `--baza` bez pliku = czytelny błąd; odmowa
+    `klucze-potwierdz` odróżnia klucz domu od uszkodzonej integracji.
 
 ### E3a — izolacja panelu i API + przełącznik domu w UI
 
@@ -772,6 +781,78 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
   (grupa `admins`) go widzi, a każde wejście jest w `audyt`; konto członka
   obu domów przełącza się bez przeładowania strony. Reguła Authelii dla
   hosta panelu dopuszcza `admins` w tym samym oknie wdrożenia.
+
+- **Ustalenia z realizacji** (wiążą E2/E3b/E4):
+  - **Odwrócone uzgadnianie.** Prawdą o rolach są `czlonkostwa`; każda
+    zmiana idzie przez `ustaw_czlonkostwo_conn`/`usun_czlonkostwo_conn`
+    (lustro Domu 1 w tej samej transakcji, wylogowanie konta, reguła
+    „ostatni z `konta.zarzadzanie`” — `OstatniZarzadzajacy`). Start nie
+    nadaje już członkostwa każdemu kontu: lustro różne od członkostwa to
+    zmiana starym obrazem (wraca do `czlonkostwa` — degradacja w czasie
+    wycofania się nie cofa), konto z lustrem `bez-domu` zostaje bez Domu 1
+    (konto administracyjne, goście E4), konto bez członkostwa z rolą konta
+    (założone starym obrazem) — członek Domu 1 jak dawniej. Obraz E1 dopisuje
+    kontom `bez-domu` członkostwo z nieznaną rolą (tylko `konto.wlasne`);
+    powrót E3a je usuwa. Lustro zarządcy pomija nowe `dom.*` (obraz E1 ich
+    nie zna i inaczej nadpisałby rolę). Sprawdzone na prawdziwym kodzie
+    `origin/main` (2723214, `git archive`).
+  - **Zakresy tras**: `POST_TRASY`/`GET_TRASY` mają zakres; trasy domu pod
+    `/api/domy/<id>/…` (`panel_domy.PREFIKS_DOMU`). `/api/konto/kanaly` —
+    konto (kanały osoby), bot WhatsApp — instancja, reszta — dom (także
+    `konto/powiadomienia`, `konta/*`, nowy `dziennik`).
+  - **`whatsapp.konfiguracja`** (zakres instancji) ma **wyłącznie aktywny
+    administrator instalacji** (decyzja właściciela 2026-10-12, zgodnie
+    z §2.3) — żadna rola w żadnym domu, także `wlasciciel-domu` Domu 1, go
+    nie daje. Każdy POST na trasach instancji to wpis w `audyt` z `dom_id`
+    NULL (`instancja.<trasa>`). Wysyłka powiadomień przez bramkę od tego
+    prawa nie zależy. Po wdrożeniu ekran WhatsAppa jest niedostępny, dopóki
+    właściciel nie założy konta administracyjnego (README).
+  - **Administrator**: aktywny przy fladze + (`admins` w `Remote-Groups`
+    przy żądaniu przez Authelię | TOTP przy haśle). `user-admin on` zawsze
+    wypisuje konto ze wszystkich domów (odmowa, gdy to ostatni zarządzający)
+    i wymaga już włączonego 2FA panelu — kto zna samo hasło, nie przejmie
+    konta, włączając 2FA przed właścicielem (przegląd E3a, U-1, U-3).
+    `--tylko-sso` zapisuje `users.admin_instancji = 2`: rola wyłącznie przez
+    Authelię z `admins`, logowanie hasłem panelu na to konto odrzucone
+    (przegląd E3a, B-2). Obraz sprzed E3a czyta kolumnę jako prawdę/fałsz
+    i roli administratora nie zna. Audyt: `admin.wglad` raz na sesję i dom na 15 min,
+    `admin.<trasa>` każdego POST-a, przed wykonaniem; błąd zapisu = 503.
+  - **Powiadomienia**: kanały osoby w `user_powiadomienia`, preferencje
+    w `czlonkostwa_powiadomienia (dom_id, user_id)`, tryb `tryb:<dom>`
+    (lustro Domu 1: preferencje w `user_powiadomienia`, klucz `tryb`;
+    nowszy `updated_at` w lustrze wraca przy starcie). Dom ≠ 1 zawsze
+    `konta`; jego `Outbox` bez bramki znającej `odbiorca` nic nie wysyła
+    (notki czekają nierozdzielone; alarm instancji — E3b).
+  - **Bez konfiguracji domu w bazie** (do E2) dom ≠ 1 ma w panelu pustą
+    listę urządzeń (`panel_domy.BezKonfiguracji`); E2 podaje
+    `start_panel(cfg, konfiguracja_domu=...)`. MDM i aplikacja TV w panelu —
+    tylko Dom 1 (token i `tv_app.AKTYWNA` są jeszcze jedne; E3b/E6).
+  - **CLI**: `user-admin`, `dom-dodaj` (dom + pusta baza zdarzeń),
+    `dom-czlonek`, `user-add --bez-domu`.
+  - **Grupy SSO**: `wlasciciel`, `rodzina`, `admins`; `kidwatch-goscie` — E4.
+  - **Nie zrobione w E3a**: ekran integracji i urządzeń domu (zależy od API
+    E2), zaproszenia (E4), `udid ∈ dom` (E3b).
+  - **Ekran integracji (2026-10-12, decyzja właściciela)**: integracje domu
+    i ich sekrety wpisuje w panelu **wyłącznie aktywny administrator
+    instalacji** — `dom.integracje` z roli w domu nie wystarcza (403).
+    Trasy `GET /api/domy/<id>/integracje`, `POST …/integracje/zapisz`,
+    `POST …/integracje/usun-sekret` (`panel_integracje.py`); dom `yaml` —
+    409. Zapis: potwierdzenie hasłem/2FA, walidacja modelem + strażnik
+    (§3.6), bezpiecznik „działający dom musi dalej startować” w tej samej
+    transakcji, audyt bez wartości. Przeładowanie z §5.1 zrobione dla
+    Domu 1 w trybie `baza`: `Nadzorca(…, przeladowanie=Przeladowanie(…))`
+    porównuje `domy.wersja` co 10 s i przebudowuje tylko ten
+    `HomeRuntime` (nieudana konfiguracja = stary dom chodzi dalej, stan
+    w `StanyDomow` dla panelu). Zapis tokenu aplikacji TV przez samo
+    środowisko domu nie podbija wersji. Po przeglądzie (12.10): nieudane
+    przeładowanie = wpis `dom.przeladowanie.blad`, alarm instancji przez
+    bramkę z rosnącym odstępem, ponowienia tylko błędów przejściowych
+    (1/5/30 min); kopia ostatniej dobrej konfiguracji (`domy_kopia`) —
+    start poda i awaria w trakcie pracy schodzą na nią zamiast CrashLoop;
+    wersja Domu 1 czytana przed budową przy starcie; pliki z sekretów po
+    zatrzymaniu starego środowiska; pośrednik MDM panelu z tokenem domu
+    z bazy; przełączenie NextDNS↔AdGuard w jednym zapisie; kontrola
+    współbieżności (`wersja` w ciele, 409). Ekran urządzeń domu — nadal nie.
 
 ### E3b — MDM per dom + izolacja awarii pętli
 

@@ -363,7 +363,7 @@ def test_aad_blob_innego_domu_i_typu_sie_nie_odszyfrowuje(dom1, kek):
     rejestr.zapisz_integracje(dom2, "nextdns", sejf=sejf, wlaczona=False,
                               ustawienia={"profile_id": "abc999"},
                               sekrety={"api_key": "klucz-domu-2-" + secrets.token_hex(8)})
-    assert rejestr.sprawdz(sejf) == []
+    assert rejestr.sprawdz_raport(sejf).potwierdzone
 
     # 1. Blob nextdns Domu 1 w wierszu nextdns Domu 2.
     _sql(path, "UPDATE integracje SET sekrety = (SELECT sekrety FROM integracje WHERE dom_id = 1 "
@@ -401,8 +401,8 @@ def test_rotacja_kek_przepakowuje_tylko_dek(dom1, kek):
     assert _sql(path, "SELECT typ, sekrety FROM integracje ORDER BY typ") == bloby
     assert rejestr.dom(DOM_1).kek_id == Sejf(nowy_klucz).kek_id
     # Po usunieciu KEK_POPRZEDNI: nowy klucz wystarcza, stary juz nie.
-    assert rejestr.sprawdz(Sejf(nowy_klucz)) == []
-    assert [t for _, t, _ in rejestr.sprawdz(stary)] == [None]
+    assert rejestr.sprawdz_raport(Sejf(nowy_klucz)).potwierdzone
+    assert [t for _, t, _ in rejestr.sprawdz_raport(stary).bledy] == [None]
     assert rejestr.sekrety_domu(DOM_1, Sejf(nowy_klucz)).get("nextdns", "api_key") == \
         dom1["kanarki"]["nextdns.api_key"]
 
@@ -896,7 +896,7 @@ def test_stary_obraz_dziala_na_bazie_po_e2_a_nowy_dalej_odszyfrowuje(dom1, kek, 
     # Powrot nowego obrazu: migracja bez zmian schematu, sekrety caly czas te same.
     raport = RejestrDomow(path).migruj()
     assert not raport.kolumny
-    assert RejestrDomow(path).sprawdz(sejf) == []
+    assert RejestrDomow(path).sprawdz_raport(sejf).potwierdzone
     assert {c.login for c in RejestrDomow(path).czlonkowie(DOM_1)} == {"konto-a", "konto-stare"}
     home = zbuduj_dom(RejestrDomow(path), DOM_1, sejf, materializuj=False)
     assert konfiguracja_domu.porownaj(dom1["home"], home) == []

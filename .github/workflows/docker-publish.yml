@@ -42,7 +42,12 @@ jobs:
       # na innych wersjach niz obraz, a rozjazd wyszedlby dopiero na produkcji.
       - run: uv sync --frozen
       - run: uv run ruff check .
-      - run: uv run pytest -q
+      # zsh: tests/test_domy_e2_uwagi.py i tests/test_runbook_sejf.py uruchamiaja
+      # runbook (docs/sejf-domow.md) w zsh — bez zsh testy w CI padaja.
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
+      # Bez drugiego -q (addopts ma juz -q): linia podsumowania z liczba
+      # testow zostaje w logu, a -rs dopisuje kazde pominiecie z powodem.
+      - run: uv run pytest -rs
       # Front: testy i build juz w PR, a nie dopiero w `docker build` na main.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

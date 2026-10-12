@@ -17,10 +17,11 @@ Kontrakt: renacode-infra docs/sso-tozsamosc.md. W skrocie:
     (`kubectl port-forward`, gdy Authelia lezy).
   - Wylogowanie konczy tez sesje Authelii: portal `/logout?rd=<adres panelu>`.
 
-`Remote-Groups` NIE nadaje uprawnien w panelu (rola konta, `wlasciciel` albo
-`podglad`, pochodzi z panel-auth.db, panel_auth.ROLES). Sluzy tylko jako
-bezpiecznik: sesja powstaje, gdy uzytkownik nalezy do jednej z grup, ktore
-Authelia wpuszcza na ten host. Gdyby regula w Authelii zostala kiedys
+`Remote-Groups` NIE nadaje uprawnien w panelu (rola w domu pochodzi
+z panel-auth.db, tabela `czlonkostwa`). Sluzy tylko jako bezpiecznik: sesja
+powstaje, gdy uzytkownik nalezy do jednej z grup, ktore Authelia wpuszcza na
+ten host, a rola administratora instalacji (flaga w bazie) dziala tylko
+z grupa `admins` w naglowku. Gdyby regula w Authelii zostala kiedys
 poluzowana, panel nie otworzy sie dla calej reszty uzytkownikow SSO.
 """
 
@@ -41,10 +42,15 @@ PORTAL_ENV = "SSO_PORTAL"
 GROUPS_ENV = "SSO_GRUPY"
 
 DEFAULT_PORTAL = "https://auth.renacode.com"
-#: Grupy Authelii z dostepem do panelu (decyzja wlasciciela 11.10): konto
-#: codzienne wlasciciela i rodzina. `admins` (konto administracyjne) do
-#: Kidwatcha NIE wchodzi. Chart: `sso.grupy` -> SSO_GRUPY.
-DEFAULT_GROUPS = ("wlasciciel", "rodzina")
+#: Grupy Authelii z dostepem do panelu: konto codzienne wlasciciela, rodzina
+#: i (od E3a, docs/architektura-domy.md §8 decyzja 5 po korekcie z 11.10)
+#: konto administracyjne `admins`. Wpuszczenie to nie uprawnienia: rola
+#: administratora instalacji wymaga flagi `users.admin_instancji` w bazie,
+#: a grupa `admins` jest dla niej tylko warunkiem koniecznym
+#: (panel_domy.admin_aktywny). Konto z `admins` bez konta w panelu dostaje
+#: 403 jak kazde inne. Chart: `sso.grupy` -> SSO_GRUPY.
+GRUPA_ADMINOW = "admins"
+DEFAULT_GROUPS = ("wlasciciel", "rodzina", GRUPA_ADMINOW)
 
 USER_HEADER = "Remote-User"
 GROUPS_HEADER = "Remote-Groups"

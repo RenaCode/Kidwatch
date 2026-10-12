@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { reloadAllowed } from './sso.js';
+import { domPath } from './domy.js';
 
 /* Warstwa HTTP, ten sam model co w Trader-AI.
 
@@ -45,6 +46,13 @@ function reloadThroughSso() {
   return true;
 }
 
+/* Wybrany dom (przelacznik w naglowku). Ustawia go App PRZED wyrenderowaniem
+   panelu domu; kazde zapytanie trasy domu dostaje prefiks /api/domy/<id>/. */
+let currentHome = null;
+export function setHome(id) { currentHome = id ?? null; }
+/* Adres trasy domu dla zwyklego linku (np. pobranie CSV), nie przez fetch. */
+export const homeUrl = (path) => domPath(path, currentHome);
+
 /* 401 z POST /api/auth/* znaczy "zle dane" (zle haslo), nie "sesja wygasla".
    Ten blad nalezy do formularza logowania - wyrzucenie na ekran logowania
    zabraloby komunikat sprzed oczu. O stanie sesji rozstrzyga /api/auth/me. */
@@ -69,6 +77,7 @@ async function request(path, { method = 'GET', body } = {}) {
     const { previewResponse } = await import('./preview.js');
     return previewResponse(path, method);
   }
+  path = domPath(path, currentHome);
   const headers = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (method !== 'GET' && method !== 'HEAD') headers['X-CSRF-Token'] = csrfToken();

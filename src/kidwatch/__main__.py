@@ -13,6 +13,7 @@ import os
 import signal
 import sqlite3
 import sys
+import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -69,7 +70,8 @@ def build_outbox(
     if bramka is not None and bramka.enabled and bramka.per_konto:
         from .odbiorcy import ProfilePowiadomien  # noqa: PLC0415
 
-        konta = ProfilePowiadomien(auth_path)
+        # Odbiorcy, preferencje i tryb TEGO domu (czlonkowie domu).
+        konta = ProfilePowiadomien(auth_path, dom_id=1 if dom_id is None else dom_id)
     return Outbox(
         dispatcher, store, konta=konta,
         dziecko={d.display_name: d.child for d in cfg.devices}, tz=ZoneInfo(cfg.timezone),
@@ -164,6 +166,7 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
     zrodlo DNS i petle wlaczone w konfiguracji domu. Kolejnosc budowy jak
     przed domami — brak sekretu zrodla przerywa start, zanim ruszy panel."""
     from .domy import (  # noqa: PLC0415
+        DOM_1,
         HomeRuntime,
         katalog_domu,
         katalog_sekretow_domu,
@@ -224,6 +227,12 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
     # (zapisany przez konfiguracja_domu.zbuduj_dom), nie na wolumenie.
     katalog = (katalog_sekretow_domu(dom_id) if home.sekrety is not None
                else katalog_domu(dom_id, inst.store.path))
+    if dom_id == DOM_1:
+        from .sources import tv_app  # noqa: PLC0415
+
+        # Przeladowanie domu (domy.Nadzorca): aplikacja TV poprzedniego
+        # srodowiska nie moze zostac w panelu, gdy nowa konfiguracja jej nie ma.
+        tv_app.AKTYWNA = None
     tv = build_tv_watcher(home, store, katalog) if home.tv.enabled else None
     if tv is not None:
         log.info("czujnik TV wlaczony: %s (%s), co %.0f s",
@@ -247,11 +256,9 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
         rt.dodaj_petle("unifi", lambda: unifi_loop(unifi, dispatcher, home.unifi.poll_seconds))
 
     # Serwer MDM to osobny pod z wlasna baza — tu tylko czujka po jego API.
-    from .config import MdmConfig  # noqa: PLC0415
-    from .mdm import MdmWatcher, build_api, mdm_loop  # noqa: PLC0415
+    from .mdm import MdmWatcher, build_api, config_domu, mdm_loop  # noqa: PLC0415
 
-    mdm_cfg = MdmConfig.model_validate({**home.mdm.model_dump(), "url": inst.mdm.url})
-    mdm_cfg._sekrety = home.mdm._sekrety  # token z sekretow domu (tryb `baza`)
+    mdm_cfg = config_domu(home.mdm, inst.mdm.url)  # token z sekretow domu (tryb `baza`)
     mdm_api = build_api(mdm_cfg)
     if mdm_api is not None:
         log.info("czujka MDM wlaczona: %s, co %.0f s", mdm_cfg.url, mdm_cfg.poll_seconds)
@@ -285,11 +292,216 @@ def home_domu_z_bazy(rejestr, dom_id: int) -> HomeConfig:
     return zbuduj_dom(rejestr, dom_id, Sejf.z_srodowiska())
 
 
-async def cmd_run(args) -> int:
-    from .domy import DOM_1, ZRODLO_BAZA, ZRODLO_YAML, Nadzorca, RejestrDomow  # noqa: PLC0415
-    from .sejf import SejfError  # noqa: PLC0415
-    from .straznik import OdmowaSieci  # noqa: PLC0415
+#: Alarm instancji nie moze trzymac nadzorcy dluzej niz tyle (bramka ponawia).
+ALARM_TIMEOUT_SECONDS = 60.0
 
+
+def alarm_instancji(inst: InstanceConfig):
+    """Alarm instalacji (nie domu) przez wspolna bramke: `await alarm(tytul,
+    tresc)`. Zawsze tez log ERROR. Bez bramki albo klucza — sam log (i None
+    zamiast funkcji, gdy nie ma czym wyslac). Tresc bez wartosci sekretow:
+    dostaje opisy bledow sejfu, straznika i walidacji."""
+    bc = inst.notifiers.bramka
+    if bc is None or not bc.enabled:
+        log.warning("alarmy instancji tylko w logu — bramka wylaczona")
+        return None
+    try:
+        klucz = bc.key()
+    except MissingSecretError as exc:
+        log.warning("alarmy instancji tylko w logu — %s", exc)
+        return None
+
+    async def alarm(tytul: str, tresc: str) -> None:
+        log.error("ALARM INSTANCJI: %s — %s", tytul, tresc)
+        teraz = datetime.now(UTC)
+        note = Notification(kind=NotifyKind.WATCHDOG, title=tytul, text=tresc,
+                            dedup_key=f"instancja:{tytul}:{teraz.isoformat()}", ts=teraz,
+                            priority=5)
+        kanal = BramkaNotifier(bc, key=klucz)
+        try:
+            await asyncio.wait_for(kanal.send(note), timeout=ALARM_TIMEOUT_SECONDS)
+        finally:
+            await kanal.aclose()
+
+    return alarm
+
+
+def przeladowanie_domow(rejestr, inst: InstanceConfig, konfiguracje: dict, stany,
+                        domy_panelu=None, *, alarm=None):
+    """domy.Przeladowanie dla `run` (§5.1): wersja domu tylko, gdy nadal
+    jest w trybie `baza` (powrot do `yaml` wymaga restartu — jak dotad);
+    konfiguracja z sejfu jak przy starcie plus wymagane sekrety (brak klucza
+    NextDNS ma zostawic stary dom, a nie zatrzymac go), pliki z sekretow
+    dopiero po zatrzymaniu starego srodowiska; kopia ostatniej dobrej
+    wersji, dziennik i alarm instancji; po zmianie panel bierze nowa
+    konfiguracje."""
+    from .domy import ZRODLO_BAZA, Przeladowanie, katalog_sekretow_domu  # noqa: PLC0415
+    from .konfiguracja_domu import (  # noqa: PLC0415
+        materializuj_pliki,
+        sprawdz_wymagane_sekrety,
+        zbuduj_dom,
+        zbuduj_dom_z_kopii,
+    )
+    from .sejf import Sejf  # noqa: PLC0415
+
+    def wersja(dom_id: int) -> int | None:
+        dom = rejestr.dom(dom_id)
+        if dom is None or dom.zrodlo_konfiguracji != ZRODLO_BAZA:
+            return None
+        return dom.wersja
+
+    def konfiguracja(dom_id: int) -> HomeConfig:
+        home = zbuduj_dom(rejestr, dom_id, Sejf.z_srodowiska(), materializuj=False)
+        sprawdz_wymagane_sekrety(home)
+        return home
+
+    def materializuj(dom_id: int, home: HomeConfig) -> None:
+        if home.sekrety is not None:
+            materializuj_pliki(home.sekrety, katalog_sekretow_domu(dom_id))
+
+    def po_zmianie(dom_id: int, rt) -> None:
+        konfiguracje[dom_id] = rt.home
+        if domy_panelu is not None:
+            domy_panelu.zapomnij(dom_id)
+
+    return Przeladowanie(
+        wersja=wersja, konfiguracja=konfiguracja,
+        runtime=lambda dom_id, home: build_home_runtime(
+            dom_id, inst, home, Classifier(inst.app_map_path)),
+        po_zmianie=po_zmianie, stany=stany, materializuj=materializuj,
+        zapamietaj=rejestr.zapamietaj_dobra, zapisz_blad=rejestr.zapisz_blad_przeladowania,
+        start_ok=rejestr.zapisz_start_ok,
+        ostatnia_dobra=lambda dom_id: zbuduj_dom_z_kopii(rejestr, dom_id, Sejf.z_srodowiska()),
+        alarm=alarm)
+
+
+async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id: int = 1):
+    """Srodowisko domu w trybie `baza` przy starcie `run` albo None (kod 2).
+
+    Wersje czytamy PRZED budowa: zmiana w trakcie startu da najwyzej jedno
+    zbedne przeladowanie, nigdy zgubiona zmiane. Biezaca wersja nie wstaje
+    (zla zmiana w panelu, brak sekretu) — start na ostatniej dobrej kopii
+    (`domy_kopia`), wpis w dzienniku, alarm instancji i stan dla panelu:
+    proces zyje, panel dziala, a nadzorca przeladuje dom po poprawce. Bez
+    kopii (albo gdy i ona nie wstaje) — jak przed E3a: log, alarm, kod 2
+    (droga powrotu do config.yaml: docs/sejf-domow.md pkt 4)."""
+    from .domy import StanDomu, blad_przejsciowy, opis_bledu  # noqa: PLC0415
+    from .konfiguracja_domu import zbuduj_dom_z_kopii  # noqa: PLC0415
+    from .sejf import Sejf  # noqa: PLC0415
+
+    wersja = None
+    try:
+        dom = rejestr.dom(dom_id)
+        wersja = dom.wersja if dom is not None else None
+        home = home_domu_z_bazy(rejestr, dom_id)
+        runtime = build_home_runtime(dom_id, inst, home, Classifier(inst.app_map_path))
+    except Exception as exc:  # noqa: BLE001 — kazdy blad startu domu: kopia albo kod 2
+        blad_startu, blad = exc, str(exc) or type(exc).__name__
+        do_alarmu = opis_bledu(exc)
+        log.error("Dom %d: konfiguracja z bazy (wersja %s) nie wystartowala — %s", dom_id,
+                  wersja, blad)
+    else:
+        runtime.wersja = wersja
+        log.info("Dom %d: konfiguracja z bazy, wersja %s (sekrety: %s, sieci: %s)", dom_id,
+                 wersja, home.sekrety, [str(n) for n in home.straznik.sieci])
+        if wersja is not None:
+            stany.ustaw(dom_id, StanDomu(wersja))
+            try:
+                rejestr.zapamietaj_dobra(dom_id, wersja)
+            except Exception:
+                log.exception("Dom %d: nie zapisano kopii dzialajacej konfiguracji", dom_id)
+        # Udany start konczy awarie startu: pierwszy alarm nastepnej idzie od razu.
+        try:
+            rejestr.zapisz_start_ok(dom_id, wersja)
+        except Exception:
+            log.exception("Dom %d: nie zapisano udanego startu w dzienniku", dom_id)
+        return runtime
+
+    async def alarmuj(tytul: str, tresc: str) -> None:
+        """Alarm startu przez bramke odstepu z dziennika (CrashLoop = restart co
+        kilka minut). Wpis dopiero po udanej wysylce; blad bramki nie moze
+        zamienic kodu 2 w traceback."""
+        if alarm is None:
+            return
+        try:
+            odstep = rejestr.alarm_startu(dom_id)
+        except Exception:
+            odstep = None
+            log.exception("Dom %d: bramka alarmu startu niedostepna", dom_id)
+        if odstep is None:
+            log.warning("Dom %d: alarm startu pominiety (odstep) — %s", dom_id, tytul)
+            return
+        try:
+            await alarm(tytul, tresc)
+        except Exception:
+            log.exception("Dom %d: alarm startu nie wyszedl — %s", dom_id, tytul)
+            return
+        with contextlib.suppress(Exception):
+            rejestr.zapisz_alarm_startu(dom_id, odstep, tytul)
+
+    kopia_blad = None
+    try:
+        kopia = zbuduj_dom_z_kopii(rejestr, dom_id, Sejf.z_srodowiska(), materializuj=True)
+        if kopia is not None:
+            runtime = build_home_runtime(dom_id, inst, kopia[1], Classifier(inst.app_map_path))
+    except Exception as exc2:  # noqa: BLE001
+        kopia, kopia_blad = None, str(exc2) or type(exc2).__name__
+    if kopia is None:
+        log.error("Dom %d: brak dzialajacej kopii konfiguracji%s. Powrot do config.yaml bez "
+                  "exec: klucz %s=yaml w kidwatch-secrets + restart; z dzialajacym podem: "
+                  "kidwatch dom-zrodlo %d yaml (docs/sejf-domow.md)", dom_id,
+                  f" ({kopia_blad})" if kopia_blad else "", WYMUSZENIE_DOMU_1_ENV, dom_id)
+        # CrashLoop: alarm z rosnacym odstepem (dziennik), nie przy kazdym restarcie.
+        await alarmuj(f"Dom {dom_id}: Kidwatch nie wystartowal",
+                      f"Konfiguracja z bazy (wersja {wersja}) nie wstaje: {do_alarmu}. "
+                      "Brak dzialajacej kopii — proces konczy sie (docs/sejf-domow.md pkt 4).")
+        return None
+    runtime.wersja = kopia[0]
+    przejsciowy = blad_przejsciowy(blad_startu)
+    stany.ustaw(dom_id, StanDomu(kopia[0], wersja, blad, time.time(), przejsciowy,
+                                 do_alarmu))
+    log.warning("Dom %d: dziala na ostatniej dobrej konfiguracji (wersja %d) zamiast %s",
+                dom_id, kopia[0], wersja)
+    if wersja is not None and rejestr.blad_przeladowania(dom_id, wersja) is None:
+        with contextlib.suppress(Exception):
+            rejestr.zapisz_blad_przeladowania(dom_id, wersja, blad)
+    await alarmuj(f"Dom {dom_id}: start na ostatniej dobrej konfiguracji",
+                  f"Wersja {wersja} nie wstaje: {do_alarmu}. Dom dziala na wersji {kopia[0]}. "
+                  "Popraw integracje w panelu (Ustawienia -> Integracje).")
+    return runtime
+
+
+async def start_domu_z_yaml(rejestr, inst: InstanceConfig, home: HomeConfig, alarm):
+    """Dom 1 z config.yaml (takze droga ratunkowa KIDWATCH_DOM_1_ZRODLO=yaml).
+    Blad = alarm i wyjatek (jak dotad). Udany start konczy awarie startu
+    domu w dzienniku (`dom.start.ok`): nastepna awaria w trybie `baza`
+    alarmuje od razu, a nie po resztce odstepu sprzed powrotu do yaml."""
+    from .domy import DOM_1  # noqa: PLC0415
+
+    try:
+        runtime = build_home_runtime(DOM_1, inst, home, Classifier(inst.app_map_path))
+    except Exception as exc:
+        log.error("Dom 1 (config.yaml) nie wystartowal — %s", exc)
+        if alarm is not None:
+            await alarm("Dom 1: monitoring nie wystartowal",
+                        f"Konfiguracja z config.yaml: {type(exc).__name__}. Sprawdz log.")
+        raise
+    try:
+        rejestr.zapisz_start_ok(DOM_1, None)
+    except Exception:
+        log.exception("Dom 1: nie zapisano udanego startu w dzienniku")
+    return runtime
+
+
+async def cmd_run(args) -> int:
+    from .domy import (  # noqa: PLC0415
+        DOM_1,
+        ZRODLO_BAZA,
+        ZRODLO_YAML,
+        Nadzorca,
+        RejestrDomow,
+        StanyDomow,
+    )
     cfg = Config.load(args.config)
     inst, home = cfg.split()
     rejestr = RejestrDomow(inst.panel_auth_path)
@@ -322,21 +534,20 @@ async def cmd_run(args) -> int:
         # Kolejne domy wymagaja izolacji powiadomien i awarii (E3a/E3b).
         log.warning("domy %s maja konfiguracje w bazie — ich uruchamianie to etap E3b, "
                     "na razie chodzi tylko Dom 1", inne)
+    alarm = alarm_instancji(inst)
+    stany = StanyDomow()
     if DOM_1 in w_bazie:
         # KEK, szyfrogram albo adres spoza sieci domu — Dom 1 nie startuje
-        # z polowa konfiguracji. Brak KEK nie dotyczy trybu `yaml`.
-        try:
-            home = home_domu_z_bazy(rejestr, DOM_1)
-        except (SejfError, OdmowaSieci, ValueError, LookupError, OSError,
-                sqlite3.Error) as exc:
-            log.error("Dom 1: konfiguracja z bazy nie wystartowala — %s. Powrot do "
-                      "config.yaml bez exec: klucz %s=yaml w kidwatch-secrets + restart; "
-                      "z dzialajacym podem: kidwatch dom-zrodlo 1 yaml (docs/sejf-domow.md)",
-                      exc, WYMUSZENIE_DOMU_1_ENV)
+        # z polowa konfiguracji. Brak KEK nie dotyczy trybu `yaml`. Biezaca
+        # wersja, ktora nie wstaje (zla zmiana w panelu) — start na ostatniej
+        # dobrej, zeby CrashLoop nie zabral tez panelu, w ktorym da sie ja
+        # poprawic (start_domu_z_bazy).
+        runtime = await start_domu_z_bazy(rejestr, inst, stany, alarm)
+        if runtime is None:
             return 2
-        log.info("Dom 1: konfiguracja z bazy (sekrety: %s, sieci: %s)",
-                 home.sekrety, [str(n) for n in home.straznik.sieci])
-    runtime = build_home_runtime(DOM_1, inst, home, Classifier(inst.app_map_path))
+        home = runtime.home
+    else:
+        runtime = await start_domu_z_yaml(rejestr, inst, home, alarm)
 
     log.info(
         "start: zrodlo=%s urzadzenia=%s kanaly=%s",
@@ -347,11 +558,18 @@ async def cmd_run(args) -> int:
     if not runtime.outbox.notifiers:
         log.warning("zaden kanal powiadomien nie jest wlaczony — nic nie dotrze")
 
+    # Konfiguracja dzialajacego srodowiska domu — panel czyta stad, a
+    # przeladowanie (§5.1) podmienia wpis.
+    konfiguracje = {DOM_1: home}
     panel = None
     if cfg.panel.enabled:
         from .panel import start_panel  # noqa: PLC0415
 
-        panel = start_panel(cfg)
+        # Panel Domu 1 z TEJ SAMEJ konfiguracji co jego srodowisko — przy
+        # `baza` (E2) nie z config.yaml, inaczej panel pokazalby pusty dom
+        # (przeglad E3a, B-1). Kolejne domy: E3b.
+        panel = start_panel(cfg, konfiguracja_domu=lambda dom: konfiguracje.get(dom.id),
+                            stany=stany)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -359,7 +577,16 @@ async def cmd_run(args) -> int:
         with contextlib.suppress(NotImplementedError):  # pragma: no cover
             loop.add_signal_handler(sig, stop.set)
 
-    nadzorca = Nadzorca([runtime])
+    przeladowanie = None
+    if DOM_1 in w_bazie:
+        # Zmiana integracji w panelu podnosi domy.wersja; nadzorca przebudowuje
+        # Dom 1 bez restartu poda. Dom 1 z config.yaml (takze wymuszony
+        # KIDWATCH_DOM_1_ZRODLO) — bez przeladowania, jak dotad.
+        przeladowanie = przeladowanie_domow(
+            rejestr, inst, konfiguracje, stany,
+            panel.domy_panelu if panel is not None else None, alarm=alarm)
+    nadzorca = Nadzorca([runtime], przeladowanie=przeladowanie,
+                        flush_seconds=OUTBOX_FLUSH_ON_STOP_SECONDS)
     rc = await nadzorca.run(stop)
     if panel is not None:
         panel.shutdown()
@@ -1070,9 +1297,13 @@ async def cmd_weekly(args) -> int:
 
 # ======================================================================== konta
 def _auth(cfg: Config):
+    return _auth_path(cfg.panel_auth_path)
+
+
+def _auth_path(path: str):
     from .panel_auth import PanelAuth  # noqa: PLC0415
 
-    return PanelAuth(cfg.panel_auth_path)
+    return PanelAuth(path)
 
 
 def _new_password(args) -> tuple[str, bool]:
@@ -1101,14 +1332,16 @@ async def cmd_user_add(args) -> int:
     cfg = Config.load(args.config)
     password, generated = _new_password(args)
     try:
-        _auth(cfg).add_user(args.login, password, args.rola)
+        _auth(cfg).add_user(args.login, password, args.rola,
+                            dom_id=None if args.bez_domu else 1)
     except UserExists:
         print(f"konto {args.login!r} juz istnieje — uzyj user-reset", file=sys.stderr)
         return 1
     except ValueError as exc:
         print(f"odrzucone: {exc}", file=sys.stderr)
         return 1
-    print(f"zalozono konto panelu {args.login!r}, rola {args.rola} ({cfg.panel_auth_path})")
+    gdzie = "bez domu" if args.bez_domu else f"rola {args.rola} w Domu 1"
+    print(f"zalozono konto panelu {args.login!r}, {gdzie} ({cfg.panel_auth_path})")
     from .panel_sso import login_ok  # noqa: PLC0415
 
     if not login_ok(args.login.strip()):
@@ -1119,7 +1352,11 @@ async def cmd_user_add(args) -> int:
               file=sys.stderr)
     if generated:
         _print_generated(args.login, password)
-    print("Weryfikacje dwuetapowa (TOTP) wlaczysz po zalogowaniu: menu konta -> Wlacz 2FA.")
+    if args.bez_domu:
+        print("Konto administracyjne: zaloguj sie na nie TERAZ i wlacz 2FA (ekran „Brak "
+              "domu”), dopiero potem: user-admin " + args.login + " on.")
+    else:
+        print("Weryfikacje dwuetapowa (TOTP) wlaczysz po zalogowaniu: menu konta -> Wlacz 2FA.")
     return 0
 
 
@@ -1178,6 +1415,9 @@ async def cmd_user_rola(args) -> int:
         n = _auth(cfg).set_role(args.login, args.rola)
     except UnknownUser:
         print(f"nie ma konta {args.login!r}", file=sys.stderr)
+        return 1
+    except ValueError as exc:  # m.in. ostatnie konto z zarzadzaniem kontami w domu
+        print(f"odrzucone: {exc}", file=sys.stderr)
         return 1
     print(f"konto {args.login!r}: rola {args.rola}, wylogowano sesji: {n}")
     return 0
@@ -1345,6 +1585,8 @@ async def cmd_domy(args) -> int:
 
     # --baza: kopia panel-auth.db (test odtworzenia, §3.3) — bez config.yaml.
     baza = getattr(args, "baza", None)
+    if baza and not _jest_baza(baza):
+        return 2
     cfg = None if baza else Config.load(args.config)
     rejestr = RejestrDomow(baza or cfg.panel_auth_path)
     raport = rejestr.migruj(strefa=cfg.timezone if cfg else None)
@@ -1358,6 +1600,11 @@ async def cmd_domy(args) -> int:
                   else dom.strefa)
         print(f"{dom.id}. {dom.nazwa} — konfiguracja: {zrodlo}, strefa: {strefa}, "
               f"wersja: {dom.wersja}{', ZAWIESZONY' if dom.zawieszony else ''}")
+        if (dom.id == 1 and dom.zrodlo_konfiguracji != ZRODLO_YAML and not baza
+                and os.environ.get(WYMUSZENIE_DOMU_1_ENV, "").strip().lower() == ZRODLO_YAML):
+            # exec dziedziczy env poda: tak samo jak `run` — pod chodzi z config.yaml.
+            print(f"   WYMUSZONE config.yaml przez {WYMUSZENIE_DOMU_1_ENV} (Sekret) — "
+                  f"usun klucz po naprawie, inaczej przejscie na baze nie zadziala")
         czlonkowie = rejestr.czlonkowie(dom.id)
         if not czlonkowie:
             print("   brak czlonkow")
@@ -1374,6 +1621,9 @@ async def cmd_domy(args) -> int:
     bez = rejestr.konta_bez_domu()
     if bez:
         print(f"konta bez zadnego domu: {', '.join(bez)}")
+    admini = [u["login"] for u in _auth_path(rejestr.path).list_users() if u["admin_instancji"]]
+    if admini:
+        print(f"administratorzy instalacji: {', '.join(admini)}")
     if getattr(args, "sprawdz", False):
         from .konfiguracja_domu import zbuduj_dom  # noqa: PLC0415
         from .sejf import SejfError  # noqa: PLC0415
@@ -1392,7 +1642,8 @@ async def cmd_domy(args) -> int:
         for dom_id, typ, blad in bledy:
             print(f"BLAD: Dom {dom_id} {typ or 'DEK'}: {blad}")
         print(f"sprawdzono kluczem {sejf.kek_id}: kluczy domow: {raport.klucze_domow}, "
-              f"integracji: {raport.integracje}")
+              f"integracji: {raport.integracje}, z kopii ostatniej dobrej konfiguracji: "
+              f"{raport.kopie}")
         if bledy:
             print(f"WYNIK: {len(bledy)} bledow")
             return 1
@@ -1404,6 +1655,14 @@ async def cmd_domy(args) -> int:
         print("WYNIK: wszystko sie odszyfrowuje")
         return 0
     return 0
+
+
+def _jest_baza(sciezka: str) -> bool:
+    """--baza musi wskazywac istniejacy plik — sqlite3 zalozylby pusty."""
+    if Path(sciezka).is_file():
+        return True
+    print(f"nie ma pliku bazy {sciezka}", file=sys.stderr)
+    return False
 
 
 def _sejf():
@@ -1420,9 +1679,25 @@ def _rejestr(cfg: Config):
     return rejestr
 
 
+def kiedy_zadziala(dom_id: int, baza_przed: bool, baza_po: bool) -> str:
+    """Kiedy zmiana konfiguracji domu z CLI zacznie dzialac (§5.1). Nadzorca
+    przeladowuje bez restartu tylko Dom 1, ktory JUZ chodzi w trybie `baza`
+    (i nie jest wymuszony na config.yaml): przelaczenie zrodla w ktoras
+    strone i kazdy inny dom (E3b) dalej wymagaja restartu poda."""
+    from .domy import DOM_1  # noqa: PLC0415
+
+    wymuszony_yaml = os.environ.get(WYMUSZENIE_DOMU_1_ENV, "").strip().lower() == "yaml"
+    if dom_id == DOM_1 and baza_przed and baza_po and not wymuszony_yaml:
+        # Stan bazy, nie dzialajacego procesu: pod uruchomiony jeszcze w trybie
+        # `yaml` (przed restartem po dom-importuj) przeladowania nie ma.
+        return ("Zadziala w ciagu ok. 10 s, bez restartu poda (przeladowanie domu), "
+                "jesli Kidwatch dziala juz w trybie baza; inaczej po restarcie poda.")
+    return "Dziala po restarcie poda."
+
+
 async def cmd_dom_importuj(args) -> int:
     """Dom 1: config.yaml + sekrety z env/plikow -> baza (§6 p. 4)."""
-    from .domy import DOM_1, katalog_domu  # noqa: PLC0415
+    from .domy import DOM_1, ZRODLO_BAZA, katalog_domu  # noqa: PLC0415
     from .konfiguracja_domu import importuj, sekrety_z_yaml  # noqa: PLC0415
 
     if args.dom != DOM_1:
@@ -1431,6 +1706,8 @@ async def cmd_dom_importuj(args) -> int:
     cfg = Config.load(args.config)
     inst, home = cfg.split()
     rejestr = _rejestr(cfg)
+    przed = rejestr.dom(DOM_1)
+    baza_przed = przed is not None and przed.zrodlo_konfiguracji == ZRODLO_BAZA
     sekrety = sekrety_z_yaml(home, katalog_domu(DOM_1, inst.store.path))
     raport = importuj(rejestr, DOM_1, home, sekrety, sejf=_sejf(), zapisz=args.zapisz,
                       kto="cli",
@@ -1452,7 +1729,8 @@ async def cmd_dom_importuj(args) -> int:
         return 1
     print("Porownanie: konfiguracja z bazy identyczna z config.yaml, sekrety identyczne.")
     if raport.zapisano:
-        print("ZAPISANO. Dom 1 ma teraz konfiguracje z bazy — dziala po restarcie poda.\n"
+        print(f"ZAPISANO. Dom 1 ma teraz konfiguracje z bazy. "
+              f"{kiedy_zadziala(DOM_1, baza_przed, True)}\n"
               "Powrot: kidwatch dom-zrodlo 1 yaml (+ restart).")
     else:
         print("Podglad — nic nie zapisano. Zapis: dom-importuj 1 --zapisz")
@@ -1466,6 +1744,8 @@ async def cmd_dom_zrodlo(args) -> int:
 
     cfg = Config.load(args.config)
     rejestr = _rejestr(cfg)
+    przed = rejestr.dom(args.dom)
+    baza_przed = przed is not None and przed.zrodlo_konfiguracji == ZRODLO_BAZA
     try:
         if args.zrodlo == ZRODLO_BAZA:
             # Przelaczenie tylko na konfiguracje, ktora sie buduje i odszyfrowuje.
@@ -1474,12 +1754,15 @@ async def cmd_dom_zrodlo(args) -> int:
     except (ValueError, LookupError, OdmowaSieci) as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    print(f"Dom {args.dom}: konfiguracja z {args.zrodlo}. Dziala po restarcie poda.")
+    print(f"Dom {args.dom}: konfiguracja z {args.zrodlo}. "
+          f"{kiedy_zadziala(args.dom, baza_przed, args.zrodlo == ZRODLO_BAZA)}")
     return 0
 
 
 async def cmd_dom_sieci(args) -> int:
     """Sieci i hosty domu (§3.6) — wylacznie administrator instancji (CLI)."""
+    from .domy import ZRODLO_BAZA  # noqa: PLC0415
+
     cfg = Config.load(args.config)
     rejestr = _rejestr(cfg)
     dom = rejestr.dom(args.dom)
@@ -1503,7 +1786,8 @@ async def cmd_dom_sieci(args) -> int:
     print(f"Dom {dom.id}: dozwolone_sieci: {', '.join(dom.dozwolone_sieci) or '-'}")
     print(f"        dozwolone_hosty: {', '.join(dom.dozwolone_hosty) or '-'}")
     if zmiana:
-        print("Dziala po restarcie poda (albo przeladowaniu domu w E3b).")
+        baza = dom.zrodlo_konfiguracji == ZRODLO_BAZA
+        print(kiedy_zadziala(dom.id, baza, baza))
     return 0
 
 
@@ -1528,13 +1812,30 @@ async def cmd_klucze_potwierdz(args) -> int:
     from .domy import RejestrDomow  # noqa: PLC0415
     from .sejf import BrakKek, Sejf, _klucz_z_base64  # noqa: PLC0415
 
+    if args.baza and not _jest_baza(args.baza):
+        return 2
     klucz = Sejf(_klucz_z_base64(sys.stdin.readline(), "klucz z menedzera hasel"))
     rejestr = RejestrDomow(args.baza) if args.baza else _rejestr(Config.load(args.config))
     raport = rejestr.sprawdz_raport(klucz)
     problemy = []
-    if raport.bledy:
-        problemy.append(f"{len(raport.bledy)} kluczy domow/integracji nie otwiera sie tym "
-                        f"kluczem (DEK-i na innym kluczu? najpierw kidwatch klucze-rotuj)")
+    bledy_dek = [b for b in raport.bledy if b[1] is None]
+    bledy_kopii = [b for b in raport.bledy if b[1] is not None and b[1].startswith("kopia:")]
+    bledy_integracji = [b for b in raport.bledy if b[1] is not None and b not in bledy_kopii]
+    if bledy_dek:
+        problemy.append(f"{len(bledy_dek)} kluczy domow nie otwiera sie tym kluczem "
+                        f"(domy {', '.join(str(b[0]) for b in bledy_dek)}; DEK-i na innym "
+                        f"kluczu? najpierw kidwatch klucze-rotuj)")
+    if bledy_integracji:
+        problemy.append(f"{len(bledy_integracji)} integracji nie odszyfrowuje sie mimo "
+                        f"otwartego klucza domu (uszkodzony wiersz — wpisz integracje od nowa): "
+                        f"{', '.join(f'Dom {d} {t}' for d, t, _ in bledy_integracji)}")
+    if bledy_kopii:
+        # Kopia jest pod kluczem DOMU (DEK), nie KEK: jej blad nie mowi nic
+        # o kluczu z menedzera hasel i nie moze blokowac usuniecia poprzedniego.
+        print(f"UWAGA: kopia ostatniej dobrej konfiguracji nie odszyfrowuje sie "
+              f"({', '.join(f'Dom {d} {t}' for d, t, _ in bledy_kopii)}) — to nie dotyczy "
+              f"tego klucza; kopie odnowi nastepny udany start albo przeladowanie domu, "
+              f"a dom-klucz-rotuj usuwa zepsuta kopie.")
     if raport.klucze_domow == 0 and not raport.bledy:
         problemy.append("w bazie nie ma zadnego klucza domu — nic nie potwierdzono")
     if not args.baza:
@@ -1570,6 +1871,124 @@ async def cmd_dom_klucz_rotuj(args) -> int:
     cfg = Config.load(args.config)
     typy = _rejestr(cfg).rotuj_dek(args.dom, _sejf(), kto="cli")
     print(f"Dom {args.dom}: nowy klucz danych, przeszyfrowane: {', '.join(typy) or '-'}")
+    return 0
+
+
+async def cmd_user_admin(args) -> int:
+    """Administrator instalacji (§2.3, decyzja 5): flaga w panel-auth.db,
+    wylacznie z CLI. `on` wypisuje konto ze wszystkich domow — zawsze:
+    konto prywatne widzi tylko swoje domy (decyzja 5), a przy logowaniu
+    haslem z TOTP flaga dzialalaby na kazdym koncie, ktore ja ma; konto
+    administracyjne jest osobne i nie dostaje powiadomien domow.
+
+    `on` wymaga wlaczonego juz 2FA panelu (przeglad E3a, U-1): kto zna samo
+    haslo, nie wlaczy 2FA za wlasciciela w oknie miedzy `user-add` a jego
+    pierwszym logowaniem — zrobi to wlasciciel, zanim konto cokolwiek otwiera.
+    `--tylko-sso`: konto logujace sie wylacznie przez Authelie (grupa
+    `admins`), bez 2FA panelu; bez Authelii takie konto nic nie widzi."""
+    from .domy import OstatniZarzadzajacy, RejestrDomow  # noqa: PLC0415
+    from .panel_auth import UnknownUser  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    auth = _auth(cfg)
+    rejestr = RejestrDomow(cfg.panel_auth_path)
+    try:
+        uid = auth.user_id(args.login)
+    except UnknownUser:
+        print(f"nie ma konta {args.login!r}", file=sys.stderr)
+        return 1
+    wlacz = args.stan == "on"
+    totp = next(u["totp"] for u in auth.list_users() if u["login"] == args.login.strip())
+    if wlacz and not totp and not args.tylko_sso:
+        print(f"odrzucone: {args.login!r} nie ma wlaczonego 2FA panelu. Zaloguj sie na to "
+              "konto haslem, wlacz 2FA na ekranie „Brak domu” i zapisz kody — dopiero potem "
+              "user-admin on. (Konto tylko przez Authelie z grupa 'admins': --tylko-sso.)",
+              file=sys.stderr)
+        return 1
+    if wlacz:
+        czlonkostwa = rejestr.czlonkostwa(uid)
+        # Najpierw sprawdzenie wszystkich domow, potem zmiany — bez polowicznego
+        # wypisania, gdy w drugim domu to ostatni zarzadzajacy.
+        for c in czlonkostwa:
+            if uprawnienia.KONTA in c.uprawnienia and not any(
+                    uprawnienia.KONTA in x.uprawnienia
+                    for x in rejestr.czlonkowie(c.dom_id) if x.user_id != uid):
+                print(f"odrzucone: {args.login!r} to jedyne konto zarzadzajace domem "
+                      f"{c.dom_id} — najpierw daj te role komus innemu (konto prywatne "
+                      "zostaw jako zwykle konto, administratorem zrob osobne).",
+                      file=sys.stderr)
+                return 1
+        for c in czlonkostwa:
+            try:
+                auth.remove_membership(args.login, c.dom_id)
+            except OstatniZarzadzajacy as exc:
+                print(f"odrzucone: {exc}", file=sys.stderr)
+                return 1
+            print(f"wypisano z domu {c.dom_id} (byla rola: {c.rola})")
+    zmiana = rejestr.ustaw_admin_instancji(uid, wlacz, tylko_sso=wlacz and args.tylko_sso)
+    n = auth.revoke_sessions(args.login)
+    print(f"konto {args.login!r}: administrator instalacji "
+          f"{'TAK' if wlacz else 'nie'}{'' if zmiana else ' (bez zmian)'}, "
+          f"wylogowano sesji: {n}")
+    if wlacz and args.tylko_sso:
+        print("Rola dziala WYLACZNIE przy logowaniu przez Authelie z grupa 'admins'; "
+              "logowanie haslem panelu na to konto jest zablokowane. Kazde wejscie do "
+              "cudzego domu trafia do dziennika.")
+    elif wlacz:
+        print("Rola dziala tylko przy logowaniu przez Authelie z grupa 'admins' "
+              "albo haslem z wlaczonym 2FA. Kazde wejscie do cudzego domu trafia do dziennika.")
+    return 0
+
+
+async def cmd_dom_dodaj(args) -> int:
+    """Nowy dom (konfiguracja z bazy) z pusta baza zdarzen."""
+    from .domy import RejestrDomow, sciezka_bazy_domu  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    rejestr = RejestrDomow(cfg.panel_auth_path)
+    rejestr.migruj(strefa=cfg.timezone)
+    try:
+        dom_id = rejestr.dodaj_dom(args.nazwa, strefa=args.strefa or cfg.timezone)
+    except ValueError as exc:
+        print(f"odrzucone: {exc}", file=sys.stderr)
+        return 1
+    # Pusta baza zdarzen domu: panel czyta ja tylko do odczytu, wiec musi
+    # istniec. Pisze do niej potem wylacznie srodowisko domu.
+    Store(str(sciezka_bazy_domu(dom_id, cfg.store.path))).close()
+    print(f"zalozono dom {dom_id}: {args.nazwa}. Czlonkow dodasz: dom-czlonek {dom_id} <login> "
+          "<rola>; integracje — po etapie E2.")
+    return 0
+
+
+async def cmd_dom_czlonek(args) -> int:
+    """Rola konta w domu albo wypisanie (--usun)."""
+    from .panel_auth import UnknownUser  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    auth = _auth(cfg)
+    try:
+        if args.usun:
+            n = auth.remove_membership(args.login, args.dom)
+            print(f"konto {args.login!r} wypisane z domu {args.dom}, wylogowano sesji: {n}")
+        else:
+            if not args.rola:
+                print("podaj role (wlasciciel-domu, zarzadca, podglad) albo --usun",
+                      file=sys.stderr)
+                return 2
+            n = auth.set_role(args.login, args.rola, dom_id=args.dom)
+            print(f"konto {args.login!r}: rola {args.rola} w domu {args.dom}, "
+                  f"wylogowano sesji: {n}")
+            if any(u["admin_instancji"] for u in auth.list_users()
+                   if u["login"] == args.login.strip()):
+                print("UWAGA: to konto administracyjne — w tym domu dziala teraz jak "
+                      "czlonek i dostaje jego powiadomienia (§2.3 zaleca konto "
+                      "administracyjne bez domow).", file=sys.stderr)
+    except UnknownUser:
+        print(f"nie ma konta {args.login!r}", file=sys.stderr)
+        return 1
+    except (ValueError, LookupError) as exc:
+        print(f"odrzucone: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -1672,6 +2091,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="wlasciciel (domyslnie) albo podglad: tylko ogladanie, bez MDM, czasu gry, "
         "pauzy TV, WhatsAppa i aplikacji TV",
     )
+    users["user-add"].add_argument(
+        "--bez-domu", action="store_true",
+        help="konto bez zadnego domu (np. konto administracyjne przed user-admin on)",
+    )
     user_rola = sub.add_parser(
         "user-rola", help="zmien role konta (wylogowuje jego sesje, kasuje odstepstwa uprawnien)"
     )
@@ -1744,6 +2167,25 @@ def build_parser() -> argparse.ArgumentParser:
                          help="nowy klucz danych domu i przeszyfrowanie jego integracji")
     dkr.add_argument("dom", type=int)
 
+    user_admin = sub.add_parser(
+        "user-admin",
+        help="administrator instalacji: widzi wszystkie domy (z wpisem w dzienniku); "
+        "on wymaga 2FA i wypisuje konto z domow",
+    )
+    user_admin.add_argument("login")
+    user_admin.add_argument("stan", choices=("on", "off"))
+    user_admin.add_argument("--tylko-sso", action="store_true",
+                            help="konto loguje sie wylacznie przez Authelie (grupa admins), "
+                            "bez 2FA panelu; logowanie haslem panelu zablokowane")
+    dom_dodaj = sub.add_parser("dom-dodaj", help="zaloz nowy dom (bez czlonkow, pusta baza)")
+    dom_dodaj.add_argument("nazwa")
+    dom_dodaj.add_argument("--strefa", help="strefa czasowa (domyslnie jak w config.yaml)")
+    dom_czl = sub.add_parser("dom-czlonek", help="rola konta w domu albo wypisanie (--usun)")
+    dom_czl.add_argument("dom", type=int)
+    dom_czl.add_argument("login")
+    dom_czl.add_argument("rola", nargs="?", choices=uprawnienia.ROLE_DOMU)
+    dom_czl.add_argument("--usun", action="store_true", help="wypisz konto z domu")
+
     return parser
 
 
@@ -1783,6 +2225,9 @@ def main(argv: list[str] | None = None) -> int:
         "klucze-rotuj": cmd_klucze_rotuj,
         "klucze-potwierdz": cmd_klucze_potwierdz,
         "dom-klucz-rotuj": cmd_dom_klucz_rotuj,
+        "user-admin": cmd_user_admin,
+        "dom-dodaj": cmd_dom_dodaj,
+        "dom-czlonek": cmd_dom_czlonek,
     }
     try:
         return asyncio.run(handlers[args.command](args))

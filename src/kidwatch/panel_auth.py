@@ -234,9 +234,19 @@ class Session:
     #: "sso" — sesja z naglowka Authelii (bez hasla i TOTP panelu), "haslo" — zwykla.
     kind: str = "haslo"
     rola: str = ROLE_OWNER
-    #: Uprawnienia z roli i odstepstw konta, czytane przy kazdym zadaniu.
-    #: Domyslnie puste: Session zbudowana recznie niczego nie otwiera.
+    #: Uprawnienia konta POZA domem (zakres `konto` i `instancja`,
+    #: uprawnienia_konta_conn), czytane przy kazdym zadaniu. Uprawnienia
+    #: w domu liczy panel z czlonkostwa (panel_domy.py). Domyslnie puste:
+    #: Session zbudowana recznie niczego nie otwiera.
     uprawnienia: frozenset[str] = frozenset()
+    #: Flaga `users.admin_instancji` z bazy. Sama niczego nie otwiera —
+    #: panel wymaga jeszcze grupy `admins` (SSO) albo TOTP (panel_domy.py).
+    admin_instancji: bool = False
+    #: Administrator tylko przez Authelie (domy.ADMIN_TYLKO_SSO): sesja
+    #: z hasla nie daje roli nawet z TOTP.
+    admin_tylko_sso: bool = False
+    #: Czy konto ma wlaczony TOTP (warunek roli administratora przy hasle).
+    totp: bool = False
 
 
 # ======================================================================= hasla
@@ -476,7 +486,10 @@ class PanelAuth:
         return self.box
 
     # ------------------------------------------------------------- konta (CLI)
-    def add_user(self, login: str, password: str, rola: str = ROLE_OWNER) -> None:
+    def add_user(self, login: str, password: str, rola: str = ROLE_OWNER, *,
+                 dom_id: int | None = domy.DOM_1) -> None:
+        """Konto + czlonkostwo w `dom_id` z rola (rola konta albo domu).
+        `dom_id=None`: konto bez domu (np. konto administracyjne)."""
         login = login.strip()
         if not login:
             raise ValueError("pusty login")
@@ -489,14 +502,37 @@ class PanelAuth:
                 cur = conn.execute(
                     "INSERT INTO users (login, password_hash, created_at, rola) "
                     "VALUES (?, ?, ?, ?)",
-                    (login, password_hash, self.clock(), rola),
+                    (login, password_hash, self.clock(), domy.BEZ_DOMU),
                 )
+                uid = int(cur.lastrowid)
+                if dom_id is not None:
+                    self._ustaw_czlonkostwo(conn, uid, dom_id, rola)
             except sqlite3.IntegrityError as exc:
                 conn.execute("ROLLBACK")
                 raise UserExists(login) from exc
-            # Kazde konto to (do panelu domow) czlonek Domu 1 z ta sama rola.
-            domy.uzgodnij_konto_conn(conn, int(cur.lastrowid), self.clock())
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
             conn.execute("COMMIT")
+
+    @staticmethod
+    def _ustaw_czlonkostwo(conn: sqlite3.Connection, uid: int, dom_id: int, rola: str,
+                           nadane: frozenset[str] = frozenset(),
+                           odebrane: frozenset[str] = frozenset()) -> None:
+        """Czlonkostwo (prawda o roli, domy.py) + lustro w `users` dla Domu 1.
+        Baza bez tabel domow (migracja padla) — sama rola konta, jak dawniej."""
+        if not domy._dom_istnieje(conn, dom_id):
+            if dom_id != domy.DOM_1 or rola not in ROLES:
+                raise LookupError(f"nie ma domu {dom_id}")
+            conn.execute("UPDATE users SET rola = ? WHERE id = ?", (rola, uid))
+            return
+        domy.ustaw_czlonkostwo_conn(conn, dom_id, uid, uprawnienia.rola_konta(rola),
+                                    nadane, odebrane)
+
+    def user_id(self, login: str) -> int:
+        """Id konta po loginie; UnknownUser, gdy go nie ma."""
+        with self._conn() as conn:
+            return self._user_id(conn, login)
 
     @staticmethod
     def _user_id(conn: sqlite3.Connection, login: str) -> int:
@@ -505,56 +541,81 @@ class PanelAuth:
             raise UnknownUser(login)
         return row["id"]
 
-    def set_role(self, login: str, rola: str) -> int:
-        """Zmiana roli z CLI. Sesje konta sa uniewazniane: rola jest czytana
-        przy kazdym zadaniu, ale front rysuje przyciski z /api/auth/me i po
-        odebraniu uprawnien mialby je na ekranie do odswiezenia."""
-        _check_role(rola)
+    def _zmiana_czlonkostwa(self, login: str, fn) -> int:
+        """Zmiana czlonkostwa w jednej transakcji + uniewaznienie sesji konta:
+        uprawnienia sa czytane przy kazdym zadaniu, ale front rysuje
+        przyciski z /api/auth/me i po odebraniu mialby je do odswiezenia."""
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            uid = self._user_id(conn, login)
-            conn.execute("UPDATE users SET rola = ? WHERE id = ?", (rola, uid))
-            # Odstepstwa dotyczyly poprzedniej roli: `-mdm.podglad` u
-            # wlasciciela nie ma przetrwac awansu ani degradacji po cichu.
-            conn.execute("DELETE FROM user_uprawnienia WHERE user_id = ?", (uid,))
-            domy.uzgodnij_konto_conn(conn, uid, self.clock())
-            n = self._revoke_all(conn, uid)
+            try:
+                uid = self._user_id(conn, login)
+                # Policzone przed zmiana: czlonkostwo samo wylogowuje konto
+                # (domy._wyloguj), a CLI pokazuje, ile sesji zamknieto.
+                n = conn.execute("SELECT COUNT(*) FROM sessions WHERE user_id = ?",
+                                 (uid,)).fetchone()[0]
+                fn(conn, uid)
+                self._revoke_all(conn, uid)
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
             conn.execute("COMMIT")
         return n
 
-    def set_permissions(self, login: str, zmiany: dict[str, bool | None]) -> int:
+    def set_role(self, login: str, rola: str, *, dom_id: int = domy.DOM_1) -> int:
+        """Rola konta w domu (CLI `user-rola`, panel). Rola konta
+        (`wlasciciel`) albo domu (`zarzadca`). Odstepstwa dotyczyly poprzedniej
+        roli: `-mdm.podglad` u wlasciciela nie ma przetrwac awansu ani
+        degradacji po cichu — znikaja. Konto bez czlonkostwa w domu staje sie
+        jego czlonkiem. `domy.OstatniZarzadzajacy` (ValueError), gdy dom
+        stracilby ostatnie konto z zarzadzaniem kontami."""
+        _check_role(rola)
+        return self._zmiana_czlonkostwa(
+            login, lambda conn, uid: self._ustaw_czlonkostwo(conn, uid, dom_id, rola))
+
+    def set_permissions(self, login: str, zmiany: dict[str, bool | None], *,
+                        dom_id: int = domy.DOM_1) -> int:
         """Pojedyncze nadania (True), odebrania (False) i powroty do roli
-        (None) z CLI. Sesje konta sa uniewazniane jak przy set_role."""
+        (None) w domu. Sesje konta sa uniewazniane jak przy set_role.
+        ValueError dla konta spoza domu."""
         for nazwa, nadane in zmiany.items():
             if nazwa not in uprawnienia.OPISY or (nazwa in uprawnienia.STALE and nadane is False):
                 raise ValueError(f"niedozwolona zmiana uprawnienia {nazwa!r}")
-        with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            uid = self._user_id(conn, login)
-            for nazwa, nadane in zmiany.items():
-                if nadane is None:
-                    conn.execute("DELETE FROM user_uprawnienia WHERE user_id = ? "
-                                 "AND uprawnienie = ?", (uid, nazwa))
-                else:
-                    conn.execute(
-                        "INSERT INTO user_uprawnienia (user_id, uprawnienie, nadane) "
-                        "VALUES (?, ?, ?) ON CONFLICT (user_id, uprawnienie) "
-                        "DO UPDATE SET nadane = excluded.nadane",
-                        (uid, nazwa, int(nadane)),
-                    )
-            domy.uzgodnij_konto_conn(conn, uid, self.clock())
-            n = self._revoke_all(conn, uid)
-            conn.execute("COMMIT")
-        return n
+
+        def zmien(conn: sqlite3.Connection, uid: int) -> None:
+            stan = domy.czlonkostwo_conn(conn, uid, dom_id)
+            if stan is None:
+                raise ValueError(f"konto {login!r} nie jest członkiem domu {dom_id}")
+            rola, nadane, odebrane = stan[0], set(stan[1]), set(stan[2])
+            for nazwa, wartosc in zmiany.items():
+                nadane.discard(nazwa)
+                odebrane.discard(nazwa)
+                if wartosc is True:
+                    nadane.add(nazwa)
+                elif wartosc is False:
+                    odebrane.add(nazwa)
+            domy.ustaw_czlonkostwo_conn(conn, dom_id, uid, rola, frozenset(nadane),
+                                        frozenset(odebrane))
+
+        return self._zmiana_czlonkostwa(login, zmien)
+
+    def revoke_sessions(self, login: str) -> int:
+        """Wylogowanie wszystkich sesji konta (np. po zmianie flagi
+        administratora — front rysuje domy z /api/auth/me)."""
+        return self._zmiana_czlonkostwa(login, lambda conn, uid: None)
+
+    def remove_membership(self, login: str, dom_id: int) -> int:
+        """Wypisanie konta z domu (konto zostaje). Sesje uniewaznione."""
+        return self._zmiana_czlonkostwa(
+            login, lambda conn, uid: domy.usun_czlonkostwo_conn(conn, dom_id, uid))
 
     @staticmethod
     def _uprawnienia(conn: sqlite3.Connection, uid: int, rola: str) -> frozenset[str]:
-        nadane, odebrane = set(), set()
-        for r in conn.execute(
-            "SELECT uprawnienie, nadane FROM user_uprawnienia WHERE user_id = ?", (uid,)
-        ):
-            (nadane if r["nadane"] else odebrane).add(r["uprawnienie"])
-        return uprawnienia.efektywne(rola, nadane, odebrane)
+        """Uprawnienia konta POZA domem: tylko `konto.wlasne`. Zakres
+        instancji (bot WhatsApp) ma WYLACZNIE aktywny administrator instalacji
+        (decyzja wlasciciela 2026-10-12, §2.3) — dochodzi w panelu
+        (panel_domy.uprawnienia_sesji), nie z roli w zadnym domu."""
+        del conn, uid, rola
+        return uprawnienia.STALE
 
     def reset_user(self, login: str, password: str) -> int:
         """Nowe haslo, zdjeta blokada, WSZYSTKIE sesje i bilety uniewaznione.
@@ -624,13 +685,25 @@ class PanelAuth:
             users = [dict(r) for r in rows]
             for u in users:
                 uid = self._user_id(conn, u["login"])
-                u["uprawnienia"] = sorted(self._uprawnienia(conn, uid, u["rola"]))
-                u["odstepstwa"] = [
-                    ("+" if r["nadane"] else "-") + r["uprawnienie"]
-                    for r in conn.execute(
-                        "SELECT uprawnienie, nadane FROM user_uprawnienia WHERE user_id = ? "
-                        "ORDER BY uprawnienie", (uid,))
-                ]
+                u["admin_instancji"] = domy.admin_instancji(conn, uid)
+                # Rola, uprawnienia i odstepstwa W DOMU 1 — z czlonkostwa
+                # (prawda od E3a); konto spoza Domu 1: tylko poza domem.
+                stan = domy.czlonkostwo_conn(conn, uid, domy.DOM_1)
+                if stan is None:
+                    u["rola"] = domy.BEZ_DOMU
+                    u["uprawnienia"] = sorted(self._uprawnienia(conn, uid, ""))
+                    u["odstepstwa"] = []
+                else:
+                    rola, nadane, odebrane = stan
+                    u["rola"] = uprawnienia.nazwa_roli(rola)
+                    u["uprawnienia"] = sorted(uprawnienia.efektywne(
+                        rola, nadane, odebrane, role=uprawnienia.ROLE_DOMU_UPRAWNIENIA))
+                    u["odstepstwa"] = sorted(
+                        [f"+{n}" for n in nadane] + [f"-{n}" for n in odebrane],
+                        key=lambda x: x[1:])
+                u["domy"] = [r[0] for r in conn.execute(
+                    "SELECT dom_id FROM czlonkostwa WHERE user_id = ? ORDER BY dom_id", (uid,))] \
+                    if domy._jest_tabela(conn, "czlonkostwa") else []
         return users
 
     def has_users(self) -> bool:
@@ -680,6 +753,12 @@ class PanelAuth:
             # po trafionym hasle: kogos, kto hasla nie zna, i tak zatrzymuje
             # licznik per adres, a samo haslo nic tu nie zdradza.
             self._check_lock(row, now)
+            if domy.tryb_admina(conn, row["id"]) == domy.ADMIN_TYLKO_SSO:
+                # Konto administracyjne „tylko przez Authelie” (przeglad E3a,
+                # B-2): haslo panelu nie otwiera nawet sesji. Po trafionym
+                # hasle — odpowiedz nie zdradza, ze konto takie jest.
+                log.warning("panel: logowanie haslem na konto tylko-SSO %r", row["login"])
+                raise AuthError(403, "To konto loguje się wyłącznie przez Authelię (SSO).")
             if rehash:
                 conn.execute(
                     "UPDATE users SET password_hash = ? WHERE id = ?", (rehash, row["id"])
@@ -724,6 +803,13 @@ class PanelAuth:
             # Blokada konta obowiazuje TAKZE na bilecie juz wydanym — inaczej
             # bilet sprzed blokady pozwalalby dokonczyc serie prob.
             self._check_lock(t, now)
+            if domy.tryb_admina(conn, t["user_id"]) == domy.ADMIN_TYLKO_SSO:
+                # Bilet sprzed przejscia konta w tryb tylko-SSO (np. ze starego
+                # obrazu): jak przy hasle (login) — 403 PRZED kodem, wiec kod
+                # zapasowy nie przepada, a bilet znika (przeglad #56, N-1).
+                conn.execute("DELETE FROM tickets WHERE token_hash = ?", (t["token_hash"],))
+                log.warning("panel: bilet 2FA konta tylko-SSO %r odrzucony", t["login"])
+                raise AuthError(403, "To konto loguje się wyłącznie przez Authelię (SSO).")
 
             if not self._accept_code(conn, box, t, code, now):
                 # Dwie niezalezne bramki, jak w Traderze: bilet pada po
@@ -1101,9 +1187,11 @@ class PanelAuth:
         kind: str,
     ) -> tuple[str, Session]:
         token = secrets.token_urlsafe(32)
-        rola = conn.execute(
-            "SELECT rola FROM users WHERE id = ?", (row["user_id"],)
-        ).fetchone()["rola"]
+        u = conn.execute(
+            "SELECT rola, totp_confirmed_at IS NOT NULL AS totp FROM users WHERE id = ?",
+            (row["user_id"],),
+        ).fetchone()
+        rola = u["rola"]
         session = Session(
             login=row["login"],
             user_id=row["user_id"],
@@ -1113,6 +1201,9 @@ class PanelAuth:
             kind=kind,
             rola=rola,
             uprawnienia=self._uprawnienia(conn, row["user_id"], rola),
+            admin_instancji=domy.admin_instancji(conn, row["user_id"]),
+            admin_tylko_sso=domy.tryb_admina(conn, row["user_id"]) == domy.ADMIN_TYLKO_SSO,
+            totp=bool(u["totp"]),
         )
         conn.execute(
             "INSERT INTO sessions (token_hash, user_id, csrf, created_at, expires_at, "
@@ -1161,13 +1252,22 @@ class PanelAuth:
             return None
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT s.token_hash, s.csrf, s.expires_at, s.kind, u.id, u.login, u.rola "
+                "SELECT s.token_hash, s.csrf, s.expires_at, s.kind, u.id, u.login, u.rola, "
+                "u.totp_confirmed_at IS NOT NULL AS totp "
                 "FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?",
                 (token_hash(token),),
             ).fetchone()
             if row is None or row["expires_at"] <= self.clock():
                 return None
             upr = self._uprawnienia(conn, row["id"], row["rola"])
+            admin = domy.admin_instancji(conn, row["id"])
+            tylko_sso = domy.tryb_admina(conn, row["id"]) == domy.ADMIN_TYLKO_SSO
+            if tylko_sso and (row["kind"] or "haslo") != "sso":
+                # Konto „tylko przez Authelie” nie ma sesji z hasla — takze
+                # zalozonej starym obrazem w czasie wycofania, ktory trybu
+                # nie zna (przeglad E3a, U-4). Odrzucona jak wygasla (401).
+                log.warning("panel: sesja z hasla konta tylko-SSO %r odrzucona", row["login"])
+                return None
         return Session(
             login=row["login"],
             user_id=row["id"],
@@ -1177,6 +1277,9 @@ class PanelAuth:
             kind=row["kind"] or "haslo",
             rola=row["rola"],
             uprawnienia=upr,
+            admin_instancji=admin,
+            admin_tylko_sso=tylko_sso,
+            totp=bool(row["totp"]),
         )
 
     def account(self, session: Session) -> dict:
@@ -1203,8 +1306,10 @@ class PanelAuth:
 
 
 def _check_role(rola: str) -> None:
-    if rola not in ROLES:
-        raise ValueError(f"nieznana rola {rola!r} (dozwolone: {', '.join(ROLES)})")
+    """Rola konta (`wlasciciel`, `podglad`) albo rola w domu (`zarzadca`...)."""
+    dozwolone = dict.fromkeys((*ROLES, *uprawnienia.ROLE_DOMU))
+    if rola not in dozwolone:
+        raise ValueError(f"nieznana rola {rola!r} (dozwolone: {', '.join(dozwolone)})")
 
 
 def csrf_ok(session: Session, header: str | None) -> bool:

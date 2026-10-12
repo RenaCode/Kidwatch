@@ -20,6 +20,18 @@ CO PER KONTO, A CO DLA DOMU (decyzja):
     tego samego iPada) bez zadnego zysku. ntfy i Home Assistant zostaja
     kanalami domowymi: dostaja kazde powiadomienie raz, jak dotad.
 
+DOMY (docs/architektura-domy.md §2.2, §4.2; od E3a). Kanaly (numer, e-mail,
+`kanal`) sa cecha OSOBY — jedno konto, jeden numer we wszystkich domach
+(`user_powiadomienia`). Preferencje (kategorie, cisza, dzieci, `aktywne`)
+sa per CZLONKOSTWO (`czlonkostwa_powiadomienia (dom_id, user_id)`), a tryb
+per dom (`tryb:<dom_id>`). `ProfilePowiadomien(path, dom_id=...)` widzi
+WYLACZNIE czlonkow swojego domu z ich rola i uprawnieniami w tym domu.
+Tryb `trasy` jest dozwolony tylko w Domu 1: odbiorcow zna wtedy bramka,
+wiec notka innego domu poszlaby do odbiorcow Domu 1. Preferencje i tryb
+Domu 1 maja lustro w `user_powiadomienia` i kluczu `tryb` (obraz sprzed
+domow czyta je stamtad); zmiana zrobiona starym obrazem (nowszy
+`updated_at`, inny `tryb`) wraca przy starcie do tabel domu.
+
 TRYB. Routing per konto wlacza sie dopiero, gdy (1) wlasciciel go wlaczyl
 (`kidwatch konta-migruj --zapisz` albo panel), (2) config nie wylacza go
 (`notifiers.bramka.per_konto: false`), (3) bramka deklaruje obsluge jawnego
@@ -32,6 +44,7 @@ to samo do kazdego — dlatego bez (3) tryb kont sie nie wlacza.
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import logging
 import os
@@ -353,33 +366,125 @@ CREATE TABLE IF NOT EXISTS user_powiadomienia (
     updated_at   REAL NOT NULL
 );
 
--- Ustawienia domu dla powiadomien; dzis jeden klucz: tryb = trasy|konta.
+-- Ustawienia domu dla powiadomien: tryb:<dom_id> = trasy|konta (`tryb`
+-- bez domu to lustro Domu 1 dla obrazu sprzed domow).
 CREATE TABLE IF NOT EXISTS powiadomienia_ustawienia (
     klucz   TEXT PRIMARY KEY,
     wartosc TEXT NOT NULL
 );
 """
 
+#: Preferencje per czlonkostwo (§2.2). Zakladane tylko obok `czlonkostwa`
+#: (domy.py) — klucz obcy na nia kasuje preferencje razem z czlonkostwem.
+SCHEMA_DOMU = """
+CREATE TABLE IF NOT EXISTS czlonkostwa_powiadomienia (
+    dom_id       INTEGER NOT NULL,
+    user_id      INTEGER NOT NULL,
+    kategorie    TEXT,
+    cisza_od     TEXT,
+    cisza_do     TEXT,
+    cisza_alarmy INTEGER NOT NULL DEFAULT 1,
+    dzieci       TEXT,
+    aktywne      INTEGER NOT NULL DEFAULT 1,
+    updated_at   REAL NOT NULL,
+    PRIMARY KEY (dom_id, user_id),
+    FOREIGN KEY (dom_id, user_id) REFERENCES czlonkostwa (dom_id, user_id) ON DELETE CASCADE
+);
+"""
+
+#: Kolumny preferencji (wspolne dla lustra i tabeli domu).
+_PREFERENCJE = ("kategorie", "cisza_od", "cisza_do", "cisza_alarmy", "dzieci", "aktywne")
+
 TRYB_TRASY = "trasy"
 TRYB_KONTA = "konta"
+#: Dom operatora (domy.DOM_1) — jedyny, w ktorym wolno tryb tras.
+DOM_TRAS = 1
+
+
+def _jest_tabela(conn: sqlite3.Connection, nazwa: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (nazwa,)
+    ).fetchone() is not None
+
+
+def migruj_preferencje_conn(conn: sqlite3.Connection, teraz: float) -> list[str]:
+    """Preferencje i tryb Domu 1 -> tabele domu (§6 p. 5). Pierwszy raz:
+    kopia `user_powiadomienia` czlonkow Domu 1 i klucza `tryb`. Kolejne
+    starty: tylko zmiany zrobione obrazem sprzed domow (nowszy `updated_at`
+    w lustrze, inny `tryb`). Zwraca loginy z przeniesionymi preferencjami.
+    Bez tabel domow (panel jeszcze nie migrowal) — nic. Wlasna transakcja."""
+    if not _jest_tabela(conn, "czlonkostwa"):
+        return []
+    conn.executescript(SCHEMA_DOMU)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        kolumny = ", ".join(_PREFERENCJE)
+        rows = conn.execute(
+            f"SELECT u.login, p.user_id, {', '.join('p.' + k for k in _PREFERENCJE)}, "  # noqa: S608
+            "p.updated_at, cp.updated_at AS dom_at FROM user_powiadomienia p "
+            "JOIN czlonkostwa c ON c.user_id = p.user_id AND c.dom_id = ? "
+            "JOIN users u ON u.id = p.user_id "
+            "LEFT JOIN czlonkostwa_powiadomienia cp "
+            "ON cp.user_id = p.user_id AND cp.dom_id = c.dom_id "
+            "WHERE cp.updated_at IS NULL OR p.updated_at > cp.updated_at",
+            (DOM_TRAS,),
+        ).fetchall()
+        for r in rows:
+            conn.execute(
+                f"INSERT INTO czlonkostwa_powiadomienia (dom_id, user_id, {kolumny}, updated_at) "  # noqa: S608
+                f"VALUES (?, ?, {', '.join('?' * len(_PREFERENCJE))}, ?) "
+                "ON CONFLICT (dom_id, user_id) DO UPDATE SET "
+                + ", ".join(f"{k} = excluded.{k}" for k in (*_PREFERENCJE, "updated_at")),
+                (DOM_TRAS, r["user_id"], *(r[k] for k in _PREFERENCJE), r["updated_at"]),
+            )
+        ustawienia = dict(conn.execute("SELECT klucz, wartosc FROM powiadomienia_ustawienia"))
+        stary = ustawienia.get("tryb")
+        if stary in (TRYB_TRASY, TRYB_KONTA) and ustawienia.get(f"tryb:{DOM_TRAS}") != stary:
+            conn.execute(
+                "INSERT INTO powiadomienia_ustawienia (klucz, wartosc) VALUES (?, ?) "
+                "ON CONFLICT (klucz) DO UPDATE SET wartosc = excluded.wartosc",
+                (f"tryb:{DOM_TRAS}", stary),
+            )
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    del teraz
+    return [r["login"] for r in rows]
 
 
 class ProfilePowiadomien:
-    """Kanaly i preferencje kont w panel-auth.db.
+    """Kanaly i preferencje kont w panel-auth.db — w JEDNYM domu (`dom_id`,
+    domyslnie Dom 1). Profile to czlonkowie tego domu.
 
     Pisze panel (watek serwera) i CLI; czyta Outbox z petli glownej. Kazda
     operacja na wlasnym polaczeniu, jak PanelAuth i TvPauseRequests.
     """
 
-    def __init__(self, path: str | Path, clock=time.time) -> None:
+    def __init__(self, path: str | Path, clock=time.time, *, dom_id: int = DOM_TRAS) -> None:
         self.path = str(path)
         self.clock = clock
+        self.dom_id = int(dom_id)
         new = not Path(self.path).exists()
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            przeniesione = migruj_preferencje_conn(conn, self.clock())
+        if przeniesione:
+            log.info("powiadomienia: preferencje Domu 1 z lustra: %s", ", ".join(przeniesione))
         if new:
             with contextlib.suppress(OSError):
                 os.chmod(self.path, 0o600)
+
+    def dla_domu(self, dom_id: int) -> ProfilePowiadomien:
+        """Ten sam plik, inny dom — bez ponownej migracji."""
+        kopia = copy.copy(self)
+        kopia.dom_id = int(dom_id)
+        return kopia
+
+    def _domowa(self, conn: sqlite3.Connection) -> bool:
+        """Baza z czlonkostwami (zawsze po PanelAuth). Bez nich — jak przed
+        domami: kazde konto, rola z `users`, jeden tryb."""
+        return _jest_tabela(conn, "czlonkostwa_powiadomienia")
 
     @contextlib.contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -393,42 +498,95 @@ class ProfilePowiadomien:
 
     # ------------------------------------------------------------- tryb
     def tryb(self) -> str:
+        """Tryb domu. Dom inny niz Dom 1 jest zawsze w trybie kont (trasy
+        bramki znaja tylko odbiorcow Domu 1)."""
+        if self.dom_id != DOM_TRAS:
+            return TRYB_KONTA
         with self._conn() as conn:
-            row = conn.execute(
-                "SELECT wartosc FROM powiadomienia_ustawienia WHERE klucz = 'tryb'"
-            ).fetchone()
-        return row["wartosc"] if row and row["wartosc"] in (TRYB_TRASY, TRYB_KONTA) \
-            else TRYB_TRASY
+            klucze = dict(conn.execute(
+                "SELECT klucz, wartosc FROM powiadomienia_ustawienia WHERE klucz IN (?, 'tryb')",
+                (f"tryb:{self.dom_id}",),
+            ).fetchall())
+        tryb = klucze.get(f"tryb:{self.dom_id}", klucze.get("tryb"))
+        return tryb if tryb in (TRYB_TRASY, TRYB_KONTA) else TRYB_TRASY
 
     def ustaw_tryb(self, tryb: str) -> None:
         if tryb not in (TRYB_TRASY, TRYB_KONTA):
             raise ValueError(f"tryb {tryb!r} (dozwolone: {TRYB_TRASY}, {TRYB_KONTA})")
+        if self.dom_id != DOM_TRAS:
+            if tryb != TRYB_KONTA:
+                raise ValueError("tryb tras jest tylko w Domu 1 — inne domy wysyłają per konto")
+            return
         with self._conn() as conn:
-            conn.execute(
-                "INSERT INTO powiadomienia_ustawienia (klucz, wartosc) VALUES ('tryb', ?) "
-                "ON CONFLICT (klucz) DO UPDATE SET wartosc = excluded.wartosc", (tryb,)
+            # Klucz domu i lustro dla obrazu sprzed domow, razem.
+            conn.executemany(
+                "INSERT INTO powiadomienia_ustawienia (klucz, wartosc) VALUES (?, ?) "
+                "ON CONFLICT (klucz) DO UPDATE SET wartosc = excluded.wartosc",
+                [(f"tryb:{self.dom_id}", tryb), ("tryb", tryb)],
             )
 
     # ------------------------------------------------------------- odczyt
     def profile(self) -> list[Profil]:
-        """Wszystkie konta z kanalami i preferencjami. Baza bez tabeli
-        `users` (panel nigdy nie startowal) = brak kont."""
+        """Czlonkowie domu z kanalami, preferencjami W TYM DOMU i rola
+        w tym domu. Baza bez tabeli `users` (panel nigdy nie startowal) =
+        brak kont."""
         with self._conn() as conn:
-            try:
-                rows = conn.execute(
-                    "SELECT u.id, u.login, u.rola, p.* FROM users u "
-                    "LEFT JOIN user_powiadomienia p ON p.user_id = u.id ORDER BY u.login"
-                ).fetchall()
-            except sqlite3.OperationalError:
-                return []
-            odst = self._odstepstwa(conn)
-        return [self._profil(r, odst.get(r["id"], ({}, {}))) for r in rows]
+            if not self._domowa(conn):
+                return self._profile_bez_domow(conn)
+            rows = conn.execute(
+                "SELECT u.id, u.login, c.rola, p.whatsapp, p.email, p.kanal, "
+                "cp.user_id AS pref, cp.kategorie, cp.cisza_od, cp.cisza_do, cp.cisza_alarmy, "
+                "cp.dzieci, cp.aktywne FROM czlonkostwa c "
+                "JOIN users u ON u.id = c.user_id "
+                "LEFT JOIN user_powiadomienia p ON p.user_id = u.id "
+                "LEFT JOIN czlonkostwa_powiadomienia cp "
+                "ON cp.dom_id = c.dom_id AND cp.user_id = c.user_id "
+                "WHERE c.dom_id = ? ORDER BY u.login",
+                (self.dom_id,),
+            ).fetchall()
+            odst = self._odstepstwa_domu(conn)
+        return [self._profil(r, odst.get(r["id"], (set(), set())), domu=True) for r in rows]
+
+    def _profile_bez_domow(self, conn: sqlite3.Connection) -> list[Profil]:
+        try:
+            rows = conn.execute(
+                "SELECT u.id, u.login, u.rola, p.*, p.user_id AS pref FROM users u "
+                "LEFT JOIN user_powiadomienia p ON p.user_id = u.id ORDER BY u.login"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        odst = self._odstepstwa(conn)
+        return [self._profil(r, odst.get(r["id"], (set(), set()))) for r in rows]
+
+    def _odstepstwa_domu(self, conn: sqlite3.Connection) -> dict[int, tuple[set, set]]:
+        wynik: dict[int, tuple[set, set]] = {}
+        for r in conn.execute("SELECT user_id, uprawnienie, nadane FROM czlonkostwa_uprawnienia "
+                              "WHERE dom_id = ?", (self.dom_id,)):
+            nadane, odebrane = wynik.setdefault(r["user_id"], (set(), set()))
+            (nadane if r["nadane"] else odebrane).add(r["uprawnienie"])
+        return wynik
 
     def profil(self, login: str) -> Profil | None:
+        """Czlonek domu albo None (takze konto z innego domu)."""
         for p in self.profile():
             if p.login == login:
                 return p
         return None
+
+    def kanaly_osoby(self, login: str) -> Profil | None:
+        """Same kanaly konta (cecha osoby, wspolna dla domow) — bez roli,
+        uprawnien domu i preferencji. Dla konta niezaleznie od czlonkostwa."""
+        with self._conn() as conn:
+            r = conn.execute(
+                "SELECT u.login, p.whatsapp, p.email, p.kanal FROM users u "
+                "LEFT JOIN user_powiadomienia p ON p.user_id = u.id WHERE u.login = ?",
+                (login,),
+            ).fetchone()
+        if r is None:
+            return None
+        return Profil(login=r["login"], rola="", uprawnienia=uprawnienia.STALE,
+                      whatsapp=r["whatsapp"] or None, email=r["email"] or None,
+                      kanal=r["kanal"] if r["kanal"] in KANALY else "auto")
 
     @staticmethod
     def _odstepstwa(conn: sqlite3.Connection) -> dict[int, tuple[set, set]]:
@@ -443,7 +601,7 @@ class ProfilePowiadomien:
         return wynik
 
     @staticmethod
-    def _profil(r: sqlite3.Row, odst: tuple[set, set]) -> Profil:
+    def _profil(r: sqlite3.Row, odst: tuple[set, set], *, domu: bool = False) -> Profil:
         def lista(raw: str | None) -> frozenset[str] | None:
             if raw is None:
                 return None
@@ -459,16 +617,24 @@ class ProfilePowiadomien:
             except ValueError:
                 return None
 
-        upr = uprawnienia.efektywne(r["rola"], *odst)
-        if r["user_id"] is None:
-            return Profil(login=r["login"], rola=r["rola"], uprawnienia=upr)
+        if domu:
+            upr = uprawnienia.efektywne(r["rola"], *odst, role=uprawnienia.ROLE_DOMU_UPRAWNIENIA)
+            rola = uprawnienia.nazwa_roli(r["rola"])
+        else:
+            upr = uprawnienia.efektywne(r["rola"], *odst)
+            rola = r["rola"]
+        kanaly = {
+            "whatsapp": r["whatsapp"] or None,
+            "email": r["email"] or None,
+            "kanal": r["kanal"] if r["kanal"] in KANALY else "auto",
+        }
+        if r["pref"] is None:
+            return Profil(login=r["login"], rola=rola, uprawnienia=upr, **kanaly)
         return Profil(
             login=r["login"],
-            rola=r["rola"],
+            rola=rola,
             uprawnienia=upr,
-            whatsapp=r["whatsapp"] or None,
-            email=r["email"] or None,
-            kanal=r["kanal"] if r["kanal"] in KANALY else "auto",
+            **kanaly,
             kategorie=lista(r["kategorie"]),
             cisza_od=godz(r["cisza_od"]),
             cisza_do=godz(r["cisza_do"]),
@@ -478,22 +644,48 @@ class ProfilePowiadomien:
         )
 
     # ------------------------------------------------------------- zapis
-    def _upsert(self, login: str, **pola) -> None:
+    def _upsert(self, login: str, *, preferencje: bool = False, **pola) -> None:
+        """Kanaly (osoba) albo preferencje (czlonkostwo w domu; w Domu 1
+        z lustrem w `user_powiadomienia`, z tym samym `updated_at`)."""
+        teraz = self.clock()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT id FROM users WHERE login = ?", (login,)).fetchone()
-            if row is None:
+            try:
+                row = conn.execute("SELECT id FROM users WHERE login = ?", (login,)).fetchone()
+                if row is None:
+                    raise LookupError(login)
+                domowa = preferencje and self._domowa(conn)
+                if domowa and conn.execute(
+                    "SELECT 1 FROM czlonkostwa WHERE dom_id = ? AND user_id = ?",
+                    (self.dom_id, row["id"]),
+                ).fetchone() is None:
+                    raise LookupError(login)
+                sets = ", ".join(f"{k} = ?" for k in pola)
+                if domowa:
+                    conn.execute(
+                        "INSERT INTO czlonkostwa_powiadomienia (dom_id, user_id, updated_at) "
+                        "VALUES (?, ?, ?) ON CONFLICT (dom_id, user_id) DO NOTHING",
+                        (self.dom_id, row["id"], teraz),
+                    )
+                    conn.execute(
+                        f"UPDATE czlonkostwa_powiadomienia SET {sets}, updated_at = ? "  # noqa: S608
+                        "WHERE dom_id = ? AND user_id = ?",
+                        (*pola.values(), teraz, self.dom_id, row["id"]),
+                    )
+                # Kanaly sa osoby; preferencje Domu 1 maja tu lustro.
+                if not domowa or self.dom_id == DOM_TRAS:
+                    conn.execute(
+                        "INSERT INTO user_powiadomienia (user_id, updated_at) VALUES (?, ?) "
+                        "ON CONFLICT (user_id) DO NOTHING", (row["id"], teraz)
+                    )
+                    conn.execute(
+                        f"UPDATE user_powiadomienia SET {sets}, updated_at = ? "  # noqa: S608
+                        "WHERE user_id = ?",
+                        (*pola.values(), teraz, row["id"]),
+                    )
+            except BaseException:
                 conn.execute("ROLLBACK")
-                raise LookupError(login)
-            conn.execute(
-                "INSERT INTO user_powiadomienia (user_id, updated_at) VALUES (?, ?) "
-                "ON CONFLICT (user_id) DO NOTHING", (row["id"], self.clock())
-            )
-            sets = ", ".join(f"{k} = ?" for k in pola)
-            conn.execute(
-                f"UPDATE user_powiadomienia SET {sets}, updated_at = ? WHERE user_id = ?",  # noqa: S608
-                (*pola.values(), self.clock(), row["id"]),
-            )
+                raise
             conn.execute("COMMIT")
 
     def ustaw_kanaly(
@@ -557,7 +749,7 @@ class ProfilePowiadomien:
                     raise ValueError("Nieznane dziecko")
             dz_json = json.dumps(dz, ensure_ascii=False)
         self._upsert(
-            login, kategorie=kat_json, cisza_od=_fmt(od), cisza_do=_fmt(do),
+            login, preferencje=True, kategorie=kat_json, cisza_od=_fmt(od), cisza_do=_fmt(do),
             cisza_alarmy=int(bool(cisza_alarmy)), dzieci=dz_json, aktywne=int(bool(aktywne)),
         )
 

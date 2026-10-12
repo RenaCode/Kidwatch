@@ -169,7 +169,7 @@ def test_nieznany_login_403_z_komunikatem_i_wylogowaniem(sso_on):
     assert not headers.get_all("Set-Cookie")
 
 
-@pytest.mark.parametrize("grupy", [None, "", "dietetyk", "admins", "admins,dietetyk",
+@pytest.mark.parametrize("grupy", [None, "", "dietetyk", "admin", "admins-old,dietetyk",
                                    "wlasciciel-old,rodzina2"])
 def test_brak_grupy_z_dostepem_403(sso_on, grupy):
     srv, _ = sso_on

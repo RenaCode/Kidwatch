@@ -1,8 +1,17 @@
-"""Panel: wlasny profil powiadomien i zarzadzanie kontami.
+"""Panel: wlasny profil powiadomien i zarzadzanie czlonkami domu.
 
-Logika tras /api/konto/* (kazde konto, o SOBIE) i /api/konta/* (uprawnienie
-`konta.zarzadzanie`). panel.py tylko dopina je do tablicy tras; tu sa
-walidacja, potwierdzenia i bezpieczniki, testowane bez serwera HTTP.
+Logika tras /api/konto/kanaly (kazde konto, o SOBIE, kanaly osoby),
+/api/domy/<id>/konto/* (wlasne preferencje W DOMU) i /api/domy/<id>/konta/*
+(uprawnienie `konta.zarzadzanie` w tym domu — czlonkowie TEGO domu, §2.3).
+panel.py tylko dopina je do tablicy tras i podaje kontekst domu (`WDomu`);
+tu sa walidacja, potwierdzenia i bezpieczniki, testowane bez serwera HTTP.
+
+DOMY: lista, role, odstepstwa i preferencje dotycza wylacznie czlonkow domu
+z kontekstu. Konto z innego domu dla tych tras nie istnieje (404). Kanaly
+(numer, e-mail) sa cecha osoby, wspolna dla wszystkich jej domow, wiec
+zarzadca zmieni je tylko kontu, ktorego WSZYSTKIE domy sam zarzadza —
+zarzadca Domu 2 nie przekieruje powiadomien czlonka Domu 1. „Usun” wypisuje
+z domu; konto znika dopiero, gdy nie zostal mu zaden dom.
 
 ZASADY BEZPIECZENSTWA
   - /api/konto/* dziala WYLACZNIE na koncie z sesji — login z ciala zadania
@@ -11,17 +20,20 @@ ZASADY BEZPIECZENSTWA
     (`auth.reauth`) — przejeta sesja nie przekieruje powiadomien o dzieciach
     na obcy numer. Kategorie, cisza i dzieci tylko sesji + CSRF: ich zmiana
     niczego nikomu nie wysyla.
-  - Kazda zmiana w /api/konta/* (cudze konto) wymaga potwierdzenia
+  - Kazda zmiana w /api/domy/<id>/konta/* (cudze konto) wymaga potwierdzenia
     wykonujacego. Nie da sie usunac siebie ani zostawic domu bez konta
-    z prawem do zarzadzania kontami.
+    z prawem do zarzadzania kontami (sprawdzane przed potwierdzeniem
+    i drugi raz w transakcji — domy.OstatniZarzadzajacy).
   - Pelne numery i adresy nie wracaja do przegladarki (Profil.publiczny).
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
+from . import domy as dm
 from . import odbiorcy as o
 from . import uprawnienia as u
 from .bramka_admin import mask
@@ -61,9 +73,23 @@ def _lista(data: dict, key: str) -> list[str] | None:
     return value
 
 
-def _ma(session: Session, upr: str) -> None:
-    if upr not in session.uprawnienia:
-        log.warning("panel: %r bez uprawnienia %s", session.login, upr)
+@dataclass(frozen=True)
+class WDomu:
+    """Kontekst domu trasy (panel_domy.KontekstDomu w wersji dla kont)."""
+
+    dom_id: int
+    #: Uprawnienia sesji w tym domu.
+    uprawnienia: frozenset[str]
+    dzieci: list[str] = field(default_factory=list)
+    #: Aktywny administrator instalacji.
+    admin: bool = False
+    #: Administrator bez czlonkostwa w tym domu.
+    administracja: bool = False
+
+
+def _ma(d: WDomu, upr: str, login: str) -> None:
+    if upr not in d.uprawnienia:
+        log.warning("panel: %r bez uprawnienia %s w domu %d", login, upr, d.dom_id)
         raise AuthError(403, f"To konto nie ma uprawnienia: {u.OPISY.get(upr, upr)}.")
 
 
@@ -76,32 +102,44 @@ def _opis_kanalow(p: o.Profil | None) -> str:
     ) if x) or "brak"
 
 
+def edytowalne(dom_id: int) -> list[str]:
+    """Uprawnienia, ktore w domu maja sens: zakres `dom` i `konto`. Zakresu
+    instancji (bot WhatsApp) nie nadaje rola w zadnym domu — ma go tylko
+    administrator instalacji. `dom_id` zostaje dla czytelnosci wolajacych."""
+    del dom_id
+    return [k for k in u.UPRAWNIENIA if u.ZAKRESY[k] != u.ZAKRES_INSTANCJA]
+
+
 class PanelKonta:
-    def __init__(self, auth: PanelAuth, konta: o.ProfilePowiadomien,
-                 dzieci: Iterable[str]) -> None:
+    def __init__(self, auth: PanelAuth, konta: o.ProfilePowiadomien) -> None:
         self.auth = auth
         self.konta = konta
-        self.dzieci = sorted(set(dzieci))
+        self.rejestr = dm.RejestrDomow(auth.path)
 
     # ------------------------------------------------------------ wspolne
-    def _katalog(self) -> dict:
+    def _w(self, d: WDomu) -> o.ProfilePowiadomien:
+        return self.konta.dla_domu(d.dom_id)
+
+    def _katalog(self, d: WDomu) -> dict:
         return {
             "kategorie": [{"id": k, "opis": o.OPISY_KATEGORII[k], "wymaga": o.WYMAGANE[k]}
                           for k in o.KATEGORIE],
             "kanaly": list(o.KANALY),
-            "dzieci": self.dzieci,
-            "tryb": self.konta.tryb(),
+            "dzieci": sorted(set(d.dzieci)),
+            "tryb": self._w(d).tryb(),
+            "tryb_trasy": d.dom_id == o.DOM_TRAS,
         }
 
-    def _profil(self, login: str) -> o.Profil:
-        p = self.konta.profil(login)
+    def _profil(self, d: WDomu, login: str) -> o.Profil:
+        """Czlonek domu; konto spoza domu = 404 (nie zdradza, ze istnieje)."""
+        p = self._w(d).profil(login)
         if p is None:
             raise AuthError(404, "Nie ma takiego konta")
         return p
 
-    def _zapisz_preferencje(self, login: str, data: dict) -> None:
+    def _zapisz_preferencje(self, d: WDomu, login: str, data: dict) -> None:
         try:
-            self.konta.ustaw_preferencje(
+            self._w(d).ustaw_preferencje(
                 login,
                 kategorie=_lista(data, "kategorie"),
                 cisza_od=_str(data, "cisza_od", 5) or None,
@@ -109,17 +147,23 @@ class PanelKonta:
                 cisza_alarmy=_bool(data, "cisza_alarmy", True),
                 dzieci=_lista(data, "dzieci"),
                 aktywne=_bool(data, "aktywne", True),
-                znane_dzieci=self.dzieci,
+                znane_dzieci=d.dzieci,
             )
         except ValueError as exc:
             raise AuthError(400, str(exc)) from exc
         except LookupError as exc:
             raise AuthError(404, "Nie ma takiego konta") from exc
 
+    def _kanaly_osoby(self, login: str) -> o.Profil:
+        p = self.konta.kanaly_osoby(login)
+        if p is None:
+            raise AuthError(404, "Nie ma takiego konta")
+        return p
+
     def _zapisz_kanaly(self, kto: Session, login: str, data: dict) -> None:
         """Pole nieobecne = bez zmiany (przegladarka zna tylko maske, wiec
         nie odesle starego numeru), pusty napis = usun kanal."""
-        przed = self._profil(login)
+        przed = self._kanaly_osoby(login)
         whatsapp = _str(data, "whatsapp", 64) if "whatsapp" in data else przed.whatsapp or ""
         email = _str(data, "email", o.MAX_EMAIL) if "email" in data else przed.email or ""
         kanal = _str(data, "kanal", 16) or przed.kanal
@@ -141,127 +185,172 @@ class PanelKonta:
             raise AuthError(404, "Nie ma takiego konta") from exc
         log.warning("panel: %s zmienil kanaly powiadomien konta %r: %s -> %s",
                     kto.login, login, _opis_kanalow(przed),
-                    _opis_kanalow(self.konta.profil(login)))
+                    _opis_kanalow(self.konta.kanaly_osoby(login)))
+
+    def _publiczny(self, d: WDomu, session: Session) -> dict:
+        """Wlasny profil w domu. Administrator bez czlonkostwa nie ma
+        preferencji w domu (nie dostaje jego powiadomien) — tylko kanaly."""
+        p = self._w(d).profil(session.login)
+        if p is None:
+            return {**self._kanaly_osoby(session.login).publiczny(), "czlonek": False}
+        return {**p.publiczny(), "czlonek": True}
 
     # ------------------------------------------------------ /api/konto/*
-    def moje(self, session: Session) -> dict:
-        return {"profil": self._profil(session.login).publiczny(), **self._katalog()}
+    def moje(self, session: Session, d: WDomu) -> dict:
+        return {"profil": self._publiczny(d, session), **self._katalog(d)}
 
-    def moje_preferencje(self, session: Session, data: dict) -> dict:
-        self._zapisz_preferencje(session.login, data)
-        return self.moje(session)
+    def moje_preferencje(self, session: Session, data: dict, d: WDomu) -> dict:
+        if d.administracja:
+            raise AuthError(409, "Nie jesteś członkiem tego domu — jego powiadomienia "
+                                 "dostają tylko członkowie.")
+        self._zapisz_preferencje(d, session.login, data)
+        return self.moje(session, d)
 
-    def moje_kanaly(self, session: Session, data: dict) -> dict:
+    def moje_kanaly(self, session: Session, data: dict, d: WDomu | None = None) -> dict:
+        """Kanaly osoby (zakres konta). `d` — dom, z ktorego ekranu przyszlo
+        zadanie (odpowiedz jak `moje`); bez domu — same kanaly."""
         self._zapisz_kanaly(session, session.login, data)
-        return self.moje(session)
+        if d is None:
+            return {"profil": self._kanaly_osoby(session.login).publiczny()}
+        return self.moje(session, d)
 
     # ------------------------------------------------------ /api/konta/*
-    def lista(self, session: Session) -> dict:
-        _ma(session, u.KONTA)
-        profile = {p.login: p for p in self.konta.profile()}
+    def lista(self, session: Session, d: WDomu) -> dict:
+        _ma(d, u.KONTA, session.login)
         konta = []
-        for row in self.auth.list_users():
-            p = profile.get(row["login"])
+        edyt = edytowalne(d.dom_id)
+        dane = {r["login"]: r for r in self.auth.list_users()}
+        czlonkowie = {c.login: c for c in self.rejestr.czlonkowie(d.dom_id)}
+        for p in self._w(d).profile():
+            c = czlonkowie[p.login]
+            row = dane.get(p.login, {})
             konta.append({
-                "login": row["login"],
-                "rola": row["rola"],
-                "uprawnienia": row.get("uprawnienia", sorted(p.uprawnienia) if p else []),
-                "odstepstwa": row.get("odstepstwa", []),
-                "totp": bool(row["totp"]),
-                "last_login_at": row["last_login_at"],
-                "ja": row["login"] == session.login,
-                "powiadomienia": p.publiczny() if p else None,
+                "login": p.login,
+                "rola": c.rola,
+                "uprawnienia": sorted(p.uprawnienia & frozenset(edyt)),
+                "odstepstwa": sorted([f"+{n}" for n in c.nadane] + [f"-{n}" for n in c.odebrane],
+                                     key=lambda x: x[1:]),
+                "totp": bool(row.get("totp")),
+                "last_login_at": row.get("last_login_at"),
+                "ja": p.login == session.login,
+                "powiadomienia": p.publiczny(),
             })
         return {
             "konta": konta,
-            "role": list(u.ROLES),
-            "uprawnienia": [{"id": k, "opis": v, "stale": k in u.STALE}
-                            for k, v in u.OPISY.items()],
-            "role_uprawnienia": {r: sorted(v) for r, v in u.ROLE_UPRAWNIENIA.items()},
-            **self._katalog(),
+            "role": list(u.ROLE_DOMU),
+            "uprawnienia": [{"id": k, "opis": u.OPISY[k], "stale": k in u.STALE} for k in edyt],
+            "role_uprawnienia": {r: sorted(v & frozenset(edyt))
+                                 for r, v in u.ROLE_DOMU_UPRAWNIENIA.items()},
+            **self._katalog(d),
         }
 
-    def _cel(self, session: Session, data: dict) -> str:
-        _ma(session, u.KONTA)
+    def _cel(self, session: Session, data: dict, d: WDomu) -> str:
+        _ma(d, u.KONTA, session.login)
         login = _str(data, "login", MAX_LOGIN, required=True).strip()
-        self._profil(login)
+        self._profil(d, login)
         return login
 
-    def _zostaje_zarzadca(self, *, bez: str | None = None, login: str | None = None,
+    def _zostaje_zarzadca(self, d: WDomu, *, bez: str | None = None, login: str | None = None,
                           rola: str | None = None,
-                          odst: tuple[set, set] = (set(), set())) -> None:
-        """Po zmianie musi zostac konto z `konta.zarzadzanie` — inaczej dom
-        zostaje bez nikogo, kto doda konto albo zmieni kanal (zostaje CLI).
-        `login` z `rola`/`odst` to stan konta PO zmianie."""
-        for p in self.konta.profile():
+                          odst: tuple[set, set] | None = None) -> None:
+        """Po zmianie musi zostac w domu konto z `konta.zarzadzanie` — inaczej
+        dom zostaje bez nikogo, kto doda konto albo zmieni kanal (zostaje
+        CLI). `login` z `rola`/`odst` to stan konta PO zmianie. Wstepnie,
+        przed potwierdzeniem haslem; ostatecznie pilnuje transakcja."""
+        for p in self._w(d).profile():
             if p.login == bez:
                 continue
-            upr = u.efektywne(rola or p.rola, *odst) if p.login == login else p.uprawnienia
+            if p.login == login:
+                if odst is None:
+                    upr = u.efektywne(u.rola_konta(rola or p.rola),
+                                      role=u.ROLE_DOMU_UPRAWNIENIA)
+                else:
+                    upr = u.efektywne(u.rola_konta(rola or p.rola), *odst,
+                                      role=u.ROLE_DOMU_UPRAWNIENIA)
+            else:
+                upr = p.uprawnienia
             if u.KONTA in upr:
                 return
         raise AuthError(409, "Musi zostać co najmniej jedno konto z zarządzaniem kontami.")
 
-    def dodaj(self, session: Session, data: dict) -> dict:
-        _ma(session, u.KONTA)
+    def dodaj(self, session: Session, data: dict, d: WDomu) -> dict:
+        _ma(d, u.KONTA, session.login)
         login = _str(data, "login", MAX_LOGIN, required=True).strip()
         rola = _str(data, "rola", 32) or u.ROLE_VIEWER
         if not login_ok(login):
             raise AuthError(400, "Login: małe litery a-z, cyfry, '.', '_', '-' (jak w SSO)")
-        if rola not in u.ROLES:
+        if rola not in (*u.ROLES, *u.ROLE_DOMU):
             raise AuthError(400, "Nieznana rola")
         self.auth.reauth(session, _str(data, "confirm", 512))
         haslo = generate_password()
         try:
-            self.auth.add_user(login, haslo, rola)
+            self.auth.add_user(login, haslo, rola, dom_id=d.dom_id)
         except UserExists as exc:
             raise AuthError(409, "Takie konto już istnieje") from exc
         except ValueError as exc:
             raise AuthError(400, str(exc)) from exc
-        log.warning("panel: %s zalozyl konto %r (rola %s)", session.login, login, rola)
+        log.warning("panel: %s zalozyl konto %r (dom %d, rola %s)", session.login, login,
+                    d.dom_id, rola)
         # Haslo wraca RAZ; w bazie jest tylko hash.
         return {"ok": True, "login": login, "haslo": haslo}
 
-    def usun(self, session: Session, data: dict) -> dict:
-        login = self._cel(session, data)
+    def usun(self, session: Session, data: dict, d: WDomu) -> dict:
+        """Wypisuje konto z domu. Konto bez zadnego domu (i nie
+        administracyjne) znika calkiem — w jednym domu to dawne „usun konto”."""
+        login = self._cel(session, data, d)
         if login == session.login:
             raise AuthError(409, "Nie usuniesz własnego konta z panelu (CLI: user-del).")
-        self._zostaje_zarzadca(bez=login)
+        self._zostaje_zarzadca(d, bez=login)
         self.auth.reauth(session, _str(data, "confirm", 512))
         try:
-            self.auth.delete_user(login)
+            self.auth.remove_membership(login, d.dom_id)
         except UnknownUser as exc:
             raise AuthError(404, "Nie ma takiego konta") from exc
-        log.warning("panel: %s usunal konto %r", session.login, login)
-        return {"ok": True}
+        except dm.OstatniZarzadzajacy as exc:
+            raise AuthError(409, "Musi zostać co najmniej jedno konto z zarządzaniem "
+                                 "kontami.") from exc
+        u_row = next((r for r in self.auth.list_users() if r["login"] == login), None)
+        usuniete = bool(u_row) and not u_row["domy"] and not u_row["admin_instancji"]
+        if usuniete:
+            self.auth.delete_user(login)
+        log.warning("panel: %s wypisal konto %r z domu %d%s", session.login, login, d.dom_id,
+                    " i je usunal (bez domow)" if usuniete else "")
+        return {"ok": True, "konto_usuniete": usuniete}
 
-    def rola(self, session: Session, data: dict) -> dict:
-        login = self._cel(session, data)
+    def rola(self, session: Session, data: dict, d: WDomu) -> dict:
+        login = self._cel(session, data, d)
         rola = _str(data, "rola", 32)
-        if rola not in u.ROLES:
+        if rola not in (*u.ROLES, *u.ROLE_DOMU):
             raise AuthError(400, "Nieznana rola")
         # set_role kasuje odstepstwa — po zmianie liczy sie sama rola.
-        self._zostaje_zarzadca(login=login, rola=rola)
+        self._zostaje_zarzadca(d, login=login, rola=rola)
         self.auth.reauth(session, _str(data, "confirm", 512))
-        n = self.auth.set_role(login, rola)
-        log.warning("panel: %s zmienil role %r na %s", session.login, login, rola)
+        try:
+            n = self.auth.set_role(login, rola, dom_id=d.dom_id)
+        except dm.OstatniZarzadzajacy as exc:
+            raise AuthError(409, str(exc)) from exc
+        log.warning("panel: %s zmienil role %r w domu %d na %s", session.login, login,
+                    d.dom_id, rola)
         return {"ok": True, "closed_sessions": n}
 
-    def uprawnienia(self, session: Session, data: dict) -> dict:
-        login = self._cel(session, data)
+    def uprawnienia(self, session: Session, data: dict, d: WDomu) -> dict:
+        login = self._cel(session, data, d)
         raw = data.get("zmiany")
+        edyt = edytowalne(d.dom_id)
         if not isinstance(raw, dict) or not raw or len(raw) > len(u.OPISY):
             raise AuthError(400, "Niepoprawne pole 'zmiany'")
         zmiany: dict[str, bool | None] = {}
         for k, v in raw.items():
-            if k not in u.OPISY or not (v is None or isinstance(v, bool)):
+            if k not in edyt or not (v is None or isinstance(v, bool)):
                 raise AuthError(400, f"Niepoprawna zmiana uprawnienia {k!r}")
             if k in u.STALE and v is False:
                 raise AuthError(400, f"Uprawnienia {k!r} nie da się odebrać")
             zmiany[k] = v
-        p = self._profil(login)
+        c = self.rejestr.czlonkostwo(self.auth.user_id(login), d.dom_id)
+        if c is None:
+            raise AuthError(404, "Nie ma takiego konta")
         # Odstepstwa po zmianie, do sprawdzenia "zostaje zarzadca".
-        nadane = set(p.uprawnienia - u.efektywne(p.rola))
-        odebrane = set(u.efektywne(p.rola) - p.uprawnienia)
+        nadane, odebrane = set(c.nadane), set(c.odebrane)
         for k, v in zmiany.items():
             nadane.discard(k)
             odebrane.discard(k)
@@ -269,42 +358,69 @@ class PanelKonta:
                 nadane.add(k)
             elif v is False:
                 odebrane.add(k)
-        self._zostaje_zarzadca(login=login, odst=(nadane, odebrane))
+        self._zostaje_zarzadca(d, login=login, rola=c.rola, odst=(nadane, odebrane))
         self.auth.reauth(session, _str(data, "confirm", 512))
         try:
-            n = self.auth.set_permissions(login, zmiany)
+            n = self.auth.set_permissions(login, zmiany, dom_id=d.dom_id)
+        except dm.OstatniZarzadzajacy as exc:
+            raise AuthError(409, str(exc)) from exc
         except ValueError as exc:
             raise AuthError(400, str(exc)) from exc
-        log.warning("panel: %s zmienil uprawnienia %r: %s", session.login, login,
-                    ", ".join(f"{'+' if v else '-' if v is False else '='}{k}"
-                              for k, v in zmiany.items()))
+        log.warning("panel: %s zmienil uprawnienia %r w domu %d: %s", session.login, login,
+                    d.dom_id, ", ".join(f"{'+' if v else '-' if v is False else '='}{k}"
+                                        for k, v in zmiany.items()))
         return {"ok": True, "closed_sessions": n}
 
-    def preferencje(self, session: Session, data: dict) -> dict:
-        login = self._cel(session, data)
+    def preferencje(self, session: Session, data: dict, d: WDomu) -> dict:
+        login = self._cel(session, data, d)
         self.auth.reauth(session, _str(data, "confirm", 512))
-        self._zapisz_preferencje(login, data)
-        log.warning("panel: %s zmienil preferencje powiadomien %r", session.login, login)
-        return {"ok": True, "powiadomienia": self._profil(login).publiczny()}
+        self._zapisz_preferencje(d, login, data)
+        log.warning("panel: %s zmienil preferencje powiadomien %r w domu %d",
+                    session.login, login, d.dom_id)
+        return {"ok": True, "powiadomienia": self._profil(d, login).publiczny()}
 
-    def kanaly(self, session: Session, data: dict) -> dict:
-        login = self._cel(session, data)
+    def kanaly(self, session: Session, data: dict, d: WDomu) -> dict:
+        login = self._cel(session, data, d)
+        # Kanaly sa osoby, wspolne dla jej domow: tylko gdy wykonujacy
+        # zarzadza kazdym z nich (albo jest aktywnym administratorem).
+        if not d.admin and login != session.login:
+            for c in self.rejestr.czlonkostwa(self.auth.user_id(login)):
+                if c.dom_id != d.dom_id and u.KONTA not in self.rejestr.uprawnienia(
+                        session.user_id, c.dom_id):
+                    raise AuthError(403, "To konto należy też do innego domu — jego kanały "
+                                         "zmieni ono samo albo administrator.")
         self._zapisz_kanaly(session, login, data)
-        return {"ok": True, "powiadomienia": self._profil(login).publiczny()}
+        return {"ok": True, "powiadomienia": self._profil(d, login).publiczny()}
 
-    def tryb(self, session: Session, data: dict) -> dict:
-        _ma(session, u.KONTA)
+    def tryb(self, session: Session, data: dict, d: WDomu) -> dict:
+        _ma(d, u.KONTA, session.login)
         tryb = _str(data, "tryb", 16)
         if tryb not in (o.TRYB_TRASY, o.TRYB_KONTA):
             raise AuthError(400, "Tryb: trasy albo konta")
+        if tryb == o.TRYB_TRASY and d.dom_id != o.DOM_TRAS:
+            raise AuthError(400, "Tryb tras jest tylko w Domu 1 — ten dom wysyła per konto.")
         if tryb == o.TRYB_KONTA and not any(
                 p.ma_kanal and p.aktywne and u.KONTA in p.uprawnienia
-                for p in self.konta.profile()):
+                for p in self._w(d).profile()):
             # Wlasciciel bez kanalu w trybie kont = alarmy techniczne do nikogo.
             raise AuthError(409, "Najpierw ustaw kanał (WhatsApp albo e-mail) "
                                  "na koncie zarządzającym.")
         self.auth.reauth(session, _str(data, "confirm", 512))
-        self.konta.ustaw_tryb(tryb)
-        log.warning("panel: %s przelaczyl powiadomienia na tryb %s", session.login, tryb)
+        try:
+            self._w(d).ustaw_tryb(tryb)
+        except ValueError as exc:
+            raise AuthError(400, str(exc)) from exc
+        log.warning("panel: %s przelaczyl powiadomienia domu %d na tryb %s", session.login,
+                    d.dom_id, tryb)
         return {"ok": True, "tryb": tryb}
 
+    # ---------------------------------------------------------- dziennik
+    def dziennik(self, session: Session, d: WDomu) -> dict:
+        """Dom -> Dziennik (§2.3): kto co zrobil w domu, w tym kazde wejscie
+        administratora instalacji. Bez wartosci sekretow (nie trafiaja do
+        `audyt`)."""
+        _ma(d, u.KONTA, session.login)
+        return {"wpisy": [
+            {**w, "ts": datetime.fromtimestamp(w["ts"], UTC).isoformat()}
+            for w in self.rejestr.audyt(d.dom_id)
+        ]}
