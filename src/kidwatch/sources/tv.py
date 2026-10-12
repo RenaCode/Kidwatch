@@ -378,7 +378,8 @@ class AdbTcpShell:
     jeden stan: "telewizor nie odpowiada".
     """
 
-    def __init__(self, host: str, port: int, key_dir: str | Path, timeout: float) -> None:
+    def __init__(self, host: str, port: int, key_dir: str | Path, timeout: float,
+                 straznik=None) -> None:
         from adb_shell.auth.sign_pythonrsa import PythonRSASigner  # noqa: PLC0415
 
         folder = Path(key_dir).expanduser()
@@ -391,6 +392,8 @@ class AdbTcpShell:
             pub.read_text() if pub.is_file() else "", priv.read_text()
         )
         self.host, self.port, self.timeout = host, port, timeout
+        #: straznik.Straznik domu z konfiguracja w bazie (SSRF); None = jak dotad.
+        self.straznik = straznik
         self._dev = None
         # Jedno polaczenie ADB, dwoch uzytkownikow: odczyt co 30 s i instalacja
         # aplikacji Kidwatch TV z panelu. adb-shell nie przeplata polecen.
@@ -400,7 +403,10 @@ class AdbTcpShell:
         from adb_shell.adb_device_async import AdbDeviceTcpAsync  # noqa: PLC0415
 
         if self._dev is None or not self._dev.available:
-            dev = AdbDeviceTcpAsync(self.host, self.port, default_transport_timeout_s=self.timeout)
+            host = self.host
+            if self.straznik is not None:
+                host = str(await self.straznik.rozwiaz(self.host, self.port))
+            dev = AdbDeviceTcpAsync(host, self.port, default_transport_timeout_s=self.timeout)
             await dev.connect(rsa_keys=[self.signer], auth_timeout_s=self.timeout,
                               read_timeout_s=self.timeout)
             self._dev = dev

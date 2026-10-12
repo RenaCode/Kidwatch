@@ -7,6 +7,7 @@ Dane wylacznie generyczne: publiczne repo (tests/test_repo_prywatnosc.py).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import json
 import os
@@ -483,23 +484,85 @@ KONTRAKT = {
 }
 
 
+def _parametry(sygnatura: str) -> tuple[list[str], str]:
+    """'(a: 'int', b: 'str' = 1) -> 'X'' -> (['a: 'int'', "b: 'str' = 1"], "'X'")."""
+    srodek, _, zwrot = sygnatura.rpartition(" -> ")
+    return [p.strip() for p in _podziel(srodek[1:-1])], zwrot
+
+
+def _podziel(tekst: str) -> list[str]:
+    """Przecinki na najwyzszym poziomie (typy maja nawiasy i przecinki)."""
+    out, glebokosc, biezacy = [], 0, ""
+    for znak in tekst:
+        if znak in "([{":
+            glebokosc += 1
+        elif znak in ")]}":
+            glebokosc -= 1
+        if znak == "," and glebokosc == 0:
+            out.append(biezacy)
+            biezacy = ""
+        else:
+            biezacy += znak
+    if biezacy.strip():
+        out.append(biezacy)
+    return out
+
+
+#: Pola dataclass z E1: (nazwa, typ). Kolejnosc i typy nie moga sie zmienic.
+POLA_E1 = {
+    "Dom": [("id", "int"), ("nazwa", "str"), ("strefa", "str"),
+            ("zrodlo_konfiguracji", "str"), ("wersja", "int"), ("zawieszony", "bool")],
+    "Czlonkostwo": [("dom_id", "int"), ("user_id", "int"), ("login", "str"), ("rola", "str"),
+                    ("nadane", "frozenset[str]"), ("odebrane", "frozenset[str]")],
+    "HomeRuntime": [("dom_id", "int"), ("home", "HomeConfig"), ("store", "Store"),
+                    ("engine", "Engine"), ("outbox", "Outbox"), ("source", "Any"),
+                    ("petle", "list[tuple[str, Callable[[], Coroutine[Any, Any, Any]]]]"),
+                    ("sprzatanie", "list[Callable[[], Awaitable[None]]]")],
+}
+
+
 def test_interfejs_domy_zamrozony():
-    """Zmiana sygnatury to zmiana kontraktu dla rownoleglych etapow —
-    swiadoma, z aktualizacja tej listy i opisu w PR."""
+    """Kontrakt E1 dla rownoleglych etapow: nic z niego nie ZNIKA i nie
+    zmienia typu. Rozszerzenia addytywne (E2: nowe pola z wartosciami
+    domyslnymi, nowe parametry z domyslnymi na koncu) sa dozwolone."""
     for nazwa, sygnatura in KONTRAKT.items():
         obj = domy
         for czesc in nazwa.split("."):
             obj = getattr(obj, czesc)
-        assert str(inspect.signature(obj)) == sygnatura, nazwa
+        stare, stary_zwrot = _parametry(sygnatura)
+        nowe, nowy_zwrot = _parametry(str(inspect.signature(obj)))
+        assert nowy_zwrot == stary_zwrot, nazwa
+        assert nowe[:len(stare)] == stare, nazwa
+        for dodany in nowe[len(stare):]:
+            assert "=" in dodany or dodany.startswith("**"), (nazwa, dodany)
     assert (domy.DOM_1, domy.NAZWA_DOMU_1, domy.ZRODLO_YAML, domy.ZRODLO_BAZA) == (
         1, "Dom 1", "yaml", "baza")
-    assert [f for f in domy.Dom.__dataclass_fields__] == [
-        "id", "nazwa", "strefa", "zrodlo_konfiguracji", "wersja", "zawieszony"]
-    assert [f for f in domy.Czlonkostwo.__dataclass_fields__] == [
-        "dom_id", "user_id", "login", "rola", "nadane", "odebrane"]
-    assert [f for f in HomeRuntime.__dataclass_fields__] == [
-        "dom_id", "home", "store", "engine", "outbox", "source", "petle", "sprzatanie"]
+    for klasa, pola in POLA_E1.items():
+        fields = getattr(domy, klasa).__dataclass_fields__
+        assert [(n, str(fields[n].type)) for n in list(fields)[:len(pola)]] == pola, klasa
+        for n in list(fields)[len(pola):]:
+            f = fields[n]
+            assert f.default is not dataclasses.MISSING or \
+                f.default_factory is not dataclasses.MISSING, (klasa, n)
     assert uprawnienia.ROLE_DOMU == ("wlasciciel-domu", "zarzadca", "podglad")
+
+
+def test_test_zamrozenia_lapie_usuniecie_i_zmiane_typu(monkeypatch):
+    """Kanarek: test kontraktu musi pasc, gdy pole zniknie albo zmieni typ."""
+    import dataclasses as dc  # noqa: PLC0415
+
+    @dc.dataclass(frozen=True)
+    class ZlyDom:
+        id: int
+        nazwa: str
+        strefa: str
+        zrodlo_konfiguracji: str
+        wersja: str  # zmieniony typ
+        zawieszony: bool
+
+    monkeypatch.setattr(domy, "Dom", ZlyDom)
+    with pytest.raises(AssertionError):
+        test_interfejs_domy_zamrozony()
 
 
 # ========================================================= kolejka domu

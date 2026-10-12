@@ -25,6 +25,24 @@ KONTRAKT DLA KOLEJNYCH ETAPOW (zamrozony w E1; zmiana = osobny PR z opisem):
              + dodaj_petle(nazwa, fabryka) / dodaj_sprzatanie(fn) / start() /
              zamknij(); Nadzorca([HomeRuntime...]).run(stop) / zamknij()
 
+ROZSZERZENIA E2 (addytywne; nic z kontraktu E1 nie znika):
+
+  Model:     Dom + ustawienia, dozwolone_sieci, dozwolone_hosty, kek_id, ma_dek;
+             Integracja (bez wartosci sekretow), SekretyDomu (dostawca sekretow
+             domu dla HomeConfig), PlanDomu/DaneDomu (konfiguracja_domu.py)
+  Stale:     TYPY_INTEGRACJI, POLA_SEKRETOW
+  Odczyt:    RejestrDomow.integracje(dom_id) / .integracja(dom_id, typ) /
+             .sekrety_domu(dom_id, sejf) / .dane_domu(dom_id) /
+             .sprawdz(sejf) / .straznik(dom_id)
+  Zapis:     RejestrDomow.zapisz_integracje(dom_id, typ, sejf=..., ...) (sekrety
+             tylko do zapisu: panel nigdy ich nie odczytuje) / .ustaw_zrodlo /
+             .ustaw_sieci / .dodaj_dom / .rotuj_kek / .rotuj_dek /
+             .zapisz_dane_domu (dom-importuj)
+  Sciezki:   katalog_sekretow_domu(dom_id) — pliki z sekretow (klucz ADB,
+             token aplikacji TV) w pamieci poda, nie na /data
+
+Sekrety: sejf.py (KEK/DEK, AAD). Siec: straznik.py (SSRF, §3.6).
+
 `uprawnienia(user_id, dom_id)` liczy WYLACZNIE z czlonkostwa: bez wiersza
 pusty zbior. Wyjatek administratora instalacji (§2.3: flaga + grupa SSO
 `admins` + wpis w `audyt`) zalezy od sesji i dochodzi w panelu, nad ta
@@ -44,11 +62,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import sqlite3
 import time
-from collections.abc import Awaitable, Callable, Coroutine, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -59,7 +78,9 @@ if TYPE_CHECKING:
     from .config import HomeConfig
     from .engine import Engine
     from .notifiers.base import Outbox
+    from .sejf import Sejf
     from .store import Store
+    from .straznik import Straznik
 
 log = logging.getLogger(__name__)
 
@@ -91,6 +112,9 @@ CREATE TABLE IF NOT EXISTS domy (
     kek_id              TEXT,
     -- Sieci, do ktorych integracje domu moga sie laczyc (CIDR, JSON).
     dozwolone_sieci     TEXT NOT NULL DEFAULT '[]',
+    -- Hosty API spoza listy wbudowanej (nextdns.base_url, ntfy.server), JSON.
+    -- Jak dozwolone_sieci: ustawia wylacznie administrator instancji (CLI).
+    dozwolone_hosty     TEXT NOT NULL DEFAULT '[]',
     -- +1 przy kazdej zmianie: sygnal przeladowania srodowiska domu.
     wersja              INTEGER NOT NULL DEFAULT 1,
     zawieszony          INTEGER NOT NULL DEFAULT 0,
@@ -181,6 +205,16 @@ class Dom:
     zrodlo_konfiguracji: str
     wersja: int
     zawieszony: bool
+    # --- E2 (addytywnie, z wartosciami domyslnymi)
+    #: Ustawienia domu niebedace integracjami (engine, watchdog, game_time...).
+    ustawienia: dict = field(default_factory=dict, compare=False)
+    #: CIDR-y, do ktorych integracje domu moga sie laczyc (straznik.py).
+    dozwolone_sieci: tuple[str, ...] = ()
+    #: Hosty API spoza listy wbudowanej (straznik.HOSTY_API).
+    dozwolone_hosty: tuple[str, ...] = ()
+    #: Ktorym kluczem KEK zapakowano DEK domu (None = dom bez DEK).
+    kek_id: str | None = None
+    ma_dek: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,6 +446,9 @@ def migruj_conn(conn: sqlite3.Connection, *, strefa: str | None = None,
         kolumny = []
         if _dodaj_kolumne(conn, "users", "admin_instancji", "INTEGER NOT NULL DEFAULT 0"):
             kolumny.append("users.admin_instancji")
+        # E2: baza zalozona przez E1 nie ma tej kolumny (stary obraz jej nie czyta).
+        if _dodaj_kolumne(conn, "domy", "dozwolone_hosty", "TEXT NOT NULL DEFAULT '[]'"):
+            kolumny.append("domy.dozwolone_hosty")
         zalozony = False
         if conn.execute("SELECT 1 FROM domy LIMIT 1").fetchone() is None:
             conn.execute(
@@ -448,6 +485,294 @@ def _audyt(conn: sqlite3.Connection, ts: float, dom_id: int | None, login: str |
            akcja: str, opis: str) -> None:
     conn.execute("INSERT INTO audyt (ts, dom_id, login, akcja, opis) VALUES (?, ?, ?, ?, ?)",
                  (ts, dom_id, login, akcja, opis))
+
+
+# ================================================================ integracje (E2)
+TYPY_INTEGRACJI = ("nextdns", "adguard", "unifi", "tv", "mdm", "ntfy", "homeassistant")
+#: Pola sekretow integracji — wszystko inne w integracji jest jawne.
+POLA_SEKRETOW: dict[str, tuple[str, ...]] = {
+    "nextdns": ("api_key",),
+    "adguard": ("password",),
+    "unifi": ("api_key",),
+    # Klucz ADB (PEM) i token aplikacji TV sa czytane z pliku: srodowisko
+    # domu zapisuje je przy starcie do katalogu w pamieci poda (§3.1).
+    "tv": ("sony_psk", "adb_key", "adb_key_pub", "app_token"),
+    "mdm": ("token",),
+    # Nazwa tematu ntfy.sh JEST haslem (config.NtfyConfig).
+    "ntfy": ("topic", "token"),
+    "homeassistant": ("webhook_id",),
+}
+#: Katalog plikow z sekretami domow (emptyDir medium: Memory w chartcie).
+KATALOG_SEKRETOW_ENV = "KIDWATCH_KATALOG_SEKRETOW"
+KATALOG_SEKRETOW = "/run/kidwatch"
+
+
+def katalog_sekretow_domu(dom_id: int, baza: str | Path | None = None) -> Path:
+    """Pliki z sekretow domu (adb/adbkey, tv-app/token) — w pamieci poda,
+    nie na wolumenie /data: na dysku leza tylko szyfrogramy."""
+    korzen = Path(baza or os.environ.get(KATALOG_SEKRETOW_ENV) or KATALOG_SEKRETOW)
+    return korzen / "domy" / str(int(dom_id))
+
+
+@dataclass(frozen=True, slots=True)
+class Integracja:
+    """Integracja domu BEZ wartosci sekretow (panel, CLI): jakie pola sa
+    ustawione, kto i kiedy zmienil."""
+
+    dom_id: int
+    typ: str
+    wlaczona: bool
+    ustawienia: dict = field(default_factory=dict, compare=False)
+    sekrety_pola: tuple[str, ...] = ()
+    zmienione_przez: str | None = None
+    zmienione_at: float | None = None
+
+
+class SekretyDomu:
+    """Odszyfrowane sekrety JEDNEGO domu w pamieci srodowiska domu —
+    dostawca dla `HomeConfig.ustaw_srodowisko` (config.DostawcaSekretow).
+
+    repr/str pokazuja tylko nazwy pol, nigdy wartosci. `zapisz` (token
+    aplikacji TV po sparowaniu) idzie do bazy przez `zapisywacz`."""
+
+    def __init__(self, dom_id: int, wartosci: Mapping[str, Mapping[str, str]] | None = None,
+                 zapisywacz: Callable[[str, dict[str, str | None]], None] | None = None) -> None:
+        self.dom_id = dom_id
+        self._w = {typ: dict(p) for typ, p in (wartosci or {}).items()}
+        self._zapisywacz = zapisywacz
+
+    def get(self, typ: str, pole: str) -> str | None:
+        return self._w.get(typ, {}).get(pole)
+
+    def typu(self, typ: str) -> dict[str, str]:
+        return dict(self._w.get(typ, {}))
+
+    def pola(self) -> dict[str, tuple[str, ...]]:
+        return {typ: tuple(sorted(p)) for typ, p in sorted(self._w.items()) if p}
+
+    def zapisz(self, typ: str, pole: str, wartosc: str) -> None:
+        if self._zapisywacz is None:
+            raise RuntimeError(f"dom {self.dom_id}: sekrety tylko do odczytu")
+        self._zapisywacz(typ, {pole: wartosc})
+        self._w.setdefault(typ, {})[pole] = wartosc
+
+    def __repr__(self) -> str:
+        return f"SekretyDomu(dom={self.dom_id}, pola={self.pola()})"
+
+    __str__ = __repr__
+
+
+@dataclass
+class PlanDomu:
+    """Konfiguracja domu w ksztalcie tabel (konfiguracja_domu.plan_z_home):
+    to, co `dom-importuj` zapisuje, i to, z czego powstaje HomeConfig."""
+
+    strefa: str
+    ustawienia: dict
+    dzieci: list[str]
+    #: Wiersze `urzadzenia`: nazwa, dziecko (nazwa albo None), rodzaj,
+    #: source_ids, nextdns_profile, unifi_mac, unifi_ip, udid, host, ustawienia.
+    urzadzenia: list[dict]
+    #: typ -> (wlaczona, jawne ustawienia)
+    integracje: dict[str, tuple[bool, dict]]
+    #: typ -> {pole: wartosc}; poza `dozwolone_*` jedyne miejsce z sekretami.
+    sekrety: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
+    dozwolone_sieci: list[str] = field(default_factory=list)
+    dozwolone_hosty: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DaneDomu:
+    """Wszystko z bazy panelu o jednym domu (bez odszyfrowania)."""
+
+    dom: Dom
+    dzieci: list[str]
+    urzadzenia: list[dict]
+    integracje: list[Integracja]
+
+
+def _transakcja(conn: sqlite3.Connection) -> contextlib.AbstractContextManager:
+    @contextlib.contextmanager
+    def tx():
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return tx()
+
+
+def _wiersz_domu(conn: sqlite3.Connection, dom_id: int) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM domy WHERE id = ?", (dom_id,)).fetchone()
+    if row is None:
+        raise LookupError(f"nie ma domu {dom_id}")
+    return row
+
+
+def _dek_conn(conn: sqlite3.Connection, dom_id: int, sejf: Sejf, *, utworz: bool) -> bytes:
+    row = _wiersz_domu(conn, dom_id)
+    if row["dek_zaszyfrowany"] is None:
+        if not utworz:
+            from .sejf import SejfError  # noqa: PLC0415
+
+            raise SejfError(f"dom {dom_id} nie ma klucza danych (DEK)")
+        dek, blob, kid = sejf.nowy_dek(dom_id)
+        conn.execute("UPDATE domy SET dek_zaszyfrowany = ?, kek_id = ? WHERE id = ?",
+                     (blob, kid, dom_id))
+        return dek
+    return sejf.odpakuj_dek(dom_id, row["dek_zaszyfrowany"], row["kek_id"])
+
+
+def _podbij_wersje(conn: sqlite3.Connection, dom_id: int) -> None:
+    conn.execute("UPDATE domy SET wersja = wersja + 1 WHERE id = ?", (dom_id,))
+
+
+def _integracja(row: sqlite3.Row) -> Integracja:
+    return Integracja(row["dom_id"], row["typ"], bool(row["wlaczona"]),
+                      _json(row["ustawienia"], {}), tuple(_json(row["sekrety_pola"], [])),
+                      row["zmienione_przez"], row["zmienione_at"])
+
+
+def _sprawdz_pola(typ: str, pola: Sequence[str]) -> None:
+    if typ not in POLA_SEKRETOW:
+        raise ValueError(f"nieznany typ integracji {typ!r} "
+                         f"(dozwolone: {', '.join(TYPY_INTEGRACJI)})")
+    zle = sorted(set(pola) - set(POLA_SEKRETOW[typ]))
+    if zle:
+        raise ValueError(f"integracja {typ}: nieznane pola sekretow {zle} "
+                         f"(dozwolone: {', '.join(POLA_SEKRETOW[typ])})")
+
+
+def zapisz_integracje_conn(conn: sqlite3.Connection, dom_id: int, typ: str, *, sejf: Sejf,
+                           wlaczona: bool | None = None, ustawienia: dict | None = None,
+                           sekrety: Mapping[str, str | None] | None = None,
+                           kto: str | None = None, teraz: float | None = None) -> None:
+    """Upsert integracji w transakcji wolajacego. `sekrety`: pole -> wartosc
+    (None = usun pole); pola nie wymienione zostaja. Bez walidacji ustawien
+    i adresow — robi ja RejestrDomow.zapisz_integracje (panel) i porownanie
+    w dom-importuj. Audyt bez wartosci."""
+    sekrety = dict(sekrety or {})
+    _sprawdz_pola(typ, list(sekrety))
+    teraz = time.time() if teraz is None else teraz
+    stary = conn.execute("SELECT * FROM integracje WHERE dom_id = ? AND typ = ?",
+                         (dom_id, typ)).fetchone()
+    blob = stary["sekrety"] if stary else None
+    pola = list(_json(stary["sekrety_pola"], [])) if stary else []
+    if sekrety:
+        from .sejf import odszyfruj_sekrety, zaszyfruj_sekrety  # noqa: PLC0415
+
+        dek = _dek_conn(conn, dom_id, sejf, utworz=True)
+        biezace = odszyfruj_sekrety(dek, dom_id, typ, blob)
+        for pole, wartosc in sekrety.items():
+            if wartosc is None or not str(wartosc).strip():
+                biezace.pop(pole, None)
+            else:
+                biezace[pole] = str(wartosc)
+        blob = zaszyfruj_sekrety(dek, dom_id, typ, biezace) if biezace else None
+        pola = sorted(biezace)
+    nowe_wlaczona = bool(stary["wlaczona"]) if (wlaczona is None and stary) else bool(wlaczona)
+    nowe_ustawienia = (ustawienia if ustawienia is not None
+                       else (_json(stary["ustawienia"], {}) if stary else {}))
+    conn.execute(
+        "INSERT INTO integracje (dom_id, typ, wlaczona, ustawienia, sekrety, sekrety_pola, "
+        "zmienione_przez, zmienione_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT (dom_id, typ) DO UPDATE SET wlaczona = excluded.wlaczona, "
+        "ustawienia = excluded.ustawienia, sekrety = excluded.sekrety, "
+        "sekrety_pola = excluded.sekrety_pola, zmienione_przez = excluded.zmienione_przez, "
+        "zmienione_at = excluded.zmienione_at",
+        (dom_id, typ, int(nowe_wlaczona), json.dumps(nowe_ustawienia, ensure_ascii=False,
+                                                     sort_keys=True),
+         blob, json.dumps(pola), kto, teraz),
+    )
+    _podbij_wersje(conn, dom_id)
+    opis = [f"integracja {typ}: {'wlaczona' if nowe_wlaczona else 'wylaczona'}"]
+    if ustawienia is not None:
+        opis.append(f"ustawienia: {', '.join(sorted(ustawienia)) or '-'}")
+    if sekrety:
+        opis.append(f"sekrety zmienione: {', '.join(sorted(sekrety))}")
+    _audyt(conn, teraz, dom_id, kto, "integracja.zapis", "; ".join(opis))
+
+
+def sekrety_domu_conn(conn: sqlite3.Connection, dom_id: int, sejf: Sejf) -> SekretyDomu:
+    """Odszyfrowane sekrety wszystkich integracji domu. SejfError, gdy
+    ktoras sie nie odszyfrowuje — dom nie startuje z polowa sekretow."""
+    from .sejf import odszyfruj_sekrety  # noqa: PLC0415
+
+    rows = conn.execute("SELECT typ, sekrety FROM integracje WHERE dom_id = ? ORDER BY typ",
+                        (dom_id,)).fetchall()
+    if not any(r["sekrety"] for r in rows):
+        return SekretyDomu(dom_id, {})
+    dek = _dek_conn(conn, dom_id, sejf, utworz=False)
+    return SekretyDomu(dom_id, {r["typ"]: odszyfruj_sekrety(dek, dom_id, r["typ"], r["sekrety"])
+                                for r in rows if r["sekrety"]})
+
+
+def dane_domu_conn(conn: sqlite3.Connection, dom_id: int) -> DaneDomu:
+    dom = _dom(_wiersz_domu(conn, dom_id))
+    dzieci = {r["id"]: r["nazwa"] for r in conn.execute(
+        "SELECT id, nazwa FROM dzieci WHERE dom_id = ? ORDER BY kolejnosc, id", (dom_id,))}
+    urzadzenia = []
+    for r in conn.execute("SELECT * FROM urzadzenia WHERE dom_id = ? ORDER BY id", (dom_id,)):
+        urzadzenia.append({
+            "nazwa": r["nazwa"], "dziecko": dzieci.get(r["dziecko_id"]), "rodzaj": r["rodzaj"],
+            "source_ids": _json(r["source_ids"], []), "nextdns_profile": r["nextdns_profile"],
+            "unifi_mac": r["unifi_mac"], "unifi_ip": r["unifi_ip"], "udid": r["udid"],
+            "host": r["host"], "mdm": bool(r["mdm"]), "ustawienia": _json(r["ustawienia"], {}),
+        })
+    integracje = [_integracja(r) for r in conn.execute(
+        "SELECT * FROM integracje WHERE dom_id = ? ORDER BY typ", (dom_id,))]
+    return DaneDomu(dom, list(dzieci.values()), urzadzenia, integracje)
+
+
+def zapisz_dane_domu_conn(conn: sqlite3.Connection, dom_id: int, plan: PlanDomu, *,
+                          sejf: Sejf, kto: str | None = None,
+                          teraz: float | None = None) -> None:
+    """Zastepuje dzieci, urzadzenia i integracje domu planem (dom-importuj).
+    W transakcji wolajacego — wolajacy porownuje wynik i dopiero commituje."""
+    from .devicekind import RODZAJ_W_BAZIE  # noqa: PLC0415
+
+    teraz = time.time() if teraz is None else teraz
+    _wiersz_domu(conn, dom_id)
+    obce = sorted(set(plan.sekrety) - set(plan.integracje))
+    if obce:
+        raise ValueError(f"sekrety dla integracji {obce}, ktorych nie ma w planie")
+    conn.execute("DELETE FROM integracje WHERE dom_id = ?", (dom_id,))
+    conn.execute("DELETE FROM urzadzenia WHERE dom_id = ?", (dom_id,))
+    conn.execute("DELETE FROM dzieci WHERE dom_id = ?", (dom_id,))
+    id_dziecka = {}
+    for i, nazwa in enumerate(plan.dzieci):
+        cur = conn.execute("INSERT INTO dzieci (dom_id, nazwa, kolejnosc) VALUES (?, ?, ?)",
+                           (dom_id, nazwa, i))
+        id_dziecka[nazwa] = cur.lastrowid
+    for u in plan.urzadzenia:
+        conn.execute(
+            "INSERT INTO urzadzenia (dom_id, dziecko_id, rodzaj, nazwa, source_ids, "
+            "nextdns_profile, unifi_mac, unifi_ip, udid, host, mdm, ustawienia) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (dom_id, id_dziecka.get(u.get("dziecko")) if u.get("dziecko") else None,
+             RODZAJ_W_BAZIE.get(u["rodzaj"], u["rodzaj"]), u["nazwa"],
+             json.dumps(u.get("source_ids") or []), u.get("nextdns_profile"),
+             u.get("unifi_mac"), u.get("unifi_ip"), u.get("udid"), u.get("host"),
+             int(bool(u.get("mdm"))),
+             json.dumps(u.get("ustawienia") or {}, ensure_ascii=False, sort_keys=True)),
+        )
+    for typ, (wlaczona, ustawienia) in plan.integracje.items():
+        zapisz_integracje_conn(conn, dom_id, typ, sejf=sejf, wlaczona=wlaczona,
+                               ustawienia=ustawienia, sekrety=plan.sekrety.get(typ),
+                               kto=kto, teraz=teraz)
+    conn.execute(
+        "UPDATE domy SET strefa = ?, ustawienia = ?, dozwolone_sieci = ?, dozwolone_hosty = ? "
+        "WHERE id = ?",
+        (plan.strefa, json.dumps(plan.ustawienia, ensure_ascii=False, sort_keys=True),
+         json.dumps(plan.dozwolone_sieci), json.dumps(plan.dozwolone_hosty), dom_id),
+    )
+    _podbij_wersje(conn, dom_id)
+    _audyt(conn, teraz, dom_id, kto, "dom.import",
+           f"dzieci: {len(plan.dzieci)}, urzadzenia: {len(plan.urzadzenia)}, integracje: "
+           f"{', '.join(sorted(plan.integracje)) or '-'}, sieci: "
+           f"{', '.join(plan.dozwolone_sieci) or '-'}")
 
 
 # ==================================================================== rejestr
@@ -547,10 +872,222 @@ class RejestrDomow:
                 conn.execute("ROLLBACK")
                 raise
 
+    # ------------------------------------------------------------ E2: domy
+    def dodaj_dom(self, nazwa: str, *, strefa: str = "Europe/Warsaw",
+                  kto: str | None = None) -> int:
+        """Nowy dom z konfiguracja w bazie (`baza`). Bez czlonkow — zaklada
+        go administrator instancji (CLI `dom-dodaj` w E6)."""
+        teraz = time.time()
+        with self._conn() as conn, _transakcja(conn):
+            cur = conn.execute(
+                "INSERT INTO domy (nazwa, strefa, zrodlo_konfiguracji, utworzony_at) "
+                "VALUES (?, ?, ?, ?)", (nazwa, strefa, ZRODLO_BAZA, teraz))
+            dom_id = int(cur.lastrowid)
+            _audyt(conn, teraz, dom_id, kto, "dom.dodaj", f"dom {dom_id} zalozony")
+        return dom_id
+
+    def ustaw_zrodlo(self, dom_id: int, zrodlo: str, *, kto: str | None = None) -> None:
+        """`yaml` tylko dla Domu 1 (§6 p. 4: powrot `dom-zrodlo 1 yaml`)."""
+        if zrodlo not in (ZRODLO_YAML, ZRODLO_BAZA):
+            raise ValueError(f"zrodlo {zrodlo!r}: dozwolone {ZRODLO_YAML}, {ZRODLO_BAZA}")
+        if zrodlo == ZRODLO_YAML and dom_id != DOM_1:
+            raise ValueError("konfiguracje z config.yaml moze miec tylko Dom 1")
+        with self._conn() as conn, _transakcja(conn):
+            _wiersz_domu(conn, dom_id)
+            conn.execute("UPDATE domy SET zrodlo_konfiguracji = ? WHERE id = ?",
+                         (zrodlo, dom_id))
+            _podbij_wersje(conn, dom_id)
+            _audyt(conn, time.time(), dom_id, kto, "dom.zrodlo",
+                   f"konfiguracja domu: {zrodlo}")
+
+    def ustaw_sieci(self, dom_id: int, *, sieci: Sequence[str] | None = None,
+                    hosty: Sequence[str] | None = None, kto: str | None = None) -> Dom:
+        """Sieci i hosty, do ktorych integracje domu moga sie laczyc (§3.6).
+        WYLACZNIE administrator instancji (CLI `dom-sieci`), nigdy panel."""
+        from .straznik import sieci_z_tekstu  # noqa: PLC0415
+
+        with self._conn() as conn, _transakcja(conn):
+            _wiersz_domu(conn, dom_id)
+            opis = []
+            if sieci is not None:
+                znormalizowane = [str(n) for n in sieci_z_tekstu(sieci)]
+                conn.execute("UPDATE domy SET dozwolone_sieci = ? WHERE id = ?",
+                             (json.dumps(list(dict.fromkeys(znormalizowane))), dom_id))
+                opis.append(f"sieci: {', '.join(znormalizowane) or '-'}")
+            if hosty is not None:
+                czyste = list(dict.fromkeys(h.strip().lower() for h in hosty if h.strip()))
+                conn.execute("UPDATE domy SET dozwolone_hosty = ? WHERE id = ?",
+                             (json.dumps(czyste), dom_id))
+                opis.append(f"hosty: {', '.join(czyste) or '-'}")
+            _podbij_wersje(conn, dom_id)
+            _audyt(conn, time.time(), dom_id, kto, "dom.sieci", "; ".join(opis) or "bez zmian")
+        dom = self.dom(dom_id)
+        assert dom is not None
+        return dom
+
+    def straznik(self, dom_id: int,
+                 resolver: Callable[[str, int], list[str]] | None = None) -> Straznik:
+        from .straznik import Straznik  # noqa: PLC0415
+
+        dom = self.dom(dom_id)
+        if dom is None:
+            raise LookupError(f"nie ma domu {dom_id}")
+        return Straznik(dom_id, dom.dozwolone_sieci, dom.dozwolone_hosty, resolver=resolver)
+
+    # ------------------------------------------------------ E2: integracje
+    def integracje(self, dom_id: int) -> list[Integracja]:
+        with self._conn() as conn:
+            if not _jest_tabela(conn, "integracje"):
+                return []
+            return [_integracja(r) for r in conn.execute(
+                "SELECT * FROM integracje WHERE dom_id = ? ORDER BY typ", (dom_id,))]
+
+    def integracja(self, dom_id: int, typ: str) -> Integracja | None:
+        found = [i for i in self.integracje(dom_id) if i.typ == typ]
+        return found[0] if found else None
+
+    def zapisz_integracje(self, dom_id: int, typ: str, *, sejf: Sejf,
+                          wlaczona: bool | None = None, ustawienia: dict | None = None,
+                          sekrety: Mapping[str, str | None] | None = None,
+                          kto: str | None = None,
+                          resolver: Callable[[str, int], list[str]] | None = None
+                          ) -> Integracja:
+        """Zapis integracji z panelu (E3a): walidacja ustawien modelem
+        konfiguracji, adresy przez straznika sieci domu (odmowa = ValueError
+        z opisem, bez wartosci sekretow), sekrety tylko do zapisu."""
+        from .konfiguracja_domu import waliduj_integracje  # noqa: PLC0415
+
+        _sprawdz_pola(typ, list(sekrety or {}))
+        obecna = self.integracja(dom_id, typ)
+        do_walidacji = ustawienia if ustawienia is not None else (
+            obecna.ustawienia if obecna else {})
+        skutecznie = wlaczona if wlaczona is not None else bool(obecna and obecna.wlaczona)
+        waliduj_integracje(typ, do_walidacji, self.straznik(dom_id, resolver),
+                           wlaczona=skutecznie)
+        with self._conn() as conn, _transakcja(conn):
+            zapisz_integracje_conn(conn, dom_id, typ, sejf=sejf, wlaczona=wlaczona,
+                                   ustawienia=ustawienia, sekrety=sekrety, kto=kto)
+        wynik = self.integracja(dom_id, typ)
+        assert wynik is not None
+        return wynik
+
+    def sekrety_domu(self, dom_id: int, sejf: Sejf) -> SekretyDomu:
+        """Tylko dla srodowiska domu i testu polaczenia — nigdy do odpowiedzi
+        panelu. Zwrocony obiekt zapisuje zmiany (token aplikacji TV) do bazy."""
+        with self._conn() as conn:
+            wynik = sekrety_domu_conn(conn, dom_id, sejf)
+
+        def zapisz(typ: str, sekrety: dict[str, str | None]) -> None:
+            with self._conn() as conn, _transakcja(conn):
+                zapisz_integracje_conn(conn, dom_id, typ, sejf=sejf, sekrety=sekrety,
+                                       kto=f"dom-{dom_id}")
+
+        return SekretyDomu(dom_id, {t: wynik.typu(t) for t in wynik.pola()}, zapisz)
+
+    def maski(self, dom_id: int, sejf: Sejf) -> dict[str, dict[str, str]]:
+        """typ -> {pole: maska} do panelu i CLI (sejf.maska), bez wartosci."""
+        from .sejf import maska  # noqa: PLC0415
+
+        sekrety = self.sekrety_domu(dom_id, sejf)
+        return {typ: {p: maska(sekrety.get(typ, p) or "") for p in pola}
+                for typ, pola in sekrety.pola().items()}
+
+    def dane_domu(self, dom_id: int) -> DaneDomu:
+        with self._conn() as conn:
+            return dane_domu_conn(conn, dom_id)
+
+    def sprawdz(self, sejf: Sejf) -> list[tuple[int, str | None, str]]:
+        """Test odtworzenia (§3.3): odszyfrowanie DEK i KAZDEJ integracji
+        kazdego domu. Lista (dom, typ albo None dla DEK, opis bledu)."""
+        from .sejf import SejfError, odszyfruj_sekrety  # noqa: PLC0415
+
+        bledy: list[tuple[int, str | None, str]] = []
+        with self._conn() as conn:
+            for dom in self.domy():
+                rows = conn.execute(
+                    "SELECT typ, sekrety FROM integracje WHERE dom_id = ? AND sekrety IS NOT NULL "
+                    "ORDER BY typ", (dom.id,)).fetchall()
+                if not rows and not dom.ma_dek:
+                    continue
+                try:
+                    dek = _dek_conn(conn, dom.id, sejf, utworz=False)
+                except SejfError as exc:
+                    bledy.append((dom.id, None, str(exc)))
+                    continue
+                for r in rows:
+                    try:
+                        odszyfruj_sekrety(dek, dom.id, r["typ"], r["sekrety"])
+                    except SejfError as exc:
+                        bledy.append((dom.id, r["typ"], str(exc)))
+        return bledy
+
+    # ---------------------------------------------------------- E2: klucze
+    def rotuj_kek(self, sejf: Sejf, *, kto: str | None = None) -> list[int]:
+        """Przepakowanie DEK-ow biezacym KEK (sekrety integracji bez zmian).
+        Wszystko albo nic. Zwraca domy, ktorych DEK przepakowano."""
+        zmienione = []
+        with self._conn() as conn, _transakcja(conn):
+            for row in conn.execute("SELECT id, dek_zaszyfrowany, kek_id FROM domy "
+                                    "WHERE dek_zaszyfrowany IS NOT NULL ORDER BY id").fetchall():
+                nowy = sejf.przepakuj_dek(row["id"], row["dek_zaszyfrowany"], row["kek_id"])
+                if nowy is None:
+                    continue
+                conn.execute("UPDATE domy SET dek_zaszyfrowany = ?, kek_id = ? WHERE id = ?",
+                             (nowy[0], nowy[1], row["id"]))
+                _audyt(conn, time.time(), row["id"], kto, "klucze.rotacja",
+                       f"DEK przepakowany: {row['kek_id']} -> {nowy[1]}")
+                zmienione.append(int(row["id"]))
+        return zmienione
+
+    def rotuj_dek(self, dom_id: int, sejf: Sejf, *, kto: str | None = None) -> list[str]:
+        """Nowy DEK domu i przeszyfrowanie jego integracji (np. po usunieciu
+        zarzadcy). Wszystko albo nic. Zwraca przeszyfrowane typy."""
+        from .sejf import odszyfruj_sekrety, zaszyfruj_sekrety  # noqa: PLC0415
+
+        with self._conn() as conn, _transakcja(conn):
+            row = _wiersz_domu(conn, dom_id)
+            stary = (sejf.odpakuj_dek(dom_id, row["dek_zaszyfrowany"], row["kek_id"])
+                     if row["dek_zaszyfrowany"] is not None else None)
+            dek, blob, kid = sejf.nowy_dek(dom_id)
+            typy = []
+            for r in conn.execute("SELECT typ, sekrety FROM integracje WHERE dom_id = ? "
+                                  "AND sekrety IS NOT NULL ORDER BY typ", (dom_id,)).fetchall():
+                if stary is None:
+                    from .sejf import SejfError  # noqa: PLC0415
+
+                    raise SejfError(f"dom {dom_id}: sekrety bez klucza danych (DEK)")
+                jawne = odszyfruj_sekrety(stary, dom_id, r["typ"], r["sekrety"])
+                conn.execute("UPDATE integracje SET sekrety = ? WHERE dom_id = ? AND typ = ?",
+                             (zaszyfruj_sekrety(dek, dom_id, r["typ"], jawne), dom_id, r["typ"]))
+                typy.append(r["typ"])
+            conn.execute("UPDATE domy SET dek_zaszyfrowany = ?, kek_id = ? WHERE id = ?",
+                         (blob, kid, dom_id))
+            _podbij_wersje(conn, dom_id)
+            _audyt(conn, time.time(), dom_id, kto, "klucze.dom",
+                   f"nowy DEK, przeszyfrowane: {', '.join(typy) or '-'}")
+        return typy
+
+
+def _json(tekst: str | None, domyslnie: Any) -> Any:
+    try:
+        return json.loads(tekst) if tekst else domyslnie
+    except ValueError:
+        return domyslnie
+
 
 def _dom(row: sqlite3.Row) -> Dom:
+    kolumny = set(row.keys())
+
+    def kol(nazwa: str, domyslnie: Any = None) -> Any:
+        return row[nazwa] if nazwa in kolumny else domyslnie
+
     return Dom(row["id"], row["nazwa"], row["strefa"], row["zrodlo_konfiguracji"],
-               row["wersja"], bool(row["zawieszony"]))
+               row["wersja"], bool(row["zawieszony"]),
+               ustawienia=_json(kol("ustawienia"), {}),
+               dozwolone_sieci=tuple(_json(kol("dozwolone_sieci"), [])),
+               dozwolone_hosty=tuple(_json(kol("dozwolone_hosty"), [])),
+               kek_id=kol("kek_id"),
+               ma_dek=kol("dek_zaszyfrowany") is not None)
 
 
 # ============================================================== srodowisko domu

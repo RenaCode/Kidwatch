@@ -124,6 +124,46 @@ def fast_argon2(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture
+def bez_sieci(monkeypatch):
+    """Zadnych polaczen poza petla zwrotna i zadnego DNS (testy domow E2:
+    NextDNS, ntfy, UniFi itd. nie moga dostac ruchu z testu). Proba = blad
+    testu, nie cicha awaria polaczenia."""
+    import ipaddress  # noqa: PLC0415
+    import socket  # noqa: PLC0415
+
+    def lokalny(host) -> bool:
+        try:
+            return ipaddress.ip_address(str(host).split("%")[0]).is_loopback
+        except ValueError:
+            return host == "localhost"
+
+    prawdziwy_getaddrinfo = socket.getaddrinfo
+    prawdziwy_connect = socket.socket.connect
+    prawdziwy_connect_ex = socket.socket.connect_ex
+
+    def getaddrinfo(host, *a, **k):
+        if host is not None and not lokalny(host):
+            raise AssertionError(f"test probowal rozwiazac nazwe {host!r}")
+        return prawdziwy_getaddrinfo(host, *a, **k)
+
+    def sprawdz(adres):
+        if isinstance(adres, tuple) and not lokalny(adres[0]):
+            raise AssertionError(f"test probowal polaczyc sie z {adres[0]!r}")
+
+    def connect(self, adres):
+        sprawdz(adres)
+        return prawdziwy_connect(self, adres)
+
+    def connect_ex(self, adres):
+        sprawdz(adres)
+        return prawdziwy_connect_ex(self, adres)
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
+
+
 def panel_login(port: int, login: str, password: str, totp_secret: str | None = None) -> str:
     """Pelne logowanie do panelu przez HTTP: haslo, a przy koncie z 2FA takze
     kod. Zwraca naglowek Cookie."""

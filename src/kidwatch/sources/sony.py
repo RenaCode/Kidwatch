@@ -73,10 +73,11 @@ class Zrodlo:
 
 class SonyClient:
     def __init__(self, host: str, psk: str | None, *, timeout: float = 5.0,
-                 http: httpx.AsyncClient | None = None) -> None:
+                 http: httpx.AsyncClient | None = None,
+                 transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.base = f"http://{host}/sony"
         self.psk = psk or None
-        self.http = http or httpx.AsyncClient(timeout=timeout)
+        self.http = http or httpx.AsyncClient(timeout=timeout, transport=transport)
 
     async def _rpc(self, service: str, method: str) -> tuple[list | None, list | None]:
         """(result, error) - jedno z nich jest None."""

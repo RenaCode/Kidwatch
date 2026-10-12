@@ -29,6 +29,12 @@ def test_tag_bez_wyscigu():
     assert checkout["with"]["fetch-depth"] == 0
 
 
+def test_testy_maja_historie_dla_testu_wycofania():
+    """tests/test_domy_e2.py: kod obrazu sprzed E2 z `git archive` (w CI
+    brak commitu = blad, nie pominiecie)."""
+    assert WF["jobs"]["testy"]["steps"][0]["with"]["fetch-depth"] == 0
+
+
 def test_front_testowany_w_ci():
     runs = [s.get("run", "") for s in WF["jobs"]["testy"]["steps"]]
     assert "npm test" in runs and "npm run build" in runs and "npm ci" in runs

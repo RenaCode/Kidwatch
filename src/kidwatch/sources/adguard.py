@@ -81,11 +81,13 @@ class AdGuardSource:
         client: httpx.AsyncClient | None = None,
         sleep=asyncio.sleep,
         now=lambda: datetime.now(UTC),
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.cfg = cfg
         self.store = store
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(timeout=cfg.poll_interval_seconds + 10)
+        self._client = client or httpx.AsyncClient(timeout=cfg.poll_interval_seconds + 10,
+                                                   transport=transport)
         self._sleep = sleep
         self._now = now
         token = base64.b64encode(f"{cfg.username}:{password}".encode()).decode()

@@ -1,4 +1,5 @@
-"""CLI: run | replay | test-notify | summary | weekly | tv | tv-pauza | user-add | domy | ..."""
+"""CLI: run | replay | test-notify | summary | weekly | tv | tv-pauza | user-add | domy |
+dom-importuj | dom-zrodlo | dom-sieci | klucze-rotuj | dom-klucz-rotuj | ..."""
 
 from __future__ import annotations
 
@@ -30,15 +31,24 @@ log = logging.getLogger("kidwatch")
 
 
 # ======================================================================= montaz
+def _transport(cfg: HomeConfig):
+    """Transport ze straznikiem sieci domu (straznik.py) albo None — Dom 1
+    z config.yaml laczy sie jak przed domami."""
+    from .straznik import transport  # noqa: PLC0415
+
+    return transport(cfg.straznik)
+
+
 def build_notifiers(cfg: HomeConfig, bramka: BramkaConfig | None) -> list[Notifier]:
     """Kanaly domu (ntfy, Home Assistant) i wspolna bramka instancji."""
     notifiers: list[Notifier] = []
     ntfy = cfg.notifiers.ntfy
     if ntfy and ntfy.enabled:
-        notifiers.append(NtfyNotifier(ntfy, token=ntfy.token()))
+        notifiers.append(NtfyNotifier(ntfy, token=ntfy.token(), transport=_transport(cfg)))
     ha = cfg.notifiers.homeassistant
     if ha and ha.enabled:
-        notifiers.append(HomeAssistantNotifier(ha, webhook_id=ha.webhook_id()))
+        notifiers.append(HomeAssistantNotifier(ha, webhook_id=ha.webhook_id(),
+                                               transport=_transport(cfg)))
     if bramka and bramka.enabled:
         notifiers.append(BramkaNotifier(bramka, key=bramka.key()))
     return notifiers
@@ -93,7 +103,9 @@ def build_source(cfg: HomeConfig, store: Store):
             # przyjmuje jedna wartosc, wiec filtrujemy lokalnie.
             device_filter = cfg.devices[0].source_ids[0]
         key = nx.api_key()
-        gate = ConnectGate(nx.connect_spacing_seconds)
+        # Bramka per klucz API (konto NextDNS, §5.2): dwa domy na jednym koncie
+        # dziela limit 429, domy z osobnymi kontami — nie.
+        gate = ConnectGate.dla_klucza(key, nx.connect_spacing_seconds)
         return MultiNextDnsSource([
             NextDnsSource(
                 cfg=nx,
@@ -103,6 +115,7 @@ def build_source(cfg: HomeConfig, store: Store):
                 profile_id=profile,
                 cursor_key=f"nextdns:{profile}",
                 gate=gate,
+                transport=_transport(cfg),
             )
             for profile in profiles
         ])
@@ -111,7 +124,7 @@ def build_source(cfg: HomeConfig, store: Store):
 
     ag = cfg.source.adguard
     assert ag is not None
-    return AdGuardSource(cfg=ag, password=ag.password(), store=store)
+    return AdGuardSource(cfg=ag, password=ag.password(), store=store, transport=_transport(cfg))
 
 
 def load_parts(config_path: str) -> tuple[Config, Store, Engine]:
@@ -149,7 +162,12 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
     """Srodowisko domu (domy.HomeRuntime): baza domu, silnik, kolejka z `dom_id`,
     zrodlo DNS i petle wlaczone w konfiguracji domu. Kolejnosc budowy jak
     przed domami — brak sekretu zrodla przerywa start, zanim ruszy panel."""
-    from .domy import HomeRuntime, katalog_domu, sciezka_bazy_domu  # noqa: PLC0415
+    from .domy import (  # noqa: PLC0415
+        HomeRuntime,
+        katalog_domu,
+        katalog_sekretow_domu,
+        sciezka_bazy_domu,
+    )
     from .scheduler import device_loop, source_loop, tick_loop  # noqa: PLC0415
 
     auth_path = inst.panel_auth_path
@@ -201,8 +219,11 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
 
     # Telewizor: ta sama petla co iPady (nieosiagalny = normalny stan, alarm
     # po wielu godzinach), z wlasnym rytmem i progiem.
-    tv = (build_tv_watcher(home, store, katalog_domu(dom_id, inst.store.path))
-          if home.tv.enabled else None)
+    # Dom z konfiguracja w bazie trzyma token aplikacji TV w pamieci poda
+    # (zapisany przez konfiguracja_domu.zbuduj_dom), nie na wolumenie.
+    katalog = (katalog_sekretow_domu(dom_id) if home.sekrety is not None
+               else katalog_domu(dom_id, inst.store.path))
+    tv = build_tv_watcher(home, store, katalog) if home.tv.enabled else None
     if tv is not None:
         log.info("czujnik TV wlaczony: %s (%s), co %.0f s",
                  home.tv.name, home.tv.host, home.tv.poll_seconds)
@@ -229,6 +250,7 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
     from .mdm import MdmWatcher, build_api, mdm_loop  # noqa: PLC0415
 
     mdm_cfg = MdmConfig.model_validate({**home.mdm.model_dump(), "url": inst.mdm.url})
+    mdm_cfg._sekrety = home.mdm._sekrety  # token z sekretow domu (tryb `baza`)
     mdm_api = build_api(mdm_cfg)
     if mdm_api is not None:
         log.info("czujka MDM wlaczona: %s, co %.0f s", mdm_cfg.url, mdm_cfg.poll_seconds)
@@ -249,21 +271,53 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
     return rt
 
 
+def home_domu_z_bazy(rejestr, dom_id: int) -> HomeConfig:
+    """Konfiguracja domu w trybie `baza` (E2): sekrety z sejfu (KIDWATCH_KEK),
+    straznik sieci, pliki z sekretow w pamieci poda."""
+    from .konfiguracja_domu import zbuduj_dom  # noqa: PLC0415
+    from .sejf import Sejf  # noqa: PLC0415
+
+    return zbuduj_dom(rejestr, dom_id, Sejf.z_srodowiska())
+
+
 async def cmd_run(args) -> int:
-    from .domy import DOM_1, Nadzorca, RejestrDomow  # noqa: PLC0415
+    from .domy import DOM_1, ZRODLO_BAZA, Nadzorca, RejestrDomow  # noqa: PLC0415
+    from .sejf import SejfError  # noqa: PLC0415
+    from .straznik import OdmowaSieci  # noqa: PLC0415
 
     cfg = Config.load(args.config)
     inst, home = cfg.split()
+    rejestr = RejestrDomow(inst.panel_auth_path)
     # Dom 1 i czlonkostwa w panel-auth.db (docs/architektura-domy.md §6).
-    # Monitoring od nich w E1 nie zalezy, wiec blad bazy panelu go nie zatrzyma.
+    # W trybie `yaml` monitoring od nich nie zalezy, wiec blad bazy panelu
+    # go nie zatrzyma (jak w E1).
+    w_bazie: list[int] = []
     try:
-        raport = RejestrDomow(inst.panel_auth_path).migruj(strefa=home.timezone)
+        raport = rejestr.migruj(strefa=home.timezone)
         if raport.zmiany:
             log.info("domy: Dom 1 %s, uzgodnione czlonkostwa: %d, nowe kolumny: %s",
                      "zalozony" if raport.dom_1_zalozony else "bez zmian",
                      len(raport.uzgodnione), list(raport.kolumny) or "-")
+        w_bazie = [d.id for d in rejestr.domy() if d.zrodlo_konfiguracji == ZRODLO_BAZA]
     except sqlite3.Error:
         log.exception("domy: migracja panel-auth.db nie powiodla sie")
+    inne = [d for d in w_bazie if d != DOM_1]
+    if inne:
+        # Kolejne domy wymagaja izolacji powiadomien i awarii (E3a/E3b).
+        log.warning("domy %s maja konfiguracje w bazie — ich uruchamianie to etap E3b, "
+                    "na razie chodzi tylko Dom 1", inne)
+    if DOM_1 in w_bazie:
+        # KEK, szyfrogram albo adres spoza sieci domu — Dom 1 nie startuje
+        # z polowa konfiguracji. Brak KEK nie dotyczy trybu `yaml`.
+        try:
+            home = home_domu_z_bazy(rejestr, DOM_1)
+        except (SejfError, OdmowaSieci, ValueError, LookupError, OSError,
+                sqlite3.Error) as exc:
+            log.error("Dom 1: konfiguracja z bazy nie wystartowala — %s. Powrot do "
+                      "config.yaml: kidwatch dom-zrodlo 1 yaml (docs/sejf-domow.md)", exc)
+            return 2
+        log.info("Dom 1: konfiguracja z bazy (sekrety: %s, sieci: %s)",
+                 home.sekrety, [str(n) for n in home.straznik.sieci])
     runtime = build_home_runtime(DOM_1, inst, home, Classifier(inst.app_map_path))
 
     log.info(
@@ -522,7 +576,8 @@ def build_tv_watcher(cfg: HomeConfig, store: Store, katalog: Path):
     )
 
     try:
-        shell = AdbTcpShell(cfg.tv.host, cfg.tv.port, cfg.tv.adb_key_dir, cfg.tv.timeout_seconds)
+        shell = AdbTcpShell(cfg.tv.host, cfg.tv.port, cfg.tv.adb_key_dir, cfg.tv.timeout_seconds,
+                            straznik=cfg.straznik)
     except (FileNotFoundError, ValueError) as exc:
         if not cfg.tv.aplikacja:
             log.error("%s: czujnik TV wylaczony — %s", cfg.tv.name, exc)
@@ -556,8 +611,13 @@ def build_tv_app(cfg: HomeConfig, shell, katalog_domu: Path):
     if not cfg.tv.aplikacja:
         return None
     katalog = katalog_domu / "tv-app"
-    app = tv_app.AplikacjaTv(cfg.tv.host, katalog, timeout=cfg.tv.timeout_seconds)
+    app = tv_app.AplikacjaTv(cfg.tv.host, katalog, timeout=cfg.tv.timeout_seconds,
+                             transport=_transport(cfg))
     app.adb = shell if isinstance(shell, AdbTcpShell) else None
+    sekrety = cfg.sekrety
+    if sekrety is not None and hasattr(sekrety, "zapisz"):
+        # Tryb `baza`: plik tokenu jest w pamieci poda — trwala kopia w bazie.
+        app.po_sparowaniu = lambda token: sekrety.zapisz("tv", "app_token", token)
     tv_app.AKTYWNA = app
     log.info("%s: aplikacja Kidwatch TV (%s:%d) - %s", cfg.tv.name, cfg.tv.host, tv_app.PORT,
              "sparowana" if app.sparowana else "do instalacji/parowania w panelu")
@@ -575,13 +635,14 @@ def build_tv_traffic(cfg: HomeConfig, store: Store, probe, aplikacja=None):
     key = cfg.unifi.api_key() if cfg.unifi.enabled else None
     if cfg.tv.traffic and key and cfg.unifi.cert_sha256:
         client = UnifiClient(cfg.unifi.url, cfg.unifi.site, key, cfg.unifi.cert_sha256,
-                             cfg.unifi.timeout_seconds)
+                             cfg.unifi.timeout_seconds, straznik=cfg.straznik)
         licznik = LicznikRuchu(client, cfg.tv.host, cfg.tv.unifi_mac,
                                okno_min=cfg.tv.traffic_window_minutes,
                                odswiez_s=cfg.unifi.poll_seconds)
     sony = None
     if cfg.tv.sony:
-        sony = SonyClient(cfg.tv.host, cfg.tv.sony_psk(), timeout=cfg.tv.timeout_seconds)
+        sony = SonyClient(cfg.tv.host, cfg.tv.sony_psk(), timeout=cfg.tv.timeout_seconds,
+                          transport=_transport(cfg))
     if licznik is None and sony is None and aplikacja is None:
         log.info("%s: odczyt zapasowy wylaczony (brak UniFi i tv.sony: false)", cfg.tv.name)
         return None
@@ -616,7 +677,8 @@ def build_game_time(cfg: HomeConfig, store: Store, dispatcher, auth_path: str, d
         )
     nx = cfg.source.nextdns
     assert nx is not None
-    client = ParentalControlClient(nx.base_url, nx.api_key(), timeout=cfg.game_time.timeout_seconds)
+    client = ParentalControlClient(nx.base_url, nx.api_key(), timeout=cfg.game_time.timeout_seconds,
+                                   transport=_transport(cfg))
     return GameTime(cfg, store, GameRequests(auth_path, dom_id=dom_id), client, dispatcher)
 
 
@@ -641,7 +703,7 @@ def build_unifi_watcher(cfg: HomeConfig, store: Store):
         log.warning("czujka UniFi wylaczona: %s", why)
         return None
     client = UnifiClient(cfg.unifi.url, cfg.unifi.site, key, cfg.unifi.cert_sha256,
-                         cfg.unifi.timeout_seconds)
+                         cfg.unifi.timeout_seconds, straznik=cfg.straznik)
     return UnifiWatcher(
         client,
         devices,
@@ -667,11 +729,22 @@ def build_watchers(cfg: HomeConfig, store: Store, records_path: Path):
         DeviceUnavailable,
         DeviceWatcher,
     )
+    from .straznik import OdmowaSieci, adres_literalny  # noqa: PLC0415
 
     out = []
     for dev in cfg.devices:
         if not dev.reads_device:
             continue
+        if cfg.straznik is not None:
+            # pymobiledevice3 sam rozwiazuje nazwe — w domu z konfiguracja w bazie
+            # tylko adres IP sprawdzony przez straznika (bez DNS rebinding).
+            try:
+                if adres_literalny(dev.host or "") is None:
+                    raise OdmowaSieci(f"host {dev.host} to nie adres IP")
+                cfg.straznik.sprawdz_ip(adres_literalny(dev.host or ""), dev.host)
+            except OdmowaSieci as exc:
+                log.error("%s: pomijam odczyt z urzadzenia — %s", dev.display_name, exc)
+                continue
         try:
             probe = DeviceProbe.over_tcp(
                 DeviceTarget(udid=dev.udid, host=dev.host),
@@ -1248,19 +1321,23 @@ async def cmd_konta_tryb(args) -> int:
 # ========================================================================= domy
 async def cmd_domy(args) -> int:
     """Domy z panel-auth.db i ich czlonkowie (docs/architektura-domy.md).
-    Uruchamia migracje (idempotentna), wiec dziala tez przed pierwszym `run`."""
+    Uruchamia migracje (idempotentna), wiec dziala tez przed pierwszym `run`.
+    `--sprawdz`: odszyfrowanie wszystkich integracji (test kopii, §3.3)."""
     from .domy import ZRODLO_YAML, RejestrDomow  # noqa: PLC0415
 
-    cfg = Config.load(args.config)
-    rejestr = RejestrDomow(cfg.panel_auth_path)
-    raport = rejestr.migruj(strefa=cfg.timezone)
+    # --baza: kopia panel-auth.db (test odtworzenia, §3.3) — bez config.yaml.
+    baza = getattr(args, "baza", None)
+    cfg = None if baza else Config.load(args.config)
+    rejestr = RejestrDomow(baza or cfg.panel_auth_path)
+    raport = rejestr.migruj(strefa=cfg.timezone if cfg else None)
     if raport.zmiany:
         print(f"migracja: Dom 1 {'zalozony' if raport.dom_1_zalozony else 'bez zmian'}, "
               f"uzgodnione czlonkostwa: {', '.join(raport.uzgodnione) or '-'}")
     for dom in rejestr.domy():
         zrodlo = ("config.yaml" if dom.zrodlo_konfiguracji == ZRODLO_YAML
                   else dom.zrodlo_konfiguracji)
-        strefa = cfg.timezone if dom.zrodlo_konfiguracji == ZRODLO_YAML else dom.strefa
+        strefa = (cfg.timezone if cfg and dom.zrodlo_konfiguracji == ZRODLO_YAML
+                  else dom.strefa)
         print(f"{dom.id}. {dom.nazwa} — konfiguracja: {zrodlo}, strefa: {strefa}, "
               f"wersja: {dom.wersja}{', ZAWIESZONY' if dom.zawieszony else ''}")
         czlonkowie = rejestr.czlonkowie(dom.id)
@@ -1270,9 +1347,154 @@ async def cmd_domy(args) -> int:
             odst = " ".join([f"+{n}" for n in sorted(c.nadane)]
                             + [f"-{n}" for n in sorted(c.odebrane)])
             print(f"   {c.login:24} {c.rola}{f' ({odst})' if odst else ''}")
+        for i in rejestr.integracje(dom.id):
+            print(f"   integracja {i.typ:14} {'wlaczona ' if i.wlaczona else 'wylaczona'} "
+                  f"sekrety: {', '.join(i.sekrety_pola) or '-'}")
+        if dom.dozwolone_sieci or dom.dozwolone_hosty:
+            print(f"   sieci: {', '.join(dom.dozwolone_sieci) or '-'}; "
+                  f"hosty: {', '.join(dom.dozwolone_hosty) or '-'}")
     bez = rejestr.konta_bez_domu()
     if bez:
         print(f"konta bez zadnego domu: {', '.join(bez)}")
+    if getattr(args, "sprawdz", False):
+        from .konfiguracja_domu import zbuduj_dom  # noqa: PLC0415
+        from .sejf import SejfError  # noqa: PLC0415
+        from .straznik import OdmowaSieci  # noqa: PLC0415
+
+        sejf = _sejf()
+        bledy = rejestr.sprawdz(sejf)
+        for dom in rejestr.domy():
+            if dom.zrodlo_konfiguracji == ZRODLO_YAML or any(b[0] == dom.id for b in bledy):
+                continue
+            try:
+                zbuduj_dom(rejestr, dom.id, sejf, materializuj=False)
+            except (SejfError, OdmowaSieci, ValueError) as exc:
+                bledy.append((dom.id, "konfiguracja", str(exc)))
+        for dom_id, typ, blad in bledy:
+            print(f"BLAD: Dom {dom_id} {typ or 'DEK'}: {blad}")
+        print(f"sprawdzenie kluczem {sejf.kek_id}: "
+              f"{'wszystko sie odszyfrowuje' if not bledy else f'{len(bledy)} bledow'}")
+        return 1 if bledy else 0
+    return 0
+
+
+def _sejf():
+    from .sejf import Sejf  # noqa: PLC0415
+
+    return Sejf.z_srodowiska()
+
+
+def _rejestr(cfg: Config):
+    from .domy import RejestrDomow  # noqa: PLC0415
+
+    rejestr = RejestrDomow(cfg.panel_auth_path)
+    rejestr.migruj(strefa=cfg.timezone)
+    return rejestr
+
+
+async def cmd_dom_importuj(args) -> int:
+    """Dom 1: config.yaml + sekrety z env/plikow -> baza (§6 p. 4)."""
+    from .domy import DOM_1, katalog_domu  # noqa: PLC0415
+    from .konfiguracja_domu import importuj, sekrety_z_yaml  # noqa: PLC0415
+
+    if args.dom != DOM_1:
+        print("Konfiguracje w config.yaml ma tylko Dom 1.", file=sys.stderr)
+        return 2
+    cfg = Config.load(args.config)
+    inst, home = cfg.split()
+    rejestr = _rejestr(cfg)
+    sekrety = sekrety_z_yaml(home, katalog_domu(DOM_1, inst.store.path))
+    raport = importuj(rejestr, DOM_1, home, sekrety, sejf=_sejf(), zapisz=args.zapisz,
+                      kto="cli")
+    print(f"Dom {raport.dom_id}: strefa {raport.strefa}")
+    print(f"  dzieci: {', '.join(raport.dzieci)}")
+    print(f"  urzadzenia: {', '.join(raport.urzadzenia)}")
+    for typ, (wlaczona, maski) in raport.integracje.items():
+        pola = ", ".join(f"{p}={m}" for p, m in maski.items()) or "bez sekretow"
+        print(f"  {typ:14} {'wlaczona ' if wlaczona else 'wylaczona'}  {pola}")
+    print(f"  dozwolone_sieci: {', '.join(raport.dozwolone_sieci) or '-'}")
+    print(f"  dozwolone_hosty: {', '.join(raport.dozwolone_hosty) or '-'}")
+    for o in raport.ostrzezenia:
+        print(f"  UWAGA: {o}")
+    if raport.roznice:
+        print("ROZNICE config.yaml <-> baza (nic nie zapisano):")
+        for r in raport.roznice:
+            print(f"  - {r}")
+        return 1
+    print("Porownanie: konfiguracja z bazy identyczna z config.yaml, sekrety identyczne.")
+    if raport.zapisano:
+        print("ZAPISANO. Dom 1 ma teraz konfiguracje z bazy — dziala po restarcie poda.\n"
+              "Powrot: kidwatch dom-zrodlo 1 yaml (+ restart).")
+    else:
+        print("Podglad — nic nie zapisano. Zapis: dom-importuj 1 --zapisz")
+    return 0
+
+
+async def cmd_dom_zrodlo(args) -> int:
+    from .domy import ZRODLO_BAZA  # noqa: PLC0415
+    from .konfiguracja_domu import zbuduj_dom  # noqa: PLC0415
+    from .straznik import OdmowaSieci  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    rejestr = _rejestr(cfg)
+    try:
+        if args.zrodlo == ZRODLO_BAZA:
+            # Przelaczenie tylko na konfiguracje, ktora sie buduje i odszyfrowuje.
+            zbuduj_dom(rejestr, args.dom, _sejf(), materializuj=False)
+        rejestr.ustaw_zrodlo(args.dom, args.zrodlo, kto="cli")
+    except (ValueError, LookupError, OdmowaSieci) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(f"Dom {args.dom}: konfiguracja z {args.zrodlo}. Dziala po restarcie poda.")
+    return 0
+
+
+async def cmd_dom_sieci(args) -> int:
+    """Sieci i hosty domu (§3.6) — wylacznie administrator instancji (CLI)."""
+    cfg = Config.load(args.config)
+    rejestr = _rejestr(cfg)
+    dom = rejestr.dom(args.dom)
+    if dom is None:
+        print(f"nie ma domu {args.dom}", file=sys.stderr)
+        return 2
+    sieci = list(dom.dozwolone_sieci)
+    hosty = list(dom.dozwolone_hosty)
+    zmiana = bool(args.dodaj or args.usun or args.host or args.bez_hosta or args.wyczysc)
+    if args.wyczysc:
+        sieci, hosty = [], []
+    sieci = [s for s in [*sieci, *args.dodaj] if s not in args.usun]
+    bez_hosta = {h.strip().lower() for h in args.bez_hosta}
+    hosty = [h for h in [*hosty, *args.host] if h.strip().lower() not in bez_hosta]
+    if zmiana:
+        try:
+            dom = rejestr.ustaw_sieci(args.dom, sieci=sieci, hosty=hosty, kto="cli")
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    print(f"Dom {dom.id}: dozwolone_sieci: {', '.join(dom.dozwolone_sieci) or '-'}")
+    print(f"        dozwolone_hosty: {', '.join(dom.dozwolone_hosty) or '-'}")
+    if zmiana:
+        print("Dziala po restarcie poda (albo przeladowaniu domu w E3b).")
+    return 0
+
+
+async def cmd_klucze_rotuj(args) -> int:
+    from .sejf import KEK_POPRZEDNI_ENV  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    sejf = _sejf()
+    zmienione = _rejestr(cfg).rotuj_kek(sejf, kto="cli")
+    print(f"DEK-i przepakowane kluczem {sejf.kek_id}: "
+          f"{', '.join(f'Dom {d}' for d in zmienione) or 'brak (wszystkie juz na nim)'}")
+    print(f"Teraz usun {KEK_POPRZEDNI_ENV} z Sekretu i zrestartuj poda "
+          f"(docs/sejf-domow.md).")
+    return 0
+
+
+async def cmd_dom_klucz_rotuj(args) -> int:
+    cfg = Config.load(args.config)
+    typy = _rejestr(cfg).rotuj_dek(args.dom, _sejf(), kto="cli")
+    print(f"Dom {args.dom}: nowy klucz danych, przeszyfrowane: {', '.join(typy) or '-'}")
     return 0
 
 
@@ -1408,12 +1630,46 @@ def build_parser() -> argparse.ArgumentParser:
     tryb.add_argument("tryb", nargs="?", choices=("trasy", "konta"),
                       help="bez argumentu: pokaz tryb i kanaly kont")
 
-    sub.add_parser("domy", help="domy i ich czlonkowie (panel-auth.db)")
+    domy_p = sub.add_parser("domy", help="domy i ich czlonkowie (panel-auth.db)")
+    domy_p.add_argument("--sprawdz", action="store_true",
+                        help="odszyfruj wszystkie integracje (test kopii + KIDWATCH_KEK)")
+    domy_p.add_argument("--baza", metavar="PANEL_AUTH_DB",
+                        help="inna baza panelu, np. kopia do testu odtworzenia (bez config.yaml)")
+
+    # Integracje domow i sejf (docs/sejf-domow.md). Tylko z CLI w podzie —
+    # to droga administratora instancji.
+    imp = sub.add_parser("dom-importuj",
+                         help="Dom 1: config.yaml + sekrety -> baza (porownanie pole w pole)")
+    imp.add_argument("dom", type=int)
+    tryb_imp = imp.add_mutually_exclusive_group(required=True)
+    tryb_imp.add_argument("--podglad", action="store_true",
+                          help="pokaz, co zostanie zapisane (sekrety zamaskowane)")
+    tryb_imp.add_argument("--zapisz", action="store_true",
+                          help="zapisz i przelacz dom na konfiguracje z bazy")
+    zrodlo = sub.add_parser("dom-zrodlo", help="skad dom bierze konfiguracje: yaml albo baza")
+    zrodlo.add_argument("dom", type=int)
+    zrodlo.add_argument("zrodlo", choices=("yaml", "baza"))
+    sieci = sub.add_parser("dom-sieci",
+                           help="sieci i hosty, do ktorych integracje domu moga sie laczyc")
+    sieci.add_argument("dom", type=int)
+    sieci.add_argument("--dodaj", action="append", default=[], metavar="CIDR")
+    sieci.add_argument("--usun", action="append", default=[], metavar="CIDR")
+    sieci.add_argument("--host", action="append", default=[], metavar="HOST",
+                       help="host API (nextdns.base_url, ntfy.server) spoza listy wbudowanej")
+    sieci.add_argument("--bez-hosta", action="append", default=[], metavar="HOST")
+    sieci.add_argument("--wyczysc", action="store_true", help="usun wszystkie sieci i hosty")
+    sub.add_parser("klucze-rotuj",
+                   help="przepakuj klucze domow nowym KIDWATCH_KEK (po rotacji KEK)")
+    dkr = sub.add_parser("dom-klucz-rotuj",
+                         help="nowy klucz danych domu i przeszyfrowanie jego integracji")
+    dkr.add_argument("dom", type=int)
 
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .sejf import SejfError  # noqa: PLC0415
+
     args = build_parser().parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -1441,11 +1697,19 @@ def main(argv: list[str] | None = None) -> int:
         "konta-migruj": cmd_konta_migruj,
         "konta-tryb": cmd_konta_tryb,
         "domy": cmd_domy,
+        "dom-importuj": cmd_dom_importuj,
+        "dom-zrodlo": cmd_dom_zrodlo,
+        "dom-sieci": cmd_dom_sieci,
+        "klucze-rotuj": cmd_klucze_rotuj,
+        "dom-klucz-rotuj": cmd_dom_klucz_rotuj,
     }
     try:
         return asyncio.run(handlers[args.command](args))
     except MissingSecretError as exc:
         print(f"\nBRAK SEKRETU: {exc}\n", file=sys.stderr)
+        return 2
+    except SejfError as exc:
+        print(f"\nSEJF: {exc}\n", file=sys.stderr)
         return 2
     except FileNotFoundError as exc:
         print(f"\n{exc}\n", file=sys.stderr)
