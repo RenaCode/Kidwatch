@@ -13,11 +13,19 @@ from dataclasses import dataclass
 from datetime import time
 from datetime import time as dt_time
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from .devicekind import ALIASY, DeviceKindName
 
@@ -40,7 +48,54 @@ class _Base(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class NextDnsConfig(_Base):
+#: (integracja, pole) -> zmienna srodowiskowa: skad sekrety bierze Dom 1
+#: w trybie `yaml` (i kazda instalacja jednodomowa). W trybie `baza` te same
+#: pary czyta dostawca sekretow domu z zaszyfrowanych integracji (domy.py).
+SEKRETY_ZE_SRODOWISKA: dict[tuple[str, str], str] = {
+    ("nextdns", "api_key"): "NEXTDNS_API_KEY",
+    ("adguard", "password"): "ADGUARD_PASSWORD",
+    ("ntfy", "topic"): "NTFY_TOPIC",
+    ("ntfy", "token"): "NTFY_TOKEN",
+    ("homeassistant", "webhook_id"): "HA_WEBHOOK_ID",
+    ("tv", "sony_psk"): "TV_SONY_PSK",
+    ("unifi", "api_key"): "UNIFI_API_KEY",
+    ("mdm", "token"): "MDM_ADMIN_TOKEN",
+}
+#: Kontekst walidacji HomeConfig zbudowanego z bazy: zadnego siegania do env
+#: (temat ntfy Domu 1 z NTFY_TOPIC nie moze trafic do innego domu).
+KONTEKST_Z_BAZY = {"sekrety_z_bazy": True}
+
+
+class DostawcaSekretow(Protocol):
+    """Sekrety JEDNEGO domu: `get("nextdns", "api_key")`. None = brak."""
+
+    dom_id: int
+
+    def get(self, typ: str, pole: str) -> str | None: ...
+
+
+class _ZSekretami(_Base):
+    """Sekcja z sekretami. Bez dostawcy (`_sekrety is None`) — zmienne
+    srodowiskowe dokladnie jak przed domami. Z dostawca — wylacznie on."""
+
+    _sekrety: Any = PrivateAttr(default=None)
+
+    def _sekret(self, typ: str, pole: str, what: str, *, wymagany: bool) -> str | None:
+        env = SEKRETY_ZE_SRODOWISKA[(typ, pole)]
+        if self._sekrety is None:
+            if wymagany:
+                return _require_env(env, what)
+            return os.environ.get(env, "").strip() or None
+        value = (self._sekrety.get(typ, pole) or "").strip() or None
+        if value is None and wymagany:
+            raise MissingSecretError(
+                f"Dom {self._sekrety.dom_id}: brak sekretu {typ}.{pole} ({what}) "
+                f"w integracji domu — ustaw go w panelu albo przez dom-importuj."
+            )
+        return value
+
+
+class NextDnsConfig(_ZSekretami):
     profile_id: str
     raw: bool = False
     server_side_device_filter: bool = False
@@ -58,10 +113,10 @@ class NextDnsConfig(_Base):
     connect_spacing_seconds: float = Field(default=5.0, ge=0)
 
     def api_key(self) -> str:
-        return _require_env("NEXTDNS_API_KEY", "klucz API NextDNS")
+        return self._sekret("nextdns", "api_key", "klucz API NextDNS", wymagany=True)
 
 
-class AdGuardConfig(_Base):
+class AdGuardConfig(_ZSekretami):
     base_url: str
     username: str
     poll_interval_seconds: float = 15.0
@@ -69,7 +124,7 @@ class AdGuardConfig(_Base):
     max_backfill_minutes: int = Field(default=5, ge=0)
 
     def password(self) -> str:
-        return _require_env("ADGUARD_PASSWORD", "haslo do AdGuard Home")
+        return self._sekret("adguard", "password", "haslo do AdGuard Home", wymagany=True)
 
 
 class SourceConfig(_Base):
@@ -349,7 +404,7 @@ class WatchdogConfig(_Base):
     repeat_backoff_max_minutes: int = Field(default=480, ge=1)
 
 
-class NtfyConfig(_Base):
+class NtfyConfig(_ZSekretami):
     enabled: bool = True
     server: str = "https://ntfy.sh"
     # Wymagany tylko przy wlaczonym kanale — wylaczony ntfy nie ma potrzeby
@@ -359,14 +414,17 @@ class NtfyConfig(_Base):
     timeout_seconds: float = 10.0
 
     @model_validator(mode="after")
-    def _topic_from_env_when_empty(self) -> NtfyConfig:
+    def _topic_from_env_when_empty(self, info: ValidationInfo) -> NtfyConfig:
         """Puste `topic` bierze wartosc z NTFY_TOPIC.
 
         Nazwa tematu na ntfy.sh JEST HASLEM — ntfy.sh nie ma kontroli dostepu,
         kto zna nazwe, czyta wszystkie powiadomienia i moze wysylac falszywe.
         Dlatego nie trzymamy jej w repozytorium, a w Sekrecie klastra.
+        Konfiguracja domu z bazy (KONTEKST_Z_BAZY) dostaje temat z sekretow
+        domu juz w danych — srodowiska nie czyta.
         """
-        if not self.topic.strip():
+        z_bazy = bool((info.context or {}).get("sekrety_z_bazy"))
+        if not self.topic.strip() and not z_bazy:
             object.__setattr__(self, "topic", os.environ.get("NTFY_TOPIC", "").strip())
         if self.enabled and not self.topic:
             raise ValueError(
@@ -376,10 +434,10 @@ class NtfyConfig(_Base):
 
     def token(self) -> str | None:
         """Token jest opcjonalny — publiczne tematy na ntfy.sh go nie wymagaja."""
-        return os.environ.get("NTFY_TOKEN", "").strip() or None
+        return self._sekret("ntfy", "token", "token ntfy", wymagany=False)
 
 
-class HomeAssistantConfig(_Base):
+class HomeAssistantConfig(_ZSekretami):
     enabled: bool = False
     base_url: str = ""
     timeout_seconds: float = 10.0
@@ -391,7 +449,8 @@ class HomeAssistantConfig(_Base):
         return self
 
     def webhook_id(self) -> str:
-        return _require_env("HA_WEBHOOK_ID", "identyfikator webhooka Home Assistant")
+        return self._sekret("homeassistant", "webhook_id",
+                            "identyfikator webhooka Home Assistant", wymagany=True)
 
 
 class BramkaConfig(_Base):
@@ -485,7 +544,7 @@ class DeviceReadConfig(HomeDeviceReadConfig, InstanceDeviceReadConfig):
     pass
 
 
-class TvConfig(_Base):
+class TvConfig(_ZSekretami):
     """Czujnik telewizora (Google TV) po ADB/TCP.
 
     Telewizor NIE jest urzadzeniem z `devices`: tamte identyfikuje DNS i kazde
@@ -541,7 +600,7 @@ class TvConfig(_Base):
     aplikacja: bool = True
 
     def sony_psk(self) -> str | None:
-        return os.environ.get("TV_SONY_PSK", "").strip() or None
+        return self._sekret("tv", "sony_psk", "klucz PSK Sony", wymagany=False)
 
     @model_validator(mode="after")
     def _host_when_enabled(self) -> TvConfig:
@@ -550,7 +609,7 @@ class TvConfig(_Base):
         return self
 
 
-class UnifiConfig(_Base):
+class UnifiConfig(_ZSekretami):
     """Lokalne API kontrolera UniFi (UDM) — obecnosc iPadow w domowym Wi-Fi
     i czujka "profil DNS usuniety".
 
@@ -588,7 +647,7 @@ class UnifiConfig(_Base):
         return raw
 
     def api_key(self) -> str | None:
-        return os.environ.get("UNIFI_API_KEY", "").strip() or None
+        return self._sekret("unifi", "api_key", "klucz API UniFi", wymagany=False)
 
 
 #: Identyfikatory uslug kontroli rodzicielskiej NextDNS. API nie ma endpointu
@@ -682,7 +741,7 @@ class GameTimeConfig(_Base):
         return sorted(set(self.services) - NEXTDNS_SERVICES)
 
 
-class HomeMdmConfig(_Base):
+class HomeMdmConfig(_ZSekretami):
     """Wlasny serwer MDM (kidwatch-mdm, osobny pod): alarmy i zakladka panelu.
 
     Token API idzie z MDM_ADMIN_TOKEN (Sekret kidwatch-mdm-admin) — ten sam,
@@ -711,7 +770,7 @@ class HomeMdmConfig(_Base):
     stuck_alert_hours: float = Field(default=24.0, ge=1.0)
 
     def token(self) -> str | None:
-        return os.environ.get("MDM_ADMIN_TOKEN", "").strip() or None
+        return self._sekret("mdm", "token", "token API serwera MDM", wymagany=False)
 
 
 class InstanceMdmConfig(_Base):
@@ -912,6 +971,30 @@ class HomeConfig(_Base):
     @property
     def tz(self) -> ZoneInfo:
         return ZoneInfo(self.timezone)
+
+    # ------------------------------------------------- sekrety i siec domu
+    _dostawca: Any = PrivateAttr(default=None)
+    _straznik: Any = PrivateAttr(default=None)
+
+    def ustaw_srodowisko(self, sekrety: DostawcaSekretow | None = None,
+                         straznik: Any = None) -> HomeConfig:
+        """Dostawca sekretow domu i straznik sieci (straznik.Straznik).
+        Bez nich (Dom 1 z config.yaml) — env i polaczenia jak przed domami."""
+        self._dostawca, self._straznik = sekrety, straznik
+        for sekcja in (self.source.nextdns, self.source.adguard, self.notifiers.ntfy,
+                       self.notifiers.homeassistant, self.tv, self.unifi, self.mdm):
+            if sekcja is not None:
+                sekcja._sekrety = sekrety
+        return self
+
+    @property
+    def sekrety(self) -> DostawcaSekretow | None:
+        return self._dostawca
+
+    @property
+    def straznik(self) -> Any:
+        """straznik.Straznik albo None (Dom 1 w trybie `yaml`)."""
+        return self._straznik
 
     @property
     def watched(self) -> list[WatchedDevice]:

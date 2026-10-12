@@ -83,6 +83,25 @@ spec:
                   name: {{ .Values.mdmAdminSecret }}
                   key: token
                   optional: true
+            # Klucz szyfrujacy sekrety integracji domow (src/kidwatch/sejf.py,
+            # docs/sejf-domow.md). OPCJONALNY: bez niego Dom 1 z config.yaml
+            # dziala jak dotad, nie startuja tylko domy z konfiguracja w bazie.
+            # Ten sam Sekret co envFrom nizej — jawnie, zeby bylo widac, skad.
+            - name: KIDWATCH_KEK
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: KIDWATCH_KEK
+                  optional: true
+            # Tylko na czas rotacji KEK (kidwatch klucze-rotuj), potem usunac.
+            - name: KIDWATCH_KEK_POPRZEDNI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: KIDWATCH_KEK_POPRZEDNI
+                  optional: true
+            - name: KIDWATCH_KATALOG_SEKRETOW
+              value: /run/kidwatch
             {{- if and .Values.sso.enabled .Values.panel.enabled .Values.ingress.enabled }}
             # Zaufanie do naglowkow Authelii (Remote-User) — TEN SAM przelacznik,
             # ktory dopina middleware'y w ingress.yaml. Bez middleware'u Traefik
@@ -152,6 +171,10 @@ spec:
               mountPath: /data
             - name: tmp
               mountPath: /tmp
+            # Klucz ADB i token aplikacji TV domow z konfiguracja w bazie —
+            # odszyfrowane przy starcie, tylko w pamieci (na /data szyfrogramy).
+            - name: sekrety-domow
+              mountPath: /run/kidwatch
 
         {{- if .Values.tailscale.enabled }}
         - name: tailscale
@@ -239,6 +262,11 @@ spec:
           # Korzen jest tylko do czytania, a tam ladzie plik tetna.
           emptyDir:
             sizeLimit: 16Mi
+        - name: sekrety-domow
+          # medium: Memory = tmpfs, wliczany w limit pamieci poda (kilka KiB).
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
         {{- if .Values.tailscale.enabled }}
         - name: tailscale-run
           emptyDir: {}

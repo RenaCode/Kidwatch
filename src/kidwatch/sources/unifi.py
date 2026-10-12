@@ -75,12 +75,18 @@ def _context() -> ssl.SSLContext:
     return ctx
 
 
-def _connect(url: str, timeout: float) -> tuple[http.client.HTTPSConnection, str]:
+def _connect(url: str, timeout: float,
+             straznik=None) -> tuple[http.client.HTTPSConnection, str]:
     parts = urlsplit(url)
     if parts.scheme != "https":
         raise UnifiError(f"unifi.url musi byc https://, jest {url!r}")
+    host = parts.hostname
+    if straznik is not None:
+        # Dom z konfiguracja w bazie (straznik.py, SSRF): laczymy sie z adresem,
+        # ktory przeszedl sprawdzenie, nie z nazwa rozwiazywana drugi raz.
+        host = str(straznik.rozwiaz_sync(parts.hostname or "", parts.port or 443))
     conn = http.client.HTTPSConnection(
-        parts.hostname, parts.port or 443, timeout=timeout, context=_context()
+        host, parts.port or 443, timeout=timeout, context=_context()
     )
     conn.connect()
     der = conn.sock.getpeercert(binary_form=True)
@@ -94,13 +100,17 @@ def server_fingerprint(url: str, timeout: float = 10.0) -> str:
     return got
 
 
-def fetch_pinned(url: str, path: str, api_key: str, pin: str, timeout: float) -> object:
+def fetch_pinned(url: str, path: str, api_key: str, pin: str, timeout: float,
+                 straznik=None) -> object:
     """GET z przypietym certyfikatem. Synchroniczne — wolane w watku."""
-    conn, got = _connect(url, timeout)
+    conn, got = _connect(url, timeout, straznik)
     try:
         if not hmac.compare_digest(got, pin):
             raise CertMismatch(got)
-        conn.request("GET", path, headers={"X-API-KEY": api_key, "Accept": "application/json"})
+        headers = {"X-API-KEY": api_key, "Accept": "application/json"}
+        if straznik is not None:
+            headers["Host"] = urlsplit(url).netloc
+        conn.request("GET", path, headers=headers)
         resp = conn.getresponse()
         body = resp.read()
     finally:
@@ -116,16 +126,19 @@ def fetch_pinned(url: str, path: str, api_key: str, pin: str, timeout: float) ->
 
 
 class UnifiClient:
-    def __init__(self, url: str, site: str, api_key: str, pin: str, timeout: float) -> None:
+    def __init__(self, url: str, site: str, api_key: str, pin: str, timeout: float,
+                 straznik=None) -> None:
         self.url = url.rstrip("/")
         self.path = f"/proxy/network/api/s/{site}/stat/sta"
         self.api_key, self.pin, self.timeout = api_key, pin, timeout
+        self.straznik = straznik
 
     async def stations(self) -> list[dict]:
         """Klienci podlaczeni TERAZ (stat/sta nie zwraca rozlaczonych)."""
         try:
             payload = await asyncio.to_thread(
-                fetch_pinned, self.url, self.path, self.api_key, self.pin, self.timeout
+                fetch_pinned, self.url, self.path, self.api_key, self.pin, self.timeout,
+                self.straznik,
             )
         except (OSError, http.client.HTTPException) as exc:
             raise UnifiError(f"{type(exc).__name__}: {exc}") from exc

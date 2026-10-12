@@ -13,9 +13,11 @@ Zweryfikowane w dokumentacji API (nextdns.github.io/api) 2026-09-27:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
+import weakref
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -154,6 +156,24 @@ class ConnectGate:
     def hold(self, seconds: float) -> None:
         self._next = max(self._next, self._clock() + seconds)
 
+    @classmethod
+    def dla_klucza(cls, api_key: str, spacing: float) -> ConnectGate:
+        """Jedna bramka na klucz API w procesie (§5.2): limit 429 jest na
+        konto NextDNS, wiec dwa domy na jednym koncie musza sie mijac, a domy
+        z osobnymi kontami nie czekaja na siebie. Klucz tylko jako skrot."""
+        klucz = hashlib.sha256(api_key.encode()).hexdigest()
+        gate = _BRAMKI.get(klucz)
+        if gate is None:
+            gate = cls(spacing)
+            _BRAMKI[klucz] = gate
+        else:
+            gate.spacing = max(gate.spacing, spacing)
+        return gate
+
+
+#: Bramki zywych zrodel (slabe odwolania: koniec srodowiska domu = koniec bramki).
+_BRAMKI: weakref.WeakValueDictionary[str, ConnectGate] = weakref.WeakValueDictionary()
+
 
 class NextDnsSource:
     name = "nextdns"
@@ -169,11 +189,14 @@ class NextDnsSource:
         profile_id: str | None = None,
         cursor_key: str | None = None,
         gate: ConnectGate | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.cfg = cfg
         self._api_key = api_key
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=None))
+        # `transport`: straznik sieci domu (straznik.py); None = jak przed domami.
+        self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=None),
+                                                   transport=transport)
         self.cursor = cursor
         self._device_filter = device_filter
         self._sleep = sleep

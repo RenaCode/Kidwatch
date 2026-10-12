@@ -3,7 +3,9 @@
 Stan: **projekt zaakceptowany** (decyzje właściciela z 2026-10-11 w §8);
 **etap E1 zrealizowany** — model, migracja do Domu 1 i `HomeRuntime`,
 kontrakt dla kolejnych etapów w docstringu `src/kidwatch/domy.py` (ustalenia
-z realizacji: §7, E1). Podstawa: `main` po #43 i #44 oraz
+z realizacji: §7, E1); **etap E2 zrealizowany w kodzie** — sejf integracji,
+`dom-importuj`, strażnik sieci (ustalenia: §7, E2; runbook:
+`docs/sejf-domow.md`). Podstawa: `main` po #43 i #44 oraz
 otwarty #45 (powiadomienia per konto), który zostanie scalony wcześniej
 i jest tu traktowany jako punkt wyjścia.
 
@@ -102,6 +104,8 @@ CREATE TABLE IF NOT EXISTS domy (
     -- Sieci, do których integracje domu mogą się łączyć (CIDR, JSON).
     -- Ustawia WYŁĄCZNIE administrator instancji (CLI), §3.6.
     dozwolone_sieci     TEXT NOT NULL DEFAULT '[]',
+    -- Hosty API spoza listy wbudowanej (nextdns.base_url, ntfy.server), JSON (E2).
+    dozwolone_hosty     TEXT NOT NULL DEFAULT '[]',
     wersja              INTEGER NOT NULL DEFAULT 1, -- +1 przy każdej zmianie: sygnał przeładowania
     zawieszony          INTEGER NOT NULL DEFAULT 0,
     utworzony_at        REAL NOT NULL
@@ -686,6 +690,55 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
   test odtworzenia z kopii + KEK przeszedł.
 - **Równolegle z**: E3a, E5 (inne pliki; `domy.py` — właściciel E2, E3a
   dopisuje tylko w `panel.py`/`uprawnienia.py`).
+- **Ustalenia z realizacji** (wiążą E3a/E3b/E6):
+  - Moduły: `sejf.py` (KEK/DEK, AAD, rotacja, maski), `straznik.py`
+    (strażnik sieci §3.6 — osobny moduł zamiast `domy.py`),
+    `konfiguracja_domu.py` (HomeConfig ↔ tabele, `dom-importuj`,
+    `zbuduj_dom`). `domy.py` rozszerzony **addytywnie** (opis w docstringu;
+    test kontraktu pilnuje, że nic z E1 nie znika ani nie zmienia typu).
+  - Schemat: jedyna nowa kolumna `domy.dozwolone_hosty` (hosty API
+    dopisane przez administratora instancji). Obraz E1 jej nie czyta;
+    test wycofania uruchamia prawdziwy kod `sha-2723214` (`git archive`)
+    na bazie po imporcie, dlatego job testów w CI ma `fetch-depth: 0`.
+  - Sekrety w `HomeConfig`: metody `api_key()`/`token()`/`webhook_id()`/
+    `sony_psk()` pytają dostawcę (`HomeConfig.ustaw_srodowisko(sekrety,
+    straznik)`); bez dostawcy — zmienne środowiskowe jak przed domami.
+    Dom z bazy waliduje się z kontekstem `KONTEKST_Z_BAZY`: temat ntfy
+    przychodzi z sekretów domu, **nigdy** z `NTFY_TOPIC` (sekret Domu 1),
+    a katalog klucza ADB to zawsze katalog domu w pamięci poda (domyślne
+    `/adb` to klucz Domu 1).
+  - Pola sekretów integracji: `domy.POLA_SEKRETOW`. Klucz ADB, `adbkey.pub`
+    i token aplikacji TV są sekretami integracji `tv`; środowisko domu
+    zapisuje je przy starcie do `/run/kidwatch/domy/<id>/` (emptyDir
+    `medium: Memory`, pliki 0600). Token po sparowaniu z panelu wraca do
+    bazy (`AplikacjaTv.po_sparowaniu`).
+  - Token MDM Domu 1 w trybie `baza` to kopia `MDM_ADMIN_TOKEN` z importu
+    (token domu wydaje dopiero E3b).
+  - `dom-importuj` działa tylko dla Domu 1: zapis, odczyt, budowa
+    `HomeConfig` z bazy i porównanie pole w pole oraz sekret w sekret w jednej
+    transakcji; `--podglad` i każda różnica = ROLLBACK. Strefę zawsze bierze
+    z `HomeConfig` (Dom 1 założony przez PanelAuth ma `Europe/Warsaw`).
+    `dozwolone_sieci` Domu 1 = niepubliczne adresy TV, UDM, HA, AdGuard
+    i iPadów z odczytem wprost, każdy `/32` (`/128`).
+  - Strażnik: adres publiczny (`is_global`, także IPv4 zaszyty w IPv6:
+    zmapowany, 6to4, Teredo, NAT64) albo z `dozwolone_sieci`; nazwa, z której
+    choć jeden adres jest zabroniony = odmowa. httpx: transport łączy się
+    z adresem, który przeszedł sprawdzenie (nazwa w `Host`/SNI), każdy skok
+    przekierowania przez ten sam transport. UniFi (`http.client`) i ADB:
+    rozwiązanie + sprawdzenie przed połączeniem. iPad z odczytem wprost
+    w domu z bazy: tylko adres IP (pymobiledevice3 sam rozwiązuje nazwy).
+    Serwer MDM i bramka są instancyjne — bez strażnika.
+  - `RejestrDomow.zapisz_integracje` (dla panelu w E3a) waliduje
+    ustawienia modelem konfiguracji i adresy strażnikiem; sekrety tylko do
+    zapisu, panel dostaje `Integracja` (pola bez wartości) i `maski`.
+  - `run` uruchamia w E2 **tylko Dom 1** (z `yaml` albo z bazy). Domy ≠ 1
+    w trybie `baza` są pomijane z ostrzeżeniem — ich start wymaga izolacji
+    powiadomień i awarii (E3a/E3b). Dom 1 w `baza`, którego nie da się
+    zbudować (brak KEK, zły szyfrogram, adres spoza sieci), kończy proces
+    kodem 2 z czytelnym błędem; powrót: `dom-zrodlo 1 yaml`.
+  - Panel do E3a czyta urządzenia z `config.yaml` (jeden `PanelQueries`),
+    `tv_app.AKTYWNA` zostaje globalne (E3b).
+  - `ConnectGate.dla_klucza`: jedna bramka 429 na klucz API w procesie.
 
 ### E3a — izolacja panelu i API + przełącznik domu w UI
 

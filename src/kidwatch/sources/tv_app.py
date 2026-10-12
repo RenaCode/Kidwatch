@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -85,10 +86,14 @@ class StanAplikacji:
 
 class AplikacjaTv:
     def __init__(self, host: str, katalog: str | Path, *, timeout: float = 5.0,
-                 http: httpx.AsyncClient | None = None, apk: str = APK_W_OBRAZIE) -> None:
+                 http: httpx.AsyncClient | None = None, apk: str = APK_W_OBRAZIE,
+                 transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.base = f"http://{host}:{PORT}"
         self.katalog = Path(katalog)
-        self.http = http or httpx.AsyncClient(timeout=timeout)
+        self.http = http or httpx.AsyncClient(timeout=timeout, transport=transport)
+        #: Dom z konfiguracja w bazie: token po sparowaniu idzie tez do
+        #: zaszyfrowanej integracji `tv` (plik lezy wtedy w pamieci poda).
+        self.po_sparowaniu: Callable[[str], None] | None = None
         self.apk = apk
         self.loop: asyncio.AbstractEventLoop | None = None
         self.adb = None  # AdbTcpShell - ustawia build_tv_watcher
@@ -183,6 +188,14 @@ class AplikacjaTv:
         self.katalog.mkdir(parents=True, exist_ok=True)
         self._plik_tokenu.write_text(token)
         self._plik_tokenu.chmod(0o600)
+        if self.po_sparowaniu is not None:
+            try:
+                self.po_sparowaniu(token)
+            except Exception as exc:  # noqa: BLE001 - komunikat idzie do panelu
+                log.error("aplikacja Kidwatch TV: token nie zapisany w bazie domu (%s)",
+                          type(exc).__name__)
+                raise AppError("sparowano, ale tokenu nie udało się zapisać w bazie domu - "
+                               "po restarcie trzeba będzie sparować ponownie") from exc
         log.info("aplikacja Kidwatch TV: sparowana")
 
     def instaluj(self) -> str:

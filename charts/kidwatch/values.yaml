@@ -70,7 +70,10 @@ tailscale:
 #     --from-literal=NEXTDNS_API_KEY=... --from-literal=NTFY_TOKEN=...
 # Opcjonalne klucze w tym samym Sekrecie: PANEL_TOTP_KEY (2FA panelu),
 # UNIFI_API_KEY (czujka UniFi; bez niego czujka sie nie uruchamia),
-# TV_SONY_PSK (Sony REST: antena i HDMI; bez niego tylko stan zasilania TV).
+# TV_SONY_PSK (Sony REST: antena i HDMI; bez niego tylko stan zasilania TV),
+# KIDWATCH_KEK (sejf integracji domow, 32 B w base64 — generuje wlasciciel,
+# kopia POZA kopia PVC; bez niego Dom 1 z config.yaml dziala jak dotad):
+# docs/sejf-domow.md.
 secretName: kidwatch-secrets
 
 # Rekordy parowania <UDID>.plist, wygenerowane JEDNORAZOWO na Macu po kablu.

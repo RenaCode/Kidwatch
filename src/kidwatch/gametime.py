@@ -215,11 +215,12 @@ class ParentalControlClient:
         api_key: str,
         client: httpx.AsyncClient | None = None,
         timeout: float = 10.0,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base = base_url.rstrip("/")
         self._headers = {"X-Api-Key": api_key, "Accept": "application/json"}
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(timeout=timeout)
+        self._client = client or httpx.AsyncClient(timeout=timeout, transport=transport)
 
     async def aclose(self) -> None:
         if self._owns_client:

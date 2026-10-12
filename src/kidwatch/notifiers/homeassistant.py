@@ -26,11 +26,13 @@ class HomeAssistantNotifier:
         webhook_id: str,
         client: httpx.AsyncClient | None = None,
         sleep=None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.cfg = cfg
         self._webhook_id = webhook_id
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(timeout=cfg.timeout_seconds)
+        self._client = client or httpx.AsyncClient(timeout=cfg.timeout_seconds,
+                                                   transport=transport)
         self._sleep_kwargs = {"sleep": sleep} if sleep is not None else {}
 
     @property
