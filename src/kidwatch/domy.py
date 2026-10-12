@@ -1301,7 +1301,12 @@ class RejestrDomow:
                 kopia = conn.execute("SELECT dane FROM domy_kopia WHERE dom_id = ?",
                                      (dom.id,)).fetchone() \
                     if _jest_tabela(conn, "domy_kopia") else None
-                for i in json.loads(kopia["dane"])["integracje"] if kopia else []:
+                try:
+                    integracje_kopii = json.loads(kopia["dane"])["integracje"] if kopia else []
+                except (ValueError, KeyError, TypeError) as exc:
+                    raport.bledy.append((dom.id, "kopia:-", f"kopia nieczytelna: {exc}"))
+                    integracje_kopii = []
+                for i in integracje_kopii:
                     if not i["sekrety"]:
                         continue
                     try:
@@ -1378,36 +1383,72 @@ class RejestrDomow:
                 "AND opis LIKE ? ORDER BY id DESC LIMIT 1", (dom_id, prefiks + "%")).fetchone()
         return row[0].removeprefix(prefiks) if row else None
 
-    def alarm_startu(self, dom_id: int, teraz: float | None = None) -> bool:
-        """Czy wyslac alarm „Kidwatch nie wystartowal” (start bez kopii, kod 2).
-        Pod w CrashLoop startuje co kilka minut — bez tej bramki kazdy restart
-        to kolejny alarm. Ten sam rosnacy odstep co w nadzorcy (1 h, 2 h, 4 h…,
-        najwyzej doba), liczony z dziennika domu, bo pamieci procesu restart
-        nie przezywa. Przerwa dluzsza niz dwie doby = nowa awaria. Gdy alarm
-        wolno wyslac, wpis `dom.start.alarm` z odstepem do nastepnego; blad
-        bazy = wyslac (glosno zamiast cicho)."""
+    def alarm_startu(self, dom_id: int, teraz: float | None = None) -> float | None:
+        """Czy wyslac alarm startu domu (start bez kopii — kod 2 — albo start
+        na kopii): odstep do NASTEPNEGO alarmu w sekundach albo None (jeszcze
+        nie). Pod w CrashLoop startuje co kilka minut — bez tej bramki kazdy
+        restart to kolejny alarm. Ten sam rosnacy odstep co w nadzorcy (1 h,
+        2 h, 4 h…, najwyzej doba), liczony z dziennika domu, bo pamieci procesu
+        restart nie przezywa.
+
+        Nowa awaria (alarm od razu, odstep od 1 h): brak poprzedniego alarmu,
+        udany start PO nim (`dom.start.ok`, zapisz_start_ok) albo przerwa
+        dluzsza niz dwie doby. Sama ta funkcja NICZEGO nie zapisuje — wpis
+        robi zapisz_alarm_startu dopiero po udanej wysylce, wiec bramka,
+        ktora lezy, nie blokuje alarmu na pelny odstep. Blad bazy = wyslac
+        (glosno zamiast cicho)."""
         teraz = time.time() if teraz is None else teraz
         try:
             with self._conn() as conn:
-                row = conn.execute(
-                    "SELECT ts, opis FROM audyt WHERE dom_id = ? AND akcja = 'dom.start.alarm' "
-                    "ORDER BY id DESC LIMIT 1", (dom_id,)).fetchone()
-                odstep = ALARM_PIERWSZY_ODSTEP
-                if row is not None:
-                    try:
-                        poprzedni = float(row["opis"].rsplit("po ", 1)[1].split(" s")[0])
-                    except (IndexError, ValueError):
-                        poprzedni = ALARM_PIERWSZY_ODSTEP
-                    minelo = teraz - row["ts"]
-                    if minelo < poprzedni:
-                        return False
-                    if minelo < 2 * ALARM_MAX_ODSTEP:
-                        odstep = min(poprzedni * 2, ALARM_MAX_ODSTEP)
-                zapisz_audyt(conn, dom_id, None, "dom.start.alarm",
-                             f"alarm: Kidwatch nie wystartowal; nastepny najwczesniej "
-                             f"po {odstep:.0f} s", teraz)
+                alarm = conn.execute(
+                    "SELECT id, ts, opis FROM audyt WHERE dom_id = ? AND akcja = "
+                    "'dom.start.alarm' ORDER BY id DESC LIMIT 1", (dom_id,)).fetchone()
+                if alarm is None:
+                    return ALARM_PIERWSZY_ODSTEP
+                ok = conn.execute(
+                    "SELECT 1 FROM audyt WHERE dom_id = ? AND akcja = 'dom.start.ok' "
+                    "AND id > ?", (dom_id, alarm["id"])).fetchone()
         except sqlite3.Error:
             log.exception("dom %d: bramka alarmu startu niedostepna — wysylam", dom_id)
+            return ALARM_PIERWSZY_ODSTEP
+        if ok is not None:
+            return ALARM_PIERWSZY_ODSTEP
+        try:
+            poprzedni = float(alarm["opis"].rsplit("po ", 1)[1].split(" s")[0])
+        except (IndexError, ValueError):
+            poprzedni = ALARM_PIERWSZY_ODSTEP
+        minelo = teraz - alarm["ts"]
+        if minelo >= 2 * ALARM_MAX_ODSTEP:
+            return ALARM_PIERWSZY_ODSTEP
+        if minelo < poprzedni:
+            return None
+        return min(poprzedni * 2, ALARM_MAX_ODSTEP)
+
+    def zapisz_alarm_startu(self, dom_id: int, odstep: float, tytul: str,
+                            teraz: float | None = None) -> None:
+        """Alarm startu WYSLANY — wpis `dom.start.alarm` z odstepem do nastepnego."""
+        with self._conn() as conn:
+            zapisz_audyt(conn, dom_id, None, "dom.start.alarm",
+                         f"alarm: {tytul}; nastepny najwczesniej po {odstep:.0f} s",
+                         teraz)
+
+    def zapisz_start_ok(self, dom_id: int, wersja: int | None,
+                        teraz: float | None = None) -> bool:
+        """Dom wstal na biezacej konfiguracji. Wpis `dom.start.ok` tylko, gdy
+        jest otwarta awaria startu (alarm bez pozniejszego udanego startu) —
+        konczy ja, wiec pierwszy alarm nastepnej awarii idzie od razu. Bez
+        awarii nic (dziennik nie puchnie od restartow poda)."""
+        with self._conn() as conn:
+            alarm = conn.execute(
+                "SELECT id FROM audyt WHERE dom_id = ? AND akcja = 'dom.start.alarm' "
+                "ORDER BY id DESC LIMIT 1", (dom_id,)).fetchone()
+            if alarm is None or conn.execute(
+                    "SELECT 1 FROM audyt WHERE dom_id = ? AND akcja = 'dom.start.ok' AND id > ?",
+                    (dom_id, alarm["id"])).fetchone() is not None:
+                return False
+            zapisz_audyt(conn, dom_id, None, "dom.start.ok",
+                         f"dom wstal na konfiguracji w wersji {wersja} — koniec awarii startu",
+                         teraz)
         return True
 
     def kopia_domu(self, dom_id: int, sejf: Sejf) -> tuple[int, DaneDomu, SekretyDomu] | None:
@@ -1515,8 +1556,8 @@ class RejestrDomow:
                 # z wpisem — nastepny udany start zapisze nowa.
                 from .sejf import SejfError  # noqa: PLC0415
 
-                k = json.loads(kopia["dane"])
                 try:
+                    k = json.loads(kopia["dane"])
                     for i in k["integracje"]:
                         if not i["sekrety"]:
                             continue
@@ -1525,7 +1566,7 @@ class RejestrDomow:
                         jawne = odszyfruj_sekrety(stary, dom_id, i["typ"],
                                                   bytes.fromhex(i["sekrety"]))
                         i["sekrety"] = zaszyfruj_sekrety(dek, dom_id, i["typ"], jawne).hex()
-                except (SejfError, ValueError) as exc:
+                except (SejfError, ValueError, KeyError, TypeError) as exc:
                     conn.execute("DELETE FROM domy_kopia WHERE dom_id = ?", (dom_id,))
                     _audyt(conn, time.time(), dom_id, kto, "dom.kopia.usunieta",
                            f"kopia ostatniej dobrej konfiguracji usunieta przy rotacji klucza "
@@ -1644,6 +1685,10 @@ def blad_przejsciowy(exc: BaseException) -> bool:
     return isinstance(exc, (sqlite3.Error, OSError, TimeoutError, ConnectionError))
 
 
+#: Tresc alarmu, gdy opisu bezpiecznego do wysylki nie ma — nigdy surowy blad.
+BEZ_OPISU = "szczegoly w panelu (Ustawienia -> Integracje) i w logu"
+
+
 def opis_bledu(exc: BaseException) -> str:
     """Tresc bledu do ALARMU (bramka, poza instalacja): pelny komunikat tylko
     dla bledow, ktorych komunikaty sa z zalozenia bez wartosci sekretow
@@ -1674,6 +1719,8 @@ class StanDomu:
     ts: float = field(default=0.0, compare=False)
     #: Blad przejsciowy — nadzorca sam ponowi probe.
     ponowienie: bool = False
+    #: Opis bledu do ALARMU (opis_bledu) — `blad` idzie tylko do panelu i logu.
+    opis_alarmu: str | None = None
 
 
 class StanyDomow:
@@ -1832,6 +1879,7 @@ class Nadzorca:
         if stan is not None and stan.nieudana is not None:
             # `run` wystartowal dom na ostatniej dobrej wersji, bo biezaca nie wstala.
             self._nieudane[rt.dom_id] = stan.nieudana
+            self._opisy_alarmu[rt.dom_id] = stan.opis_alarmu or BEZ_OPISU
             self._alarmy[rt.dom_id] = (p.zegar() + ALARM_PIERWSZY_ODSTEP, ALARM_PIERWSZY_ODSTEP)
             if stan.ponowienie:
                 self._ponow[rt.dom_id] = (stan.nieudana, 1, p.zegar() + PONOWIENIA[0])
@@ -1894,8 +1942,9 @@ class Nadzorca:
             self._ponow[dom_id] = (w, proba, p.zegar() + odstep)
         else:
             self._ponow.pop(dom_id, None)
-        p.stany.ustaw(dom_id, StanDomu(stara, w, blad, time.time(), przejsciowy))
-        self._opisy_alarmu[dom_id] = opis_alarmu if opis_alarmu is not None else blad
+        p.stany.ustaw(dom_id, StanDomu(stara, w, blad, time.time(), przejsciowy,
+                                       opis_alarmu))
+        self._opisy_alarmu[dom_id] = opis_alarmu if opis_alarmu is not None else BEZ_OPISU
         if pierwszy_raz:
             try:
                 await asyncio.to_thread(p.zapisz_blad, dom_id, w, blad)
@@ -1920,7 +1969,8 @@ class Nadzorca:
         self._alarmy[dom_id] = (p.zegar() + odstep, odstep)
         await self._alarm(f"Dom {dom_id}: nadal bez nowej konfiguracji",
                           f"Wersja {stan.nieudana}: "
-                          f"{self._opisy_alarmu.get(dom_id, stan.blad)}. Dom dziala na wersji "
+                          f"{self._opisy_alarmu.get(dom_id, stan.opis_alarmu or BEZ_OPISU)}. "
+                          f"Dom dziala na wersji "
                           f"{stan.wersja}.")
 
     async def _naprawiony(self, dom_id: int, w: int) -> None:

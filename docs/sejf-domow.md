@@ -415,9 +415,13 @@ albo hasło z TOTP); `wlasciciel-domu` dostaje 403, cudzy dom — 404.
   zostaje w kopii do następnego udanego startu lub przeładowania — start na
   kopii użyje starej wartości. Klucz, który trzeba unieważnić natychmiast,
   unieważnij u dostawcy (NextDNS, UniFi…), nie tylko w panelu.
-  Alarm „Kidwatch nie wystartował” przy CrashLoop idzie z tym samym
-  rosnącym odstępem, liczonym z dziennika (`dom.start.alarm`), nie przy
-  każdym restarcie poda. Bez kopii (pierwszy start po wdrożeniu, kopia nie
+  Alarmy startu („Kidwatch nie wystartował”, „start na ostatniej dobrej
+  konfiguracji”) przy CrashLoop idą z tym samym rosnącym odstępem, liczonym
+  z dziennika (`dom.start.alarm`, wpis dopiero po udanej wysyłce), nie przy
+  każdym restarcie poda. Udany start na bieżącej konfiguracji kończy awarię
+  (`dom.start.ok`) — pierwszy alarm następnej idzie od razu. Treść alarmu
+  (WhatsApp/e-mail) ma pełny opis tylko dla znanych błędów; resztę widać
+  w panelu i w logu. Bez kopii (pierwszy start po wdrożeniu, kopia nie
   wstaje) — jak dotąd: log, alarm, kod 2 i pkt 4. To samo w trakcie pracy:
   nowa i poprzednia konfiguracja nie wstają → kopia → dopiero potem koniec
   procesu.
