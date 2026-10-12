@@ -401,11 +401,20 @@ albo hasło z TOTP); `wlasciciel-domu` dostaje 403, cudzy dom — 404.
   czeka na następną zmianę; błąd przejściowy (baza zajęta, DNS, sieć)
   nadzorca ponawia sam po 1, 5 i 30 min (potem co 30 min).
 - **Kopia ostatniej dobrej konfiguracji** (`domy_kopia`, sekrety nadal
-  zaszyfrowane kluczem domu; `dom-klucz-rotuj` przeszyfrowuje też ją):
+  zaszyfrowane kluczem domu; `dom-klucz-rotuj` przeszyfrowuje też ją, a kopię,
+  której nie da się odszyfrować, usuwa z wpisem `dom.kopia.usunieta`;
+  `domy --sprawdz` sprawdza też jej odszyfrowanie):
   zapisywana po każdym udanym starcie i przeładowaniu. Gdy przy starcie
   poda bieżąca wersja nie wstaje, Dom 1 startuje na kopii (wpis, alarm,
   stan na ekranie), a panel działa — zamiast CrashLoop, który zabrałby też
-  ekran do poprawki. Bez kopii (pierwszy start po wdrożeniu, kopia nie
+  ekran do poprawki. **Kopia to stan z chwili ostatniego udanego startu**:
+  sekret usunięty albo zmieniony w panelu PO nim (np. unieważniony klucz)
+  zostaje w kopii do następnego udanego startu lub przeładowania — start na
+  kopii użyje starej wartości. Klucz, który trzeba unieważnić natychmiast,
+  unieważnij u dostawcy (NextDNS, UniFi…), nie tylko w panelu.
+  Alarm „Kidwatch nie wystartował” przy CrashLoop idzie z tym samym
+  rosnącym odstępem, liczonym z dziennika (`dom.start.alarm`), nie przy
+  każdym restarcie poda. Bez kopii (pierwszy start po wdrożeniu, kopia nie
   wstaje) — jak dotąd: log, alarm, kod 2 i pkt 4. To samo w trakcie pracy:
   nowa i poprzednia konfiguracja nie wstają → kopia → dopiero potem koniec
   procesu.

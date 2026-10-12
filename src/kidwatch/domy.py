@@ -768,6 +768,9 @@ class RaportSprawdzenia:
     #: Domy, ktorych DEK sie odpakowal (dowod, ze klucz pasuje).
     klucze_domow: int = 0
     integracje: int = 0
+    #: Integracje z kopii ostatniej dobrej konfiguracji (domy_kopia), ktore
+    #: sie odszyfrowaly.
+    kopie: int = 0
     #: dom -> kek_id, ktorym zapakowano jego DEK (tylko odpakowane).
     kek_id_domow: dict[int, str | None] = field(default_factory=dict)
 
@@ -1293,6 +1296,20 @@ class RejestrDomow:
                         raport.bledy.append((dom.id, r["typ"], str(exc)))
                     else:
                         raport.integracje += 1
+                # Kopia ostatniej dobrej konfiguracji (§5.1): start na niej
+                # musi sie odszyfrowac tym samym kluczem.
+                kopia = conn.execute("SELECT dane FROM domy_kopia WHERE dom_id = ?",
+                                     (dom.id,)).fetchone() \
+                    if _jest_tabela(conn, "domy_kopia") else None
+                for i in json.loads(kopia["dane"])["integracje"] if kopia else []:
+                    if not i["sekrety"]:
+                        continue
+                    try:
+                        odszyfruj_sekrety(dek, dom.id, i["typ"], bytes.fromhex(i["sekrety"]))
+                    except (SejfError, ValueError) as exc:
+                        raport.bledy.append((dom.id, f"kopia:{i['typ']}", str(exc)))
+                    else:
+                        raport.kopie += 1
         return raport
 
     def czas_zmiany_sekretu(self, dom_id: int, typ: str, pole: str) -> float | None:
@@ -1360,6 +1377,38 @@ class RejestrDomow:
                 "SELECT opis FROM audyt WHERE dom_id = ? AND akcja = 'dom.przeladowanie.blad' "
                 "AND opis LIKE ? ORDER BY id DESC LIMIT 1", (dom_id, prefiks + "%")).fetchone()
         return row[0].removeprefix(prefiks) if row else None
+
+    def alarm_startu(self, dom_id: int, teraz: float | None = None) -> bool:
+        """Czy wyslac alarm „Kidwatch nie wystartowal” (start bez kopii, kod 2).
+        Pod w CrashLoop startuje co kilka minut — bez tej bramki kazdy restart
+        to kolejny alarm. Ten sam rosnacy odstep co w nadzorcy (1 h, 2 h, 4 h…,
+        najwyzej doba), liczony z dziennika domu, bo pamieci procesu restart
+        nie przezywa. Przerwa dluzsza niz dwie doby = nowa awaria. Gdy alarm
+        wolno wyslac, wpis `dom.start.alarm` z odstepem do nastepnego; blad
+        bazy = wyslac (glosno zamiast cicho)."""
+        teraz = time.time() if teraz is None else teraz
+        try:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT ts, opis FROM audyt WHERE dom_id = ? AND akcja = 'dom.start.alarm' "
+                    "ORDER BY id DESC LIMIT 1", (dom_id,)).fetchone()
+                odstep = ALARM_PIERWSZY_ODSTEP
+                if row is not None:
+                    try:
+                        poprzedni = float(row["opis"].rsplit("po ", 1)[1].split(" s")[0])
+                    except (IndexError, ValueError):
+                        poprzedni = ALARM_PIERWSZY_ODSTEP
+                    minelo = teraz - row["ts"]
+                    if minelo < poprzedni:
+                        return False
+                    if minelo < 2 * ALARM_MAX_ODSTEP:
+                        odstep = min(poprzedni * 2, ALARM_MAX_ODSTEP)
+                zapisz_audyt(conn, dom_id, None, "dom.start.alarm",
+                             f"alarm: Kidwatch nie wystartowal; nastepny najwczesniej "
+                             f"po {odstep:.0f} s", teraz)
+        except sqlite3.Error:
+            log.exception("dom %d: bramka alarmu startu niedostepna — wysylam", dom_id)
+        return True
 
     def kopia_domu(self, dom_id: int, sejf: Sejf) -> tuple[int, DaneDomu, SekretyDomu] | None:
         """Ostatnia dobra konfiguracja (zapamietaj_dobra): wersja, wiersze
@@ -1461,14 +1510,29 @@ class RejestrDomow:
                                  (dom_id,)).fetchone() if _jest_tabela(conn, "domy_kopia") \
                 else None
             if kopia is not None:
+                # Kopia, ktorej nie da sie odszyfrowac (uszkodzona, sprzed
+                # innego klucza), nie moze wycofac calej rotacji: usuwamy ja
+                # z wpisem — nastepny udany start zapisze nowa.
+                from .sejf import SejfError  # noqa: PLC0415
+
                 k = json.loads(kopia["dane"])
-                for i in k["integracje"]:
-                    if i["sekrety"] and stary is not None:
+                try:
+                    for i in k["integracje"]:
+                        if not i["sekrety"]:
+                            continue
+                        if stary is None:
+                            raise SejfError(f"dom {dom_id}: kopia z sekretami bez klucza danych")
                         jawne = odszyfruj_sekrety(stary, dom_id, i["typ"],
                                                   bytes.fromhex(i["sekrety"]))
                         i["sekrety"] = zaszyfruj_sekrety(dek, dom_id, i["typ"], jawne).hex()
-                conn.execute("UPDATE domy_kopia SET dane = ? WHERE dom_id = ?",
-                             (json.dumps(k, ensure_ascii=False, sort_keys=True), dom_id))
+                except (SejfError, ValueError) as exc:
+                    conn.execute("DELETE FROM domy_kopia WHERE dom_id = ?", (dom_id,))
+                    _audyt(conn, time.time(), dom_id, kto, "dom.kopia.usunieta",
+                           f"kopia ostatniej dobrej konfiguracji usunieta przy rotacji klucza "
+                           f"domu: {exc}")
+                else:
+                    conn.execute("UPDATE domy_kopia SET dane = ? WHERE dom_id = ?",
+                                 (json.dumps(k, ensure_ascii=False, sort_keys=True), dom_id))
             conn.execute("UPDATE domy SET dek_zaszyfrowany = ?, kek_id = ? WHERE id = ?",
                          (blob, kid, dom_id))
             _podbij_wersje(conn, dom_id)
@@ -1580,6 +1644,23 @@ def blad_przejsciowy(exc: BaseException) -> bool:
     return isinstance(exc, (sqlite3.Error, OSError, TimeoutError, ConnectionError))
 
 
+def opis_bledu(exc: BaseException) -> str:
+    """Tresc bledu do ALARMU (bramka, poza instalacja): pelny komunikat tylko
+    dla bledow, ktorych komunikaty sa z zalozenia bez wartosci sekretow
+    (walidacja, brak sekretu, straznik, sejf); dla reszty sam typ wyjatku —
+    nieznany wyjatek moze powtorzyc w tresci dane wejscia."""
+    from .config import MissingSecretError  # noqa: PLC0415
+    from .sejf import SejfError  # noqa: PLC0415
+    from .straznik import OdmowaSieci  # noqa: PLC0415
+
+    # Dokladnie ValueError/LookupError (nasze komunikaty), nie podklasy:
+    # pydantic ValidationError i KeyError potrafia powtorzyc wartosci wejscia.
+    if type(exc) in (ValueError, LookupError) or isinstance(
+            exc, (MissingSecretError, SejfError, OdmowaSieci)):
+        return str(exc) or type(exc).__name__
+    return f"{type(exc).__name__} (szczegoly w logu)"
+
+
 @dataclass(frozen=True, slots=True)
 class StanDomu:
     """Na jakiej konfiguracji chodzi srodowisko domu — dla panelu."""
@@ -1685,6 +1766,8 @@ class Nadzorca:
         self._alarmy: dict[int, tuple[float, float]] = {}
         self._zadania: dict[asyncio.Task, HomeRuntime] = {}
         self._alarmy_w_tle: set[asyncio.Task] = set()
+        #: dom -> tresc bledu do alarmu (opis_bledu), osobno od stanu dla panelu.
+        self._opisy_alarmu: dict[int, str] = {}
         self._awaria = False
 
     def _uruchom(self, rt: HomeRuntime) -> None:
@@ -1797,7 +1880,7 @@ class Nadzorca:
         zadanie.add_done_callback(self._alarmy_w_tle.discard)
 
     async def _awaria_domu(self, dom_id: int, w: int, stara: int | None, blad: str,
-                           przejsciowy: bool) -> None:
+                           przejsciowy: bool, opis_alarmu: str | None = None) -> None:
         """Wersja `w` nie wstala: stan dla panelu, dziennik (raz na wersje),
         ponowienie (blad przejsciowy) i alarm (od razu, potem z odstepem)."""
         p = self.przeladowanie
@@ -1812,6 +1895,7 @@ class Nadzorca:
         else:
             self._ponow.pop(dom_id, None)
         p.stany.ustaw(dom_id, StanDomu(stara, w, blad, time.time(), przejsciowy))
+        self._opisy_alarmu[dom_id] = opis_alarmu if opis_alarmu is not None else blad
         if pierwszy_raz:
             try:
                 await asyncio.to_thread(p.zapisz_blad, dom_id, w, blad)
@@ -1821,7 +1905,7 @@ class Nadzorca:
             self._alarmy[dom_id] = (p.zegar() + ALARM_PIERWSZY_ODSTEP, ALARM_PIERWSZY_ODSTEP)
             await self._alarm(
                 f"Dom {dom_id}: nowa konfiguracja nie wystartowala",
-                f"Wersja {w}: {blad}. Dom dziala dalej na wersji {stara}. "
+                f"Wersja {w}: {self._opisy_alarmu[dom_id]}. Dom dziala dalej na wersji {stara}. "
                 + ("Kidwatch ponowi probe sam." if przejsciowy
                    else "Popraw integracje w panelu (Ustawienia -> Integracje)."))
 
@@ -1835,7 +1919,8 @@ class Nadzorca:
         odstep = min(nastepny[1] * 2, ALARM_MAX_ODSTEP)
         self._alarmy[dom_id] = (p.zegar() + odstep, odstep)
         await self._alarm(f"Dom {dom_id}: nadal bez nowej konfiguracji",
-                          f"Wersja {stan.nieudana}: {stan.blad}. Dom dziala na wersji "
+                          f"Wersja {stan.nieudana}: "
+                          f"{self._opisy_alarmu.get(dom_id, stan.blad)}. Dom dziala na wersji "
                           f"{stan.wersja}.")
 
     async def _naprawiony(self, dom_id: int, w: int) -> None:
@@ -1868,7 +1953,8 @@ class Nadzorca:
             # Stary dom chodzi dalej na swojej konfiguracji.
             log.error("dom %d: nowa konfiguracja (wersja %d) nie wystartuje — %s; "
                       "dom dziala dalej na wersji %s", dom_id, w, exc, stara)
-            await self._awaria_domu(dom_id, w, stara, str(exc), p.przejsciowy(exc))
+            await self._awaria_domu(dom_id, w, stara, str(exc), p.przejsciowy(exc),
+                                    opis_bledu(exc))
             return
         await self._zatrzymaj(rt)
         try:
@@ -1877,7 +1963,8 @@ class Nadzorca:
         except Exception as exc:
             log.error("dom %d: srodowisko z wersji %d nie wystartowalo — %s; powrot do "
                       "poprzedniej konfiguracji", dom_id, w, exc)
-            await self._awaria_domu(dom_id, w, stara, str(exc), p.przejsciowy(exc))
+            await self._awaria_domu(dom_id, w, stara, str(exc), p.przejsciowy(exc),
+                                    opis_bledu(exc))
             nowy = await self._odtworz(dom_id, rt.home, stara)
             if nowy is None:
                 self._awaria = True

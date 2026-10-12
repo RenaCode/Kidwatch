@@ -202,6 +202,13 @@ export default function Integrations() {
           <span className="hint">wersja konfiguracji {data.dom.wersja}</span>
         </div>
         <Notice notice={reloadNotice(data.przeladowanie)} />
+        {data.obcaZmiana && (
+          <div className="notice" style={{ marginTop: 10 }} role="alert">
+            Konfigurację tego domu zmienił w międzyczasie ktoś inny (drugi zapis albo CLI).{' '}
+            <button type="button" className="btn-link" onClick={load}>Odśwież ekran</button>{' '}
+            przed kolejną zmianą — inaczej zapis zostanie odrzucony.
+          </div>
+        )}
         {timedOut && (
           <div className="notice" style={{ marginTop: 10 }} role="status">
             Nie potwierdzono przełączenia domu w ciągu 2 minut — odśwież ekran albo sprawdź log.

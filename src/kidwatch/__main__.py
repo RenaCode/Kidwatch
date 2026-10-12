@@ -384,7 +384,7 @@ async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id:
     proces zyje, panel dziala, a nadzorca przeladuje dom po poprawce. Bez
     kopii (albo gdy i ona nie wstaje) — jak przed E3a: log, alarm, kod 2
     (droga powrotu do config.yaml: docs/sejf-domow.md pkt 4)."""
-    from .domy import StanDomu, blad_przejsciowy  # noqa: PLC0415
+    from .domy import StanDomu, blad_przejsciowy, opis_bledu  # noqa: PLC0415
     from .konfiguracja_domu import zbuduj_dom_z_kopii  # noqa: PLC0415
     from .sejf import Sejf  # noqa: PLC0415
 
@@ -396,6 +396,7 @@ async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id:
         runtime = build_home_runtime(dom_id, inst, home, Classifier(inst.app_map_path))
     except Exception as exc:  # noqa: BLE001 — kazdy blad startu domu: kopia albo kod 2
         blad_startu, blad = exc, str(exc) or type(exc).__name__
+        do_alarmu = opis_bledu(exc)
         log.error("Dom %d: konfiguracja z bazy (wersja %s) nie wystartowala — %s", dom_id,
                   wersja, blad)
     else:
@@ -422,10 +423,14 @@ async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id:
                   "exec: klucz %s=yaml w kidwatch-secrets + restart; z dzialajacym podem: "
                   "kidwatch dom-zrodlo %d yaml (docs/sejf-domow.md)", dom_id,
                   f" ({kopia_blad})" if kopia_blad else "", WYMUSZENIE_DOMU_1_ENV, dom_id)
-        if alarm is not None:
-            await alarm(f"Dom {dom_id}: Kidwatch nie wystartowal",
-                        f"Konfiguracja z bazy (wersja {wersja}) nie wstaje: {blad}. Brak "
-                        "dzialajacej kopii — proces konczy sie (docs/sejf-domow.md pkt 4).")
+        # CrashLoop: alarm z rosnacym odstepem (dziennik), nie przy kazdym
+        # restarcie; blad bramki nie moze zamienic kodu 2 w traceback.
+        if alarm is not None and rejestr.alarm_startu(dom_id):
+            with contextlib.suppress(Exception):
+                await alarm(f"Dom {dom_id}: Kidwatch nie wystartowal",
+                            f"Konfiguracja z bazy (wersja {wersja}) nie wstaje: {do_alarmu}. "
+                            "Brak dzialajacej kopii — proces konczy sie "
+                            "(docs/sejf-domow.md pkt 4).")
         return None
     runtime.wersja = kopia[0]
     przejsciowy = blad_przejsciowy(blad_startu)
@@ -438,7 +443,8 @@ async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id:
     if alarm is not None:
         with contextlib.suppress(Exception):
             await alarm(f"Dom {dom_id}: start na ostatniej dobrej konfiguracji",
-                        f"Wersja {wersja} nie wstaje: {blad}. Dom dziala na wersji {kopia[0]}. "
+                        f"Wersja {wersja} nie wstaje: {do_alarmu}. Dom dziala na wersji "
+                        f"{kopia[0]}. "
                         "Popraw integracje w panelu (Ustawienia -> Integracje).")
     return runtime
 
@@ -1599,7 +1605,8 @@ async def cmd_domy(args) -> int:
         for dom_id, typ, blad in bledy:
             print(f"BLAD: Dom {dom_id} {typ or 'DEK'}: {blad}")
         print(f"sprawdzono kluczem {sejf.kek_id}: kluczy domow: {raport.klucze_domow}, "
-              f"integracji: {raport.integracje}")
+              f"integracji: {raport.integracje}, z kopii ostatniej dobrej konfiguracji: "
+              f"{raport.kopie}")
         if bledy:
             print(f"WYNIK: {len(bledy)} bledow")
             return 1

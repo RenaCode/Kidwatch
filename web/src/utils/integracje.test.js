@@ -143,8 +143,19 @@ test('zapis przelaczajacy zrodlo DNS podmienia obie karty i wersje domu', () => 
   assert.equal(d.dom.wersja, 7);
   assert.deepEqual(d.integracje.map((i) => [i.typ, i.wlaczona]),
     [['nextdns', false], ['adguard', true], ['unifi', true]]);
-  // Sondowanie stanu nie rusza kart.
+  // Sondowanie stanu nie rusza kart ani wersji z wlasnego zapisu.
   const s = applyState(d, { dom: { id: 2, wersja: 7 }, start: 'x', przeladowanie: { aktualna: true } });
   assert.equal(s.integracje, d.integracje);
   assert.equal(s.start, 'x');
+  assert.equal(s.dom.wersja, 7);
+  assert.equal(s.obcaZmiana, false);
+});
+
+test('sondowanie nie podnosi wersji ekranu: cudza zmiana zostaje chroniona przez 409', () => {
+  const data = { dom: { id: 2, wersja: 7 }, start: null, przeladowanie: {}, integracje: [] };
+  const s = applyState(data, { dom: { id: 2, wersja: 9 }, start: null, przeladowanie: { wersja: 9 } });
+  assert.equal(s.dom.wersja, 7);
+  assert.equal(s.obcaZmiana, true);
+  // Raz wykryta zostaje do odswiezenia ekranu.
+  assert.equal(applyState(s, { dom: { id: 2, wersja: 7 }, start: null, przeladowanie: {} }).obcaZmiana, true);
 });

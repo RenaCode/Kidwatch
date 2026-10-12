@@ -146,8 +146,16 @@ export function applySaved(data, r) {
   };
 }
 
-/* Odpowiedz GET .../integracje/stan -> stan ekranu (karty bez zmian). */
+/* Odpowiedz GET .../integracje/stan -> stan ekranu (karty bez zmian).
+   `dom.wersja` zostaje ta z wczytania albo z WLASNEGO zapisu: to nia zapis
+   broni sie przed nadpisaniem cudzej zmiany (409). Wersja w bazie wyzsza
+   niz znana ekranowi = ktos inny zmienil dom: `obcaZmiana`, ekran prosi
+   o odswiezenie zamiast po cichu przyjac nowa wersje. */
 export function applyState(data, st) {
   if (!data) return data;
-  return { ...data, dom: st.dom || data.dom, start: st.start, przeladowanie: st.przeladowanie };
+  const obca = !!st.dom && st.dom.wersja > data.dom.wersja;
+  return {
+    ...data, start: st.start, przeladowanie: st.przeladowanie,
+    obcaZmiana: data.obcaZmiana || obca,
+  };
 }
