@@ -56,7 +56,11 @@ from .store import Store, from_iso, to_iso
 
 log = logging.getLogger(__name__)
 
-ACTIONS = frozenset({"block", "allow", "bonus"})
+#: "shorten" (komendy z WhatsAppa, "-15"): skraca TRWAJACY bonus o `minutes`.
+ACTIONS = frozenset({"block", "allow", "bonus", "shorten"})
+#: Prefiks loginu zadania zleconego z WhatsAppa (komendy_bot.py) — push
+#: o zmianie mowi wtedy "z WhatsAppa", a nie "z panelu".
+WHATSAPP_PREFIKS = "whatsapp:"
 #: Zadanie starsze niz to (petla lezala) nie jest wykonywane: "+30 min"
 #: klikniete godzine temu i zrealizowane teraz byloby niespodzianka.
 REQUEST_TTL_SECONDS = 10 * 60
@@ -158,6 +162,17 @@ class GameRequests:
                 "UPDATE game_requests SET done_at=?, ok=?, error=? WHERE id=? AND dom_id=?",
                 (self.clock(), int(ok), error, request_id, self.dom_id),
             )
+
+    def result(self, request_id: int) -> tuple[bool, str | None] | None:
+        """(ok, blad) wykonanego zadania; None = jeszcze czeka."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT done_at, ok, error FROM game_requests WHERE id=? AND dom_id=?",
+                (request_id, self.dom_id),
+            ).fetchone()
+        if row is None or row["done_at"] is None:
+            return None
+        return bool(row["ok"]), row["error"]
 
     def latest(self, child: str) -> dict | None:
         """Ostatnie zadanie dziecka — panel pokazuje "wysylanie..." albo blad."""
@@ -394,6 +409,12 @@ class GameTime:
             state = self.state(profile)
             action = req["action"]
             by = req["login"] or "panel"
+            skad = "z panelu"
+            if by.startswith(WHATSAPP_PREFIKS):
+                by, skad = by.removeprefix(WHATSAPP_PREFIKS), "z WhatsAppa"
+            if action == "shorten":
+                await self._shorten(req, profile, state, by, now)
+                continue
             if action == "block":
                 state.update(mode="blocked", bonus_until=None, source="panel", after_bonus=None)
                 title = "zablokowany"
@@ -422,13 +443,29 @@ class GameTime:
             self.requests.finish(req["id"], ok, None if ok else state.get("error"))
             if ok:
                 await self._notify(profile, f"game:{profile}:req:{req['id']}", title,
-                                   f"z panelu ({by})", now)
+                                   f"{skad} ({by})", now)
             else:
                 await self._notify(
                     profile, f"game:{profile}:req:{req['id']}", f"NIE UDALO SIE ({title})",
                     f"{state.get('error')}\nkidwatch ponowi zapis przy nastepnej synchronizacji.",
                     now,
                 )
+
+    async def _shorten(self, req, profile: str, state: dict, by: str, now: datetime) -> None:
+        """Skraca trwajacy bonus. Bez zapisu do NextDNS: gry zostaja dozwolone
+        do nowego konca, a blokade po nim zrobi `expire_bonuses` (w tym samym
+        kroku, gdy koniec juz minal). Bez bonusu nie ma czego skracac."""
+        if state.get("mode") != "bonus" or not state.get("bonus_until"):
+            self.requests.finish(req["id"], False, "brak dodanego czasu do skrócenia")
+            return
+        minutes = int(req["minutes"] or 0)
+        until = max(now, from_iso(state["bonus_until"]) - timedelta(minutes=minutes))
+        state.update(bonus_until=to_iso(until), changed_at=to_iso(now), by=by)
+        self._save(profile, state)
+        self.requests.finish(req["id"], True, None)
+        await self._notify(profile, f"game:{profile}:req:{req['id']}",
+                           f"-{minutes} min (do {self._hhmm(state['bonus_until'])})",
+                           f"z WhatsAppa ({by})", now)
 
     # ------------------------------------------------------- bonus, harmonogram
     async def expire_bonuses(self, now: datetime) -> None:

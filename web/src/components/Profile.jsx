@@ -15,6 +15,7 @@ import {
 import TwoFactor from './TwoFactor';
 import { Accounts, AuditLog, MyNotifications } from './Konta';
 import Integrations from './Integracje';
+import { KomendyAdmin, KomendyDomu } from './Komendy';
 import { canEditIntegrations } from '../utils/integracje';
 
 const STATUS = {
@@ -451,6 +452,8 @@ export default function Profile({ user, onChanged, onClose, tvPause, onTvPauseCh
           <Accounts />
           <div className="stat-label">Dziennik domu</div>
           <AuditLog />
+          <div className="stat-label">Komendy z WhatsAppa{user?.dom ? ` — ${user.dom.nazwa}` : ''}</div>
+          <KomendyDomu />
         </>
       )}
       {/* Integracje domu i ich sekrety: tylko aktywny administrator instalacji
@@ -467,6 +470,8 @@ export default function Profile({ user, onChanged, onClose, tvPause, onTvPauseCh
         <>
           <div className="stat-label">Powiadomienia / WhatsApp (bot i lista bramki)</div>
           <WhatsApp />
+          <div className="stat-label">Komendy z WhatsAppa — wszystkie domy</div>
+          <KomendyAdmin />
         </>
       )}
       <div className="stat-label">Telewizor</div>

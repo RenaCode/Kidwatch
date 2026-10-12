@@ -53,7 +53,7 @@ import sqlite3
 import time
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from datetime import time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -218,6 +218,9 @@ class Profil:
     #: None = wszystkie dzieci.
     dzieci: frozenset[str] | None = None
     aktywne: bool = True
+    #: "cisza 2h" z WhatsAppa (komendy_bot.py): do tej chwili (UTC) konto
+    #: dostaje powiadomienia jak w godzinach ciszy. Cecha osoby, nie domu.
+    wyciszone_do: datetime | None = None
 
     @property
     def ma_kanal(self) -> bool:
@@ -322,16 +325,19 @@ def adresaci(
             wynik.pominieci[p.login] = "inne dziecko"
             continue
         po = None
+        koniec = None
         if p.cisza_od is not None and p.cisza_do is not None:
             koniec = koniec_ciszy(p.cisza_od, p.cisza_do, now.astimezone(tz))
-            if koniec is not None:
-                if note.priority >= ALARM_PRIORYTET and p.cisza_alarmy:
-                    pass
-                elif kat == SESJE:
-                    wynik.pominieci[p.login] = "cisza"
-                    continue
-                else:
-                    po = koniec.astimezone(now.tzinfo)
+        if p.wyciszone_do is not None and p.wyciszone_do > now:
+            koniec = p.wyciszone_do if koniec is None else max(koniec, p.wyciszone_do)
+        if koniec is not None:
+            if note.priority >= ALARM_PRIORYTET and p.cisza_alarmy:
+                pass
+            elif kat == SESJE:
+                wynik.pominieci[p.login] = "cisza"
+                continue
+            else:
+                po = koniec.astimezone(now.tzinfo)
         wynik.adresaci.append(Adresat(p.login, po))
     return wynik
 
@@ -545,7 +551,25 @@ class ProfilePowiadomien:
                 (self.dom_id,),
             ).fetchall()
             odst = self._odstepstwa_domu(conn)
-        return [self._profil(r, odst.get(r["id"], (set(), set())), domu=True) for r in rows]
+            cisza = self._cisza(conn)
+        return [self._wycisz(self._profil(r, odst.get(r["id"], (set(), set())), domu=True),
+                             cisza.get(r["id"])) for r in rows]
+
+    def _cisza(self, conn: sqlite3.Connection) -> dict[int, float]:
+        """Wyciszenia z WhatsAppa (komendy_baza.py: `whatsapp_cisza`), ktore
+        jeszcze trwaja. Baza bez tabeli (komendy nigdy niewlaczone) — brak."""
+        if not _jest_tabela(conn, "whatsapp_cisza"):
+            return {}
+        return {int(r[0]): float(r[1]) for r in conn.execute(
+            "SELECT user_id, do_ts FROM whatsapp_cisza WHERE do_ts > ?", (self.clock(),))}
+
+    @staticmethod
+    def _wycisz(p: Profil, do_ts: float | None) -> Profil:
+        if do_ts is None:
+            return p
+        from dataclasses import replace  # noqa: PLC0415
+
+        return replace(p, wyciszone_do=datetime.fromtimestamp(do_ts, UTC))
 
     def _profile_bez_domow(self, conn: sqlite3.Connection) -> list[Profil]:
         try:

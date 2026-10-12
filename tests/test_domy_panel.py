@@ -382,8 +382,8 @@ def test_bot_whatsapp_tylko_dla_aktywnego_administratora(domy):
     assert u.WHATSAPP not in me["uprawnienia"]
     assert all(u.WHATSAPP not in d["uprawnienia"] for d in me["domy"])
     with sqlite3.connect(domy.cfg.panel_auth_path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM audyt WHERE akcja LIKE 'instancja.p%'"
-                            ).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM audyt WHERE akcja LIKE 'instancja.p%' "
+                            "OR akcja LIKE 'instancja.whatsapp%'").fetchone()[0] == 0
     # Aktywny administrator: dostep (tu bramka wylaczona — 200/404, nie 403)
     # i kazdy POST w dzienniku instancji (dom NULL).
     h = sso(domy, "admin", "admins")
@@ -396,7 +396,8 @@ def test_bot_whatsapp_tylko_dla_aktywnego_administratora(domy):
         assert st != 403 or u.WHATSAPP not in (_blad(b) or ""), (k, b)
     with sqlite3.connect(domy.cfg.panel_auth_path) as conn:
         wpisy = conn.execute("SELECT dom_id, login, akcja FROM audyt WHERE akcja LIKE "
-                             "'instancja.p%' ORDER BY id").fetchall()
+                             "'instancja.p%' OR akcja LIKE 'instancja.whatsapp%' ORDER BY id"
+                             ).fetchall()
     assert wpisy == [(None, "admin", "instancja." + k.removeprefix("/api/").replace("/", "."))
                      for k in INST_POST]
     me = call(domy, "GET", "/api/auth/me", headers=h)[2]

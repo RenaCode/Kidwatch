@@ -118,8 +118,13 @@ class BramkaNotifier:
         client: httpx.AsyncClient | None = None,
         sleep=None,
         clock=time.monotonic,
+        po_wysylce=None,
     ) -> None:
         self.cfg = cfg
+        #: (note, odbiorca, id wiadomosci) po przyjeciu przez bramke — id
+        #: z odpowiedzi `{"id": ...}` (WhatsApp). Komendy z WhatsAppa
+        #: rozpoznaja po nim odpowiedz-cytat na powiadomienie (komendy_bot.py).
+        self.po_wysylce = po_wysylce
         self._key = key
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=cfg.timeout_seconds)
@@ -171,13 +176,25 @@ class BramkaNotifier:
         }
 
     async def send(self, note: Notification, odbiorca: dict | None = None) -> bool:
-        return await with_retry(
-            lambda: self._client.post(
+        odpowiedzi: list[httpx.Response] = []
+
+        async def wyslij() -> httpx.Response:
+            r = await self._client.post(
                 self.url, json=self.payload(note, odbiorca), headers={"X-Api-Key": self._key}
-            ),
-            what="bramka",
-            **self._sleep_kwargs,
-        )
+            )
+            odpowiedzi.append(r)
+            return r
+
+        ok = await with_retry(wyslij, what="bramka", **self._sleep_kwargs)
+        if ok and self.po_wysylce is not None and odpowiedzi:
+            try:
+                data = odpowiedzi[-1].json()
+                wid = data.get("id") if isinstance(data, dict) else None
+                if isinstance(wid, str) and wid:
+                    self.po_wysylce(note, odbiorca, wid)
+            except Exception:  # noqa: BLE001 - zapis id to dodatek do wysylki
+                log.warning("bramka: nie zapamietalem id wyslanej wiadomosci", exc_info=True)
+        return ok
 
     async def aclose(self) -> None:
         if self._owns_client:

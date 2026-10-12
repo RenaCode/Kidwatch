@@ -122,13 +122,15 @@ def test_home_config_z_yaml_to_dzisiejszy_config_pole_w_pole(tmp_path):
     assert home.model_dump() == cfg.model_dump(
         include=set(HomeConfig.model_fields), exclude=domy_instancji()
     )
-    assert set(HomeConfig.model_fields) | {"panel", "app_map_path"} == set(Config.model_fields)
+    assert set(HomeConfig.model_fields) | {"panel", "app_map_path", "whatsapp_komendy"} \
+        == set(Config.model_fields)
     # Czesc instancji: dokladnie to, co w Config.
     assert inst.store == cfg.store and inst.panel == cfg.panel
     assert inst.notifiers.bramka == cfg.notifiers.bramka
     assert inst.mdm.url == cfg.mdm.url
     assert inst.device_read.records_path == cfg.device_read.records_path
     assert inst.app_map_path == cfg.app_map_path
+    assert inst.whatsapp_komendy == cfg.whatsapp_komendy
     assert inst.panel_auth_path == cfg.panel_auth_path
     # Pola instancji nie przeciekaja do domu.
     for obj, pole in ((home, "panel"), (home, "app_map_path"), (home.store, "path"),
