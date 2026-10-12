@@ -401,6 +401,7 @@ python -m kidwatch user-uprawnienia <login> [+perm] [-perm] [=perm]  # per-accou
 python -m kidwatch user-reset <login> [--password-stdin]  # new password, unlock, log out everywhere
 python -m kidwatch user-reset <login> --totp              # remove 2FA (lost phone)
 python -m kidwatch user-del <login>
+python -m kidwatch user-login <login> <new> [--zapisz]  # rename in place (same id); dry run without --zapisz
 python -m kidwatch user-list
 python -m kidwatch konta-migruj [--przypisz N=login …] [--zapisz [--wlacz]]  # gateway recipients -> accounts
 python -m kidwatch konta-tryb [trasy|konta]               # show / switch notification mode
@@ -468,6 +469,12 @@ renacode-infra) in front of the panel **and** the same switch sets
   `[a-z0-9._-]`. No accounts are created on the fly — an unknown login gets
   403 with a readable message and an "SSO log out" button. A new person needs
   two steps: an Authelia account and `user-add` with the same login.
+  An existing account whose login differs from Authelia (e.g. before SSO is
+  switched on): `user-login <old> <new>` renames it in place — password,
+  2FA, household memberships, roles, admin flag, notification channels and
+  history stay (same account id); every place that stores the login as text
+  (audit, request queues, outbox, per-account dedup, notification history)
+  is rewritten in the same run, sessions are closed. Dry run by default.
 - `Remote-Groups` must contain `wlasciciel`, `rodzina` or `admins` (chart
   `sso.grupy` → `SSO_GRUPY`; must match the Authelia rule for this host).
   Groups only gate entry; what an account may do comes from its household
@@ -900,7 +907,7 @@ restart needed. It is the only reliable way to get good game coverage.
 | `tv-pauza` | TV monitoring pause (see above) |
 | `unifi [--fingerprint]` | who is on home Wi-Fi per UniFi; `--fingerprint` prints the controller's SHA-256 certificate fingerprint for `unifi.cert_sha256` |
 | `device`, `device-watch` | one-off / looping read of iPad state over lockdown (`device_read`, requires pairing and the same LAN) |
-| `user-add`, `user-reset`, `user-del`, `user-list`, `user-rola`, `user-uprawnienia` | panel accounts, roles and permissions |
+| `user-add`, `user-reset`, `user-del`, `user-login`, `user-list`, `user-rola`, `user-uprawnienia` | panel accounts, roles and permissions |
 | `domy [--sprawdz] [--baza <copy>]` | households in `panel-auth.db` and their members (runs the idempotent migration to "Dom 1"; see `docs/architektura-domy.md`); `--sprawdz` decrypts every integration with `KIDWATCH_KEK` and prints how many keys/integrations it verified — zero is a failure (backup restore test) |
 | `dom-importuj 1 --podglad\|--zapisz` | move Dom 1 from `config.yaml` + env secrets into the encrypted database, after a field-by-field comparison (`docs/sejf-domow.md`) |
 | `dom-zrodlo <dom> yaml\|baza` | where a household takes its configuration from (rollback: `dom-zrodlo 1 yaml`) |

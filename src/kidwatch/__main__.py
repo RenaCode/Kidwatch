@@ -1407,6 +1407,35 @@ async def cmd_user_del(args) -> int:
     return 0
 
 
+async def cmd_user_login(args) -> int:
+    """Zmiana loginu konta w miejscu (zmiana_loginu.py). Bez --zapisz: plan."""
+    from .zmiana_loginu import MIEJSCA, BladZmiany, bazy_domow, zmien_login  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    _auth(cfg)  # schemat panelu i domow (jak kazde polecenie kont)
+    bazy = bazy_domow(cfg.panel_auth_path, cfg.store.path)
+    try:
+        plan = zmien_login(cfg.panel_auth_path, args.login, args.nowy, bazy=bazy,
+                           zapisz=args.zapisz)
+    except BladZmiany as exc:
+        print(f"odrzucone: {exc}", file=sys.stderr)
+        return 1
+    print(f"Konto {plan.stary!r} (id {plan.user_id}) -> {plan.nowy!r}; bazy domow: "
+          f"{', '.join(str(d) for d in sorted(bazy)) or '-'}")
+    for miejsce, n in plan.zmiany:
+        print(f"  {miejsce}: {n}")
+    print("Bez zmian (trzymaja id konta): haslo, 2FA i kody zapasowe, rola i odstepstwa, "
+          "czlonkostwa domow, flaga administratora, kanaly i preferencje powiadomien.")
+    print(f"Sprawdzone miejsca z loginem jako tekstem: {len(MIEJSCA)} "
+          f"({', '.join(m for _, m, _ in MIEJSCA)}).")
+    if not plan.zapisano:
+        print("Podglad — nic nie zapisano. Zapis: dodaj --zapisz.")
+        return 0
+    print(f"ZAPISANO. Sesje konta zamkniete — zaloguj sie jako {plan.nowy!r}. Login "
+          "w Authelii (SSO) musi byc taki sam.")
+    return 0
+
+
 async def cmd_user_rola(args) -> int:
     from .panel_auth import UnknownUser  # noqa: PLC0415
 
@@ -2110,6 +2139,13 @@ def build_parser() -> argparse.ArgumentParser:
     user_upr.add_argument("login")
     # REMAINDER: `-mdm.podglad` to zmiana, nie opcja argparse.
     user_upr.add_argument("zmiany", nargs=argparse.REMAINDER)
+    user_login = sub.add_parser(
+        "user-login",
+        help="zmien login konta panelu w miejscu (haslo, 2FA, domy i historia zostaja); "
+             "bez --zapisz: tylko plan")
+    user_login.add_argument("login", help="obecny login")
+    user_login.add_argument("nowy", help="nowy login (a-z, 0-9, '.', '_', '-'; jak w Authelii)")
+    user_login.add_argument("--zapisz", action="store_true", help="zapisz zmiane")
     user_del = sub.add_parser("user-del", help="usun konto panelu WWW razem z sesjami")
     user_del.add_argument("login")
     sub.add_parser("user-list", help="konta panelu WWW, ostatnie logowanie i blokady")
@@ -2213,6 +2249,7 @@ def main(argv: list[str] | None = None) -> int:
         "user-add": cmd_user_add,
         "user-reset": cmd_user_reset,
         "user-del": cmd_user_del,
+        "user-login": cmd_user_login,
         "user-rola": cmd_user_rola,
         "user-uprawnienia": cmd_user_uprawnienia,
         "user-list": cmd_user_list,
