@@ -1362,6 +1362,8 @@ async def cmd_domy(args) -> int:
 
     # --baza: kopia panel-auth.db (test odtworzenia, §3.3) — bez config.yaml.
     baza = getattr(args, "baza", None)
+    if baza and not _jest_baza(baza):
+        return 2
     cfg = None if baza else Config.load(args.config)
     rejestr = RejestrDomow(baza or cfg.panel_auth_path)
     raport = rejestr.migruj(strefa=cfg.timezone if cfg else None)
@@ -1375,6 +1377,11 @@ async def cmd_domy(args) -> int:
                   else dom.strefa)
         print(f"{dom.id}. {dom.nazwa} — konfiguracja: {zrodlo}, strefa: {strefa}, "
               f"wersja: {dom.wersja}{', ZAWIESZONY' if dom.zawieszony else ''}")
+        if (dom.id == 1 and dom.zrodlo_konfiguracji != ZRODLO_YAML and not baza
+                and os.environ.get(WYMUSZENIE_DOMU_1_ENV, "").strip().lower() == ZRODLO_YAML):
+            # exec dziedziczy env poda: tak samo jak `run` — pod chodzi z config.yaml.
+            print(f"   WYMUSZONE config.yaml przez {WYMUSZENIE_DOMU_1_ENV} (Sekret) — "
+                  f"usun klucz po naprawie, inaczej przejscie na baze nie zadziala")
         czlonkowie = rejestr.czlonkowie(dom.id)
         if not czlonkowie:
             print("   brak czlonkow")
@@ -1424,6 +1431,14 @@ async def cmd_domy(args) -> int:
         print("WYNIK: wszystko sie odszyfrowuje")
         return 0
     return 0
+
+
+def _jest_baza(sciezka: str) -> bool:
+    """--baza musi wskazywac istniejacy plik — sqlite3 zalozylby pusty."""
+    if Path(sciezka).is_file():
+        return True
+    print(f"nie ma pliku bazy {sciezka}", file=sys.stderr)
+    return False
 
 
 def _sejf():
@@ -1548,13 +1563,22 @@ async def cmd_klucze_potwierdz(args) -> int:
     from .domy import RejestrDomow  # noqa: PLC0415
     from .sejf import BrakKek, Sejf, _klucz_z_base64  # noqa: PLC0415
 
+    if args.baza and not _jest_baza(args.baza):
+        return 2
     klucz = Sejf(_klucz_z_base64(sys.stdin.readline(), "klucz z menedzera hasel"))
     rejestr = RejestrDomow(args.baza) if args.baza else _rejestr(Config.load(args.config))
     raport = rejestr.sprawdz_raport(klucz)
     problemy = []
-    if raport.bledy:
-        problemy.append(f"{len(raport.bledy)} kluczy domow/integracji nie otwiera sie tym "
-                        f"kluczem (DEK-i na innym kluczu? najpierw kidwatch klucze-rotuj)")
+    bledy_dek = [b for b in raport.bledy if b[1] is None]
+    bledy_integracji = [b for b in raport.bledy if b[1] is not None]
+    if bledy_dek:
+        problemy.append(f"{len(bledy_dek)} kluczy domow nie otwiera sie tym kluczem "
+                        f"(domy {', '.join(str(b[0]) for b in bledy_dek)}; DEK-i na innym "
+                        f"kluczu? najpierw kidwatch klucze-rotuj)")
+    if bledy_integracji:
+        problemy.append(f"{len(bledy_integracji)} integracji nie odszyfrowuje sie mimo "
+                        f"otwartego klucza domu (uszkodzony wiersz — wpisz integracje od nowa): "
+                        f"{', '.join(f'Dom {d} {t}' for d, t, _ in bledy_integracji)}")
     if raport.klucze_domow == 0 and not raport.bledy:
         problemy.append("w bazie nie ma zadnego klucza domu — nic nie potwierdzono")
     if not args.baza:

@@ -395,9 +395,10 @@ def _nowszy_token_tv(rejestr: RejestrDomow, dom_id: int, sejf: Sejf,
                      ) -> tuple[dict[str, dict[str, str]], list[str]]:
     """Ponowny import nie cofa tokenu aplikacji TV: po sparowaniu w trybie
     `baza` nowy token jest tylko w bazie, a plik na /data zostaje stary.
-    Token z bazy wygrywa, gdy pliku nie ma albo jest starszy niz ostatnia
-    zmiana integracji `tv`; nowszy plik (parowanie po powrocie do yaml) —
-    wygrywa plik."""
+    Token z bazy wygrywa, gdy pliku nie ma albo jest starszy niz ostatni
+    zapis SAMEGO tokenu w bazie (audyt; zmiana innego pola integracji `tv`
+    sie nie liczy); nowszy plik (parowanie po powrocie do yaml) — wygrywa
+    plik."""
     wynik = {t: dict(p) for t, p in sekrety_yaml.items()}
     dom = rejestr.dom(dom_id)
     tv = rejestr.integracja(dom_id, "tv")
@@ -408,15 +409,18 @@ def _nowszy_token_tv(rejestr: RejestrDomow, dom_id: int, sejf: Sejf,
     z_pliku = wynik.get("tv", {}).get("app_token")
     if not w_bazie or w_bazie == z_pliku:
         return wynik, []
+    zmiana_tokenu = rejestr.czas_zmiany_sekretu(dom_id, "tv", "app_token")
+    if zmiana_tokenu is None:
+        zmiana_tokenu = tv.zmienione_at or 0
     try:
-        plik_nowszy = plik.stat().st_mtime > (tv.zmienione_at or 0)
+        plik_nowszy = plik.stat().st_mtime > zmiana_tokenu
     except OSError:
         plik_nowszy = False
     if z_pliku and plik_nowszy:
         return wynik, []
     wynik.setdefault("tv", {})["app_token"] = w_bazie
-    return wynik, [f"token aplikacji TV: zostaje nowszy z bazy ({plik} "
-                   f"{'starszy' if z_pliku else 'nie istnieje'})"]
+    powod = "starszy niz ostatnia zmiana tokenu w bazie" if z_pliku else "nie istnieje"
+    return wynik, [f"token aplikacji TV: zostaje token z bazy ({plik} {powod})"]
 
 
 @dataclass
