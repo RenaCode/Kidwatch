@@ -69,7 +69,8 @@ def build_outbox(
     if bramka is not None and bramka.enabled and bramka.per_konto:
         from .odbiorcy import ProfilePowiadomien  # noqa: PLC0415
 
-        konta = ProfilePowiadomien(auth_path)
+        # Odbiorcy, preferencje i tryb TEGO domu (czlonkowie domu).
+        konta = ProfilePowiadomien(auth_path, dom_id=1 if dom_id is None else dom_id)
     return Outbox(
         dispatcher, store, konta=konta,
         dziecko={d.display_name: d.child for d in cfg.devices}, tz=ZoneInfo(cfg.timezone),
@@ -1070,9 +1071,13 @@ async def cmd_weekly(args) -> int:
 
 # ======================================================================== konta
 def _auth(cfg: Config):
+    return _auth_path(cfg.panel_auth_path)
+
+
+def _auth_path(path: str):
     from .panel_auth import PanelAuth  # noqa: PLC0415
 
-    return PanelAuth(cfg.panel_auth_path)
+    return PanelAuth(path)
 
 
 def _new_password(args) -> tuple[str, bool]:
@@ -1101,14 +1106,16 @@ async def cmd_user_add(args) -> int:
     cfg = Config.load(args.config)
     password, generated = _new_password(args)
     try:
-        _auth(cfg).add_user(args.login, password, args.rola)
+        _auth(cfg).add_user(args.login, password, args.rola,
+                            dom_id=None if args.bez_domu else 1)
     except UserExists:
         print(f"konto {args.login!r} juz istnieje — uzyj user-reset", file=sys.stderr)
         return 1
     except ValueError as exc:
         print(f"odrzucone: {exc}", file=sys.stderr)
         return 1
-    print(f"zalozono konto panelu {args.login!r}, rola {args.rola} ({cfg.panel_auth_path})")
+    gdzie = "bez domu" if args.bez_domu else f"rola {args.rola} w Domu 1"
+    print(f"zalozono konto panelu {args.login!r}, {gdzie} ({cfg.panel_auth_path})")
     from .panel_sso import login_ok  # noqa: PLC0415
 
     if not login_ok(args.login.strip()):
@@ -1178,6 +1185,9 @@ async def cmd_user_rola(args) -> int:
         n = _auth(cfg).set_role(args.login, args.rola)
     except UnknownUser:
         print(f"nie ma konta {args.login!r}", file=sys.stderr)
+        return 1
+    except ValueError as exc:  # m.in. ostatnie konto z zarzadzaniem kontami w domu
+        print(f"odrzucone: {exc}", file=sys.stderr)
         return 1
     print(f"konto {args.login!r}: rola {args.rola}, wylogowano sesji: {n}")
     return 0
@@ -1374,6 +1384,9 @@ async def cmd_domy(args) -> int:
     bez = rejestr.konta_bez_domu()
     if bez:
         print(f"konta bez zadnego domu: {', '.join(bez)}")
+    admini = [u["login"] for u in _auth_path(rejestr.path).list_users() if u["admin_instancji"]]
+    if admini:
+        print(f"administratorzy instalacji: {', '.join(admini)}")
     if getattr(args, "sprawdz", False):
         from .konfiguracja_domu import zbuduj_dom  # noqa: PLC0415
         from .sejf import SejfError  # noqa: PLC0415
@@ -1573,6 +1586,101 @@ async def cmd_dom_klucz_rotuj(args) -> int:
     return 0
 
 
+async def cmd_user_admin(args) -> int:
+    """Administrator instalacji (§2.3, decyzja 5): flaga w panel-auth.db,
+    wylacznie z CLI. `on` wypisuje konto ze wszystkich domow (konto
+    administracyjne bez czlonkostw — widzi domy przez role, z wpisem w
+    dzienniku, i nie dostaje ich powiadomien), chyba ze --zostaw-domy."""
+    from .domy import OstatniZarzadzajacy, RejestrDomow  # noqa: PLC0415
+    from .panel_auth import UnknownUser  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    auth = _auth(cfg)
+    rejestr = RejestrDomow(cfg.panel_auth_path)
+    try:
+        uid = auth.user_id(args.login)
+    except UnknownUser:
+        print(f"nie ma konta {args.login!r}", file=sys.stderr)
+        return 1
+    wlacz = args.stan == "on"
+    if wlacz and not args.zostaw_domy:
+        czlonkostwa = rejestr.czlonkostwa(uid)
+        # Najpierw sprawdzenie wszystkich domow, potem zmiany — bez polowicznego
+        # wypisania, gdy w drugim domu to ostatni zarzadzajacy.
+        for c in czlonkostwa:
+            if uprawnienia.KONTA in c.uprawnienia and not any(
+                    uprawnienia.KONTA in x.uprawnienia
+                    for x in rejestr.czlonkowie(c.dom_id) if x.user_id != uid):
+                print(f"odrzucone: {args.login!r} to jedyne konto zarzadzajace domem "
+                      f"{c.dom_id} — najpierw daj te role komus innemu (konto prywatne "
+                      "zostaw jako zwykle konto, administratorem zrob osobne).",
+                      file=sys.stderr)
+                return 1
+        for c in czlonkostwa:
+            try:
+                auth.remove_membership(args.login, c.dom_id)
+            except OstatniZarzadzajacy as exc:
+                print(f"odrzucone: {exc}", file=sys.stderr)
+                return 1
+            print(f"wypisano z domu {c.dom_id} (byla rola: {c.rola})")
+    zmiana = rejestr.ustaw_admin_instancji(uid, wlacz)
+    n = auth.revoke_sessions(args.login)
+    print(f"konto {args.login!r}: administrator instalacji "
+          f"{'TAK' if wlacz else 'nie'}{'' if zmiana else ' (bez zmian)'}, "
+          f"wylogowano sesji: {n}")
+    if wlacz:
+        print("Rola dziala tylko przy logowaniu przez Authelie z grupa 'admins' "
+              "albo haslem z wlaczonym 2FA. Kazde wejscie do cudzego domu trafia do dziennika.")
+    return 0
+
+
+async def cmd_dom_dodaj(args) -> int:
+    """Nowy dom (konfiguracja z bazy) z pusta baza zdarzen."""
+    from .domy import RejestrDomow, sciezka_bazy_domu  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    rejestr = RejestrDomow(cfg.panel_auth_path)
+    rejestr.migruj(strefa=cfg.timezone)
+    try:
+        dom_id = rejestr.dodaj_dom(args.nazwa, strefa=args.strefa or cfg.timezone)
+    except ValueError as exc:
+        print(f"odrzucone: {exc}", file=sys.stderr)
+        return 1
+    # Pusta baza zdarzen domu: panel czyta ja tylko do odczytu, wiec musi
+    # istniec. Pisze do niej potem wylacznie srodowisko domu.
+    Store(str(sciezka_bazy_domu(dom_id, cfg.store.path))).close()
+    print(f"zalozono dom {dom_id}: {args.nazwa}. Czlonkow dodasz: dom-czlonek {dom_id} <login> "
+          "<rola>; integracje — po etapie E2.")
+    return 0
+
+
+async def cmd_dom_czlonek(args) -> int:
+    """Rola konta w domu albo wypisanie (--usun)."""
+    from .panel_auth import UnknownUser  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    auth = _auth(cfg)
+    try:
+        if args.usun:
+            n = auth.remove_membership(args.login, args.dom)
+            print(f"konto {args.login!r} wypisane z domu {args.dom}, wylogowano sesji: {n}")
+        else:
+            if not args.rola:
+                print("podaj role (wlasciciel-domu, zarzadca, podglad) albo --usun",
+                      file=sys.stderr)
+                return 2
+            n = auth.set_role(args.login, args.rola, dom_id=args.dom)
+            print(f"konto {args.login!r}: rola {args.rola} w domu {args.dom}, "
+                  f"wylogowano sesji: {n}")
+    except UnknownUser:
+        print(f"nie ma konta {args.login!r}", file=sys.stderr)
+        return 1
+    except (ValueError, LookupError) as exc:
+        print(f"odrzucone: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 # ========================================================================= main
 PANEL_ROLES = uprawnienia.ROLES
 
@@ -1672,6 +1780,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="wlasciciel (domyslnie) albo podglad: tylko ogladanie, bez MDM, czasu gry, "
         "pauzy TV, WhatsAppa i aplikacji TV",
     )
+    users["user-add"].add_argument(
+        "--bez-domu", action="store_true",
+        help="konto bez zadnego domu (np. konto administracyjne przed user-admin on)",
+    )
     user_rola = sub.add_parser(
         "user-rola", help="zmien role konta (wylogowuje jego sesje, kasuje odstepstwa uprawnien)"
     )
@@ -1744,6 +1856,24 @@ def build_parser() -> argparse.ArgumentParser:
                          help="nowy klucz danych domu i przeszyfrowanie jego integracji")
     dkr.add_argument("dom", type=int)
 
+    user_admin = sub.add_parser(
+        "user-admin",
+        help="administrator instalacji: widzi wszystkie domy (z wpisem w dzienniku); "
+        "on wypisuje konto z domow",
+    )
+    user_admin.add_argument("login")
+    user_admin.add_argument("stan", choices=("on", "off"))
+    user_admin.add_argument("--zostaw-domy", action="store_true",
+                            help="nie wypisuj z domow (niezalecane: §2.3)")
+    dom_dodaj = sub.add_parser("dom-dodaj", help="zaloz nowy dom (bez czlonkow, pusta baza)")
+    dom_dodaj.add_argument("nazwa")
+    dom_dodaj.add_argument("--strefa", help="strefa czasowa (domyslnie jak w config.yaml)")
+    dom_czl = sub.add_parser("dom-czlonek", help="rola konta w domu albo wypisanie (--usun)")
+    dom_czl.add_argument("dom", type=int)
+    dom_czl.add_argument("login")
+    dom_czl.add_argument("rola", nargs="?", choices=uprawnienia.ROLE_DOMU)
+    dom_czl.add_argument("--usun", action="store_true", help="wypisz konto z domu")
+
     return parser
 
 
@@ -1783,6 +1913,9 @@ def main(argv: list[str] | None = None) -> int:
         "klucze-rotuj": cmd_klucze_rotuj,
         "klucze-potwierdz": cmd_klucze_potwierdz,
         "dom-klucz-rotuj": cmd_dom_klucz_rotuj,
+        "user-admin": cmd_user_admin,
+        "dom-dodaj": cmd_dom_dodaj,
+        "dom-czlonek": cmd_dom_czlonek,
     }
     try:
         return asyncio.run(handlers[args.command](args))

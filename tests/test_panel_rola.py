@@ -156,7 +156,12 @@ def test_baza_sprzed_rol_istniejace_konta_to_wlasciciele(tmp_path):
     assert auth.list_users()[0]["rola"] == "wlasciciel"
     session = auth.login("rodzic1", HASLO).session
     assert session.rola == "wlasciciel"
-    assert session.uprawnienia == frozenset(uprawnienia.UPRAWNIENIA)
+    # Od E3a sesja niesie uprawnienia poza domem; w Domu 1 — pelny zestaw.
+    assert session.uprawnienia == {uprawnienia.KONTO_WLASNE, uprawnienia.WHATSAPP}
+    from kidwatch.domy import DOM_1, RejestrDomow  # noqa: PLC0415
+
+    assert RejestrDomow(path).uprawnienia(session.user_id, DOM_1) == frozenset(
+        uprawnienia.UPRAWNIENIA)
 
 
 def test_nieznana_rola_odrzucona(tmp_path):
