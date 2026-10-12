@@ -274,7 +274,8 @@ def test_kiedy_zadziala_tylko_dom_1_w_bazie_bez_restartu(monkeypatch):
     from kidwatch.__main__ import kiedy_zadziala  # noqa: PLC0415
 
     monkeypatch.delenv("KIDWATCH_DOM_1_ZRODLO", raising=False)
-    szybko = "Zadziala w ciagu ok. 10 s, bez restartu poda (przeladowanie domu)."
+    szybko = ("Zadziala w ciagu ok. 10 s, bez restartu poda (przeladowanie domu), "
+              "jesli Kidwatch dziala juz w trybie baza; inaczej po restarcie poda.")
     restart = "Dziala po restarcie poda."
     assert kiedy_zadziala(1, True, True) == szybko
     assert kiedy_zadziala(1, False, True) == restart   # yaml -> baza: pod chodzi na yaml
@@ -348,7 +349,48 @@ def test_rotacja_z_nieczytelna_kopia_json(dom):
     assert raport.potwierdzone and raport.kopie == 0
 
 
-def test_klucze_potwierdz_osobny_komunikat_dla_kopii(dom, kek, monkeypatch, capsys):
+# ============================== trzeci przeglad: koniec awarii i klucze-potwierdz
+def _otworz_awarie(r, t: float) -> None:
+    assert _wyslij(r, t)
+    assert r.alarm_startu(DOM, t + 60) is None  # awaria otwarta: odstep trwa
+
+
+async def test_start_z_yaml_konczy_awarie_startu(tmp_path, monkeypatch):
+    """A (baza, alarm) -> start ratunkowy z config.yaml -> B = alarm od razu."""
+    import kidwatch.__main__ as cli  # noqa: PLC0415
+    from test_przeladowanie import _config  # noqa: PLC0415
+
+    cfg = _config(tmp_path)
+    inst, home = cfg.split()
+    r = dm.RejestrDomow(cfg.panel_auth_path)
+    r.migruj()
+    t = 4_000_000.0
+    assert r.alarm_startu(1, t) is not None
+    r.zapisz_alarm_startu(1, 3600.0, "A", t)
+    assert r.alarm_startu(1, t + 60) is None
+    monkeypatch.setattr(cli, "build_home_runtime", lambda *a, **k: object())
+    await cli.start_domu_z_yaml(r, inst, home, None)
+    assert r.alarm_startu(1, t + 120) is not None
+
+
+async def test_naprawa_po_starcie_z_kopii_konczy_awarie(dom):
+    """Nadzorca przeladowal dom na dobra wersje po starcie z kopii: wpis
+    `dom.start.ok`, nastepna awaria startu alarmuje od razu."""
+    r = dom["rejestr"]
+    t = 5_000_000.0
+    _otworz_awarie(r, t)
+    u = Uklad({2: "home-v2"})
+    u.p.start_ok = lambda dom_id, w: r.zapisz_start_ok(dom_id, w, t + 100)
+    await u.start()
+    u.wersja[DOM] = 2
+    await _czekaj(lambda: "start home-v2" in u.zdarzenia)
+    await _czekaj(lambda: r.alarm_startu(DOM, t + 200) is not None)
+    assert await u.koniec() == 0
+
+
+def test_klucze_potwierdz_blad_kopii_tylko_ostrzezenie(dom, kek, monkeypatch, capsys):
+    """Kopia jest pod kluczem domu (DEK), nie KEK — jej blad nie blokuje
+    potwierdzenia klucza (ani usuniecia KIDWATCH_KEK_POPRZEDNI)."""
     import base64  # noqa: PLC0415
     import io  # noqa: PLC0415
 
@@ -358,11 +400,11 @@ def test_klucze_potwierdz_osobny_komunikat_dla_kopii(dom, kek, monkeypatch, caps
     r = dom["rejestr"]
     assert r.zapamietaj_dobra(DOM, r.dom(DOM).wersja)
     _zepsuj_kopie(r)
-    cfg_path = _zapisz_konfig(dom["tmp"] / "cfg", _prosta(dom["tmp"] / "cfg")) \
-        if (dom["tmp"] / "cfg").mkdir() is None else None
+    (dom["tmp"] / "cfg").mkdir()
+    cfg_path = _zapisz_konfig(dom["tmp"] / "cfg", _prosta(dom["tmp"] / "cfg"))
     monkeypatch.setattr("sys.stdin", io.StringIO(base64.b64encode(kek).decode() + "\n"))
-    assert cli.main(["--config", str(cfg_path), "klucze-potwierdz", "--baza", r.path]) == 1
+    assert cli.main(["--config", str(cfg_path), "klucze-potwierdz", "--baza", r.path]) == 0
     out = capsys.readouterr()
     tekst = out.out + out.err
-    assert "kopia ostatniej dobrej konfiguracji nie odszyfrowuje sie" in tekst
-    assert "wpisz integracje od nowa" not in tekst
+    assert "UWAGA: kopia ostatniej dobrej konfiguracji nie odszyfrowuje sie" in tekst
+    assert "ODMOWA" not in tekst

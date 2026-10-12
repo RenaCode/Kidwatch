@@ -1773,6 +1773,9 @@ class Przeladowanie:
     materializuj: Callable[[int, HomeConfig], None] = _nic
     zapamietaj: Callable[[int, int], None] = _nic
     zapisz_blad: Callable[[int, int, str], None] = _nic
+    #: Dom znow dziala na biezacej wersji — konczy awarie startu w dzienniku
+    #: (RejestrDomow.zapisz_start_ok), zeby alarm nastepnej szedl od razu.
+    start_ok: Callable[[int, int], Any] = _nic
     ostatnia_dobra: Callable[[int], tuple[int, HomeConfig] | None] = _nic
     alarm: Callable[[str, str], Awaitable[None]] | None = None
     przejsciowy: Callable[[BaseException], bool] = blad_przejsciowy
@@ -1985,6 +1988,11 @@ class Nadzorca:
             await asyncio.to_thread(p.zapamietaj, dom_id, w)
         except Exception:
             log.exception("dom %d: nie zapisano kopii dzialajacej konfiguracji", dom_id)
+        try:
+            # Naprawa po starcie z kopii konczy awarie startu (dom.start.ok).
+            await asyncio.to_thread(p.start_ok, dom_id, w)
+        except Exception:
+            log.exception("dom %d: nie zapisano udanego startu w dzienniku", dom_id)
         if self._alarmy.pop(dom_id, None) is not None:
             await self._alarm(f"Dom {dom_id}: konfiguracja znow dziala",
                               f"Dom dziala na konfiguracji w wersji {w}.")

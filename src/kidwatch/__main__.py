@@ -370,6 +370,7 @@ def przeladowanie_domow(rejestr, inst: InstanceConfig, konfiguracje: dict, stany
             dom_id, inst, home, Classifier(inst.app_map_path)),
         po_zmianie=po_zmianie, stany=stany, materializuj=materializuj,
         zapamietaj=rejestr.zapamietaj_dobra, zapisz_blad=rejestr.zapisz_blad_przeladowania,
+        start_ok=rejestr.zapisz_start_ok,
         ostatnia_dobra=lambda dom_id: zbuduj_dom_z_kopii(rejestr, dom_id, Sejf.z_srodowiska()),
         alarm=alarm)
 
@@ -470,6 +471,28 @@ async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id:
     return runtime
 
 
+async def start_domu_z_yaml(rejestr, inst: InstanceConfig, home: HomeConfig, alarm):
+    """Dom 1 z config.yaml (takze droga ratunkowa KIDWATCH_DOM_1_ZRODLO=yaml).
+    Blad = alarm i wyjatek (jak dotad). Udany start konczy awarie startu
+    domu w dzienniku (`dom.start.ok`): nastepna awaria w trybie `baza`
+    alarmuje od razu, a nie po resztce odstepu sprzed powrotu do yaml."""
+    from .domy import DOM_1  # noqa: PLC0415
+
+    try:
+        runtime = build_home_runtime(DOM_1, inst, home, Classifier(inst.app_map_path))
+    except Exception as exc:
+        log.error("Dom 1 (config.yaml) nie wystartowal — %s", exc)
+        if alarm is not None:
+            await alarm("Dom 1: monitoring nie wystartowal",
+                        f"Konfiguracja z config.yaml: {type(exc).__name__}. Sprawdz log.")
+        raise
+    try:
+        rejestr.zapisz_start_ok(DOM_1, None)
+    except Exception:
+        log.exception("Dom 1: nie zapisano udanego startu w dzienniku")
+    return runtime
+
+
 async def cmd_run(args) -> int:
     from .domy import (  # noqa: PLC0415
         DOM_1,
@@ -524,14 +547,7 @@ async def cmd_run(args) -> int:
             return 2
         home = runtime.home
     else:
-        try:
-            runtime = build_home_runtime(DOM_1, inst, home, Classifier(inst.app_map_path))
-        except Exception as exc:
-            log.error("Dom 1 (config.yaml) nie wystartowal — %s", exc)
-            if alarm is not None:
-                await alarm("Dom 1: monitoring nie wystartowal",
-                            f"Konfiguracja z config.yaml: {type(exc).__name__}. Sprawdz log.")
-            raise
+        runtime = await start_domu_z_yaml(rejestr, inst, home, alarm)
 
     log.info(
         "start: zrodlo=%s urzadzenia=%s kanaly=%s",
@@ -1672,7 +1688,10 @@ def kiedy_zadziala(dom_id: int, baza_przed: bool, baza_po: bool) -> str:
 
     wymuszony_yaml = os.environ.get(WYMUSZENIE_DOMU_1_ENV, "").strip().lower() == "yaml"
     if dom_id == DOM_1 and baza_przed and baza_po and not wymuszony_yaml:
-        return "Zadziala w ciagu ok. 10 s, bez restartu poda (przeladowanie domu)."
+        # Stan bazy, nie dzialajacego procesu: pod uruchomiony jeszcze w trybie
+        # `yaml` (przed restartem po dom-importuj) przeladowania nie ma.
+        return ("Zadziala w ciagu ok. 10 s, bez restartu poda (przeladowanie domu), "
+                "jesli Kidwatch dziala juz w trybie baza; inaczej po restarcie poda.")
     return "Dziala po restarcie poda."
 
 
@@ -1811,10 +1830,12 @@ async def cmd_klucze_potwierdz(args) -> int:
                         f"otwartego klucza domu (uszkodzony wiersz — wpisz integracje od nowa): "
                         f"{', '.join(f'Dom {d} {t}' for d, t, _ in bledy_integracji)}")
     if bledy_kopii:
-        problemy.append(f"kopia ostatniej dobrej konfiguracji nie odszyfrowuje sie "
-                        f"({', '.join(f'Dom {d} {t}' for d, t, _ in bledy_kopii)}) — integracje "
-                        f"sa w porzadku; kopie odnowi nastepny udany start albo przeladowanie "
-                        f"domu, a dom-klucz-rotuj usuwa zepsuta kopie")
+        # Kopia jest pod kluczem DOMU (DEK), nie KEK: jej blad nie mowi nic
+        # o kluczu z menedzera hasel i nie moze blokowac usuniecia poprzedniego.
+        print(f"UWAGA: kopia ostatniej dobrej konfiguracji nie odszyfrowuje sie "
+              f"({', '.join(f'Dom {d} {t}' for d, t, _ in bledy_kopii)}) — to nie dotyczy "
+              f"tego klucza; kopie odnowi nastepny udany start albo przeladowanie domu, "
+              f"a dom-klucz-rotuj usuwa zepsuta kopie.")
     if raport.klucze_domow == 0 and not raport.bledy:
         problemy.append("w bazie nie ma zadnego klucza domu — nic nie potwierdzono")
     if not args.baza:

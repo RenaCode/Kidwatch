@@ -262,7 +262,8 @@ k dom-sieci 2 --host api.example.invalid
 ```
 
 Dom 1 w trybie `baza`: zmiana działa w ciągu ok. 10 s, bez restartu poda
-(przeładowanie domu, pkt 10). Dom w trybie `yaml`, wymuszony
+(przeładowanie domu, pkt 10) — o ile działający Kidwatch wystartował już
+w trybie `baza` (po pierwszym `dom-importuj` potrzebny jest restart). Dom w trybie `yaml`, wymuszony
 `KIDWATCH_DOM_1_ZRODLO=yaml` i kolejne domy (E3b) — po restarcie poda. To samo
 wypisują `dom-sieci`, `dom-zrodlo` i `dom-importuj`. Strażnik nie zastępuje NetworkPolicy (`wDomu`) —
 to druga, niezależna bariera.
@@ -273,6 +274,9 @@ Kolejność jest ważna: **najpierw dowód, że nowy klucz z menedżera haseł
 otwiera bazę, dopiero potem usuwanie czegokolwiek**. `kp`
 (`klucze-potwierdz`) odmawia (kod 1), gdy klucz z menedżera nie jest
 bieżącym kluczem procesu albo choć jeden klucz domu jest jeszcze na starym.
+Nieodszyfrowująca się kopia ostatniej dobrej konfiguracji to tylko `UWAGA`
+(kopia jest pod kluczem domu, nie pod KEK) — nie blokuje usunięcia klucza
+poprzedniego.
 Usunięcie klucza poprzedniego jest dlatego sklejone z `kp` w jednym
 poleceniu (krok 3). Krok 5 (stary wpis w menedżerze haseł) dzieje się poza
 Kidwatchem — tam warunek pilnujesz sam.
@@ -419,7 +423,8 @@ albo hasło z TOTP); `wlasciciel-domu` dostaje 403, cudzy dom — 404.
   konfiguracji”) przy CrashLoop idą z tym samym rosnącym odstępem, liczonym
   z dziennika (`dom.start.alarm`, wpis dopiero po udanej wysyłce), nie przy
   każdym restarcie poda. Udany start na bieżącej konfiguracji kończy awarię
-  (`dom.start.ok`) — pierwszy alarm następnej idzie od razu. Treść alarmu
+  (`dom.start.ok`; także start ratunkowy z `config.yaml` i naprawa po
+  starcie z kopii) — pierwszy alarm następnej idzie od razu. Treść alarmu
   (WhatsApp/e-mail) ma pełny opis tylko dla znanych błędów; resztę widać
   w panelu i w logu. Bez kopii (pierwszy start po wdrożeniu, kopia nie
   wstaje) — jak dotąd: log, alarm, kod 2 i pkt 4. To samo w trakcie pracy:
