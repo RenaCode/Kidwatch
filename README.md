@@ -395,8 +395,8 @@ Panel accounts are managed from the CLI (in the cluster via
 `kubectl exec deploy/kidwatch -c kidwatch -- python -m kidwatch …`):
 
 ```bash
-python -m kidwatch user-add <login> [--password-stdin] [--rola podglad]  # random password printed ONCE
-python -m kidwatch user-rola <login> wlasciciel|podglad   # change role, clear overrides, log out
+python -m kidwatch user-add <login> [--password-stdin] [--rola podglad] [--bez-domu]  # random password printed ONCE
+python -m kidwatch user-rola <login> wlasciciel|podglad   # change role in Dom 1, clear overrides, log out
 python -m kidwatch user-uprawnienia <login> [+perm] [-perm] [=perm]  # per-account overrides, log out
 python -m kidwatch user-reset <login> [--password-stdin]  # new password, unlock, log out everywhere
 python -m kidwatch user-reset <login> --totp              # remove 2FA (lost phone)
@@ -404,14 +404,49 @@ python -m kidwatch user-del <login>
 python -m kidwatch user-list
 python -m kidwatch konta-migruj [--przypisz N=login …] [--zapisz [--wlacz]]  # gateway recipients -> accounts
 python -m kidwatch konta-tryb [trasy|konta]               # show / switch notification mode
+python -m kidwatch user-admin <login> on|off [--tylko-sso]  # installation administrator (see below)
+python -m kidwatch dom-dodaj <nazwa> [--strefa Europe/Warsaw]  # new household, empty event DB
+python -m kidwatch dom-czlonek <dom> <login> wlasciciel-domu|zarzadca|podglad  # role in a household
+python -m kidwatch dom-czlonek <dom> <login> --usun        # remove from a household
 ```
 
-Accounts can also be managed in the panel (Settings → **Konta**, permission
-`konta.zarzadzanie`): add (random password shown once), delete, role,
-per-account permissions, and another account's channels and preferences.
-Every change there requires the acting account's password or 2FA code. You
-cannot delete yourself, and the last account with `konta.zarzadzanie` cannot
-be demoted or stripped of it.
+**Households** (`docs/architektura-domy.md`). Roles live per household
+(`wlasciciel-domu`, `zarzadca`, `podglad`); data routes are
+`/api/domy/<id>/…` and an account without membership gets **404** for that
+household. The pre-household routes (`/api/day` …) still work as an alias of
+the account's only household (409 when it sees more than one). The web UI
+shows a household switcher only when the account has more than one.
+
+The **installation administrator** is a separate account (Authelia group
+`admins`), not the owner's private account: `user-add <login> --bez-domu`,
+log in with that password **right away** and enable panel 2FA on the "Brak
+domu" screen, then `user-admin <login> on` — it refuses an account without
+2FA (`--tylko-sso` for an account that only ever logs in through Authelia:
+the mode is stored in the database, password login to that account is
+refused and a password session never carries the role, even with 2FA)
+and always removes the account from all households, so it gets no household
+notifications. It sees every household, but only when the flag is
+set in the panel database **and** the request comes through Authelia with
+`admins` in `Remote-Groups` (or, on the break-glass password login, with
+panel 2FA enabled). Every visit to a household it is not a member of is
+written to the household's audit log (Settings → Dziennik domu): one `GET`
+entry per session and household per 15 minutes, every `POST`. The WhatsApp
+bot is shared by the installation: **only the active installation
+administrator** may configure it (QR, sender, gateway recipients, test) —
+no household role grants it, and every change is logged as an installation
+event. Sending notifications through the gateway does not depend on it.
+Without SSO the administrator account logs in with its panel password and
+must enable panel 2FA first (the "no household" screen offers it); this
+needs `PANEL_TOTP_KEY` in the `kidwatch-secrets` Secret.
+
+Members can also be managed in the panel (Settings → **Konta**, permission
+`konta.zarzadzanie` in that household): add (random password shown once),
+remove from the household (the account is deleted once it has no household
+left), role, per-account permissions, another member's preferences in that
+household and — only when the actor manages every household of that person —
+their channels. Every change there requires the acting account's password or
+2FA code. You cannot remove yourself, and a household's last account with
+`konta.zarzadzanie` cannot be removed, demoted or stripped of it.
 
 ### Panel behind SSO (Authelia)
 
@@ -425,11 +460,12 @@ renacode-infra) in front of the panel **and** the same switch sets
   `[a-z0-9._-]`. No accounts are created on the fly — an unknown login gets
   403 with a readable message and an "SSO log out" button. A new person needs
   two steps: an Authelia account and `user-add` with the same login.
-- `Remote-Groups` must contain `wlasciciel` or `rodzina` (chart
+- `Remote-Groups` must contain `wlasciciel`, `rodzina` or `admins` (chart
   `sso.grupy` → `SSO_GRUPY`; must match the Authelia rule for this host).
-  The administrative Authelia account (`admins`) is deliberately not
-  admitted. Groups only gate entry; what an account may do comes from its
-  panel role (see "Roles" below).
+  Groups only gate entry; what an account may do comes from its household
+  memberships in the panel database (see "Roles" below). `admins` is
+  additionally required for the installation-administrator flag to take
+  effect; an `admins` login without a panel account gets 403 like any other.
 - The session is marked `sso` and is created **without** the panel password
   or panel TOTP (Authelia already enforced 2FA). Account lockout from wrong
   panel passwords does not block SSO, and SSO does not lift it.
@@ -479,7 +515,13 @@ fails CI, and every route the `podglad` role lacks is checked for 403.
 | `mdm.podglad` | MDM section: iPads, UDIDs, events | yes | no (section hidden) |
 | `mdm.komendy` | MDM refresh/lock/restart, enrollment link, forced iPadOS update | yes | no |
 | `tv.aplikacja` | Kidwatch TV app (state, install, pairing) | yes | no |
-| `whatsapp.konfiguracja` | WhatsApp/notification channels, recipients, bot QR | yes | no |
+| `whatsapp.konfiguracja` | WhatsApp/notification channels, recipients, bot QR | only the active installation administrator (see Households) | no |
+
+In a household the same table applies per membership: `wlasciciel-domu`
+has everything `wlasciciel` had, `zarzadca` everything except account
+management, integrations and invitations, `podglad` as above. The new
+`dom.urzadzenia`, `dom.integracje` and `dom.zaproszenia` permissions are
+reserved for the household screens of the next stages.
 
 Logging out needs no permission. `python -m kidwatch user-rola <login>
 wlasciciel|podglad` changes a role, clears that account's overrides and logs
@@ -857,6 +899,7 @@ restart needed. It is the only reliable way to get good game coverage.
 | `dom-sieci <dom> [--dodaj CIDR] [--usun CIDR] [--host H]` | networks/API hosts a household's integrations may connect to (SSRF guard, instance admin only) |
 | `klucze-rotuj`, `dom-klucz-rotuj <dom>` | re-wrap household keys after a `KIDWATCH_KEK` rotation; new data key for one household |
 | `klucze-potwierdz [--baza <copy>]` | proves the key from your password manager (stdin) opens every household key; refuses otherwise — a precondition for removing an old key |
+| `user-admin`, `dom-dodaj`, `dom-czlonek` | installation administrator, new household, household membership |
 
 Global options: `--config <path>` (default `$KIDWATCH_CONFIG` or
 `config.yaml`), `-v/--verbose`.

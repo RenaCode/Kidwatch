@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Protocol
 import httpx
 
 from ..models import Notification, NotifyKind
-from ..odbiorcy import TRYB_KONTA, Profil, adresaci, nadal_chce
+from ..odbiorcy import DOM_TRAS, TRYB_KONTA, Profil, adresaci, nadal_chce
 
 if TYPE_CHECKING:
     from zoneinfo import ZoneInfo
@@ -37,6 +37,10 @@ MAX_ATTEMPTS = 3
 #: na dobe. 401/403/404 (zly token, zly adres) to blad konfiguracji kanalu —
 #: po poprawce wpis wyjdzie, wiec czeka w kolejce jak przy awarii.
 PERMANENT_STATUSES = frozenset({400, 413, 422})
+
+#: Wynik Outbox.profile_kont: rozdzial wstrzymany (dom bez trybu tras,
+#: ktory nie moze wyslac per konto) — wpisy czekaja nierozdzielone.
+WSTRZYMANE: list[Profil] = []
 
 #: Dispatcher ustawia tu liste przed wywolaniem kanalu; with_retry dopisuje
 #: kod trwalego odrzucenia. Kanaly dalej zwracaja zwykle bool.
@@ -291,11 +295,29 @@ class Outbox:
         self.store.outbox_put(notes, self._now())
         self._wake.set()
 
+    @property
+    def tylko_konta(self) -> bool:
+        """Dom inny niz Dom 1 (docs/architektura-domy.md §4.2): trasy bramki
+        znaja tylko odbiorcow Domu 1, wiec bez trybu kont jego notki NIE
+        moga isc do bramki."""
+        return self.dom_id is not None and self.dom_id != DOM_TRAS
+
     async def profile_kont(self) -> list[Profil] | None:
         """Profile kont, gdy tryb kont jest wlaczony i mozliwy; None = tryb
-        tras. Zmiana trybu idzie do logu raz, przy przejsciu."""
+        tras; WSTRZYMANE = dom bez trybu tras, ktory nie moze wyslac per
+        konto. Zmiana trybu idzie do logu raz, przy przejsciu."""
         powod = None
         profile: list[Profil] | None = None
+        if self.tylko_konta and self.dispatcher.per_konto and (
+                self.konta is None or not await self._bramka_zna_odbiorce()):
+            # Notki czekaja w kolejce domu, nie ida trasami do Domu 1.
+            # Alarm instancji (do administratora) — etap E3b.
+            powod = (f"WSTRZYMANE: dom {self.dom_id} wysyla tylko per konto, a bramka "
+                     "nie obsluguje jawnego odbiorcy albo brak kont")
+            if powod != self._tryb_log:
+                log.error("kolejka: %s", powod)
+                self._tryb_log = powod
+            return WSTRZYMANE
         if self.konta is None or not self.dispatcher.per_konto:
             powod = "tryb tras (brak kont albo kanalu per konto)"
         elif self.konta.tryb() != TRYB_KONTA:
@@ -313,7 +335,7 @@ class Outbox:
     async def _bramka_zna_odbiorce(self) -> bool:
         return all([await n.obsluguje_odbiorcow() for n in self.dispatcher.per_konto])
 
-    async def _rozdziel(self) -> dict[str, Profil]:
+    async def _rozdziel(self) -> dict[str, Profil] | None:
         """Nierozdzielone wpisy -> kolejki odbiorcow. Zwraca profile kont
         (login -> Profil) do wysylki; pusty slownik w trybie tras."""
         pending = self.store.outbox_pending(odbiorca=None, limit=500)
@@ -324,6 +346,8 @@ class Outbox:
             # nierozdzielone, a nastepny flush sprobuje znowu.
             log.exception("kolejka: nie odczytalem kont — wstrzymuje rozdzial")
             return {}
+        if profile is WSTRZYMANE:
+            return None
         if profile is None:
             for item in pending:
                 self.store.outbox_route(item.id, [("*", item.next_at)])
@@ -352,6 +376,10 @@ class Outbox:
         czeka na swoja kolej (`next_at`) — kolejne tego odbiorcy stoja za nim.
         """
         profile = await self._rozdziel()
+        if profile is None:
+            # Dom bez trybu tras i bez wysylki per konto: nic nie wychodzi,
+            # takze wpisy kont rozdzielone wczesniej (czekaja, nie przepadaja).
+            return 0
         if not profile and self.konta is not None and any(
             q not in ("*", "") for q in self.store.outbox_queues()
         ):

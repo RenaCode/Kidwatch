@@ -174,12 +174,16 @@ sso:
     - default-authelia-naglowki@kubernetescrd
     - default-authelia-sso@kubernetescrd
   # Grupy Authelii wpuszczane do panelu (SSO_GRUPY). Musza sie zgadzac z regula
-  # dla tego hosta w authelia.yaml. Konto administracyjne (`admins`) celowo
-  # poza lista. Grupa tylko wpuszcza: co konto moze, mowi jego rola w bazie
-  # panelu (`user-add --rola podglad` dla rodziny, README "Roles").
+  # dla tego hosta w authelia.yaml. Grupa tylko wpuszcza: co konto moze, mowi
+  # jego czlonkostwo w domach w bazie panelu (`user-add --rola podglad` dla
+  # rodziny, README "Roles"). `admins` (konto administracyjne, decyzja 5 w
+  # docs/architektura-domy.md §8) od etapu E3a: rola administratora instalacji
+  # wymaga flagi `kidwatch user-admin <login> on` w bazie ORAZ tej grupy
+  # w naglowku — sama grupa niczego nie nadaje. `kidwatch-goscie` dochodzi w E4.
   grupy:
     - wlasciciel
     - rodzina
+    - admins
 
 # ------------------------------------------------------------ NETWORKPOLICY
 # Kto moze otworzyc polaczenie do poda kidwatch (templates/networkpolicy.yaml).

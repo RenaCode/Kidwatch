@@ -16,9 +16,16 @@ ktore NIE pisza do kidwatch.db, tylko dopisuja zadanie do kolejki
 w panel-auth.db (gametime.py, tvpause.py). Konta i sesje leza
 w osobnej bazie — panel_auth.py tlumaczy, dlaczego nie w kidwatch.db.
 Kazda trasa /api/* ma w POST_TRASY albo GET_TRASY jedno uprawnienie
-(uprawnienia.py), sprawdzane w jednym miejscu — _wymaga(). Konto `podglad`
-tylko oglada: kazda zmiana stanu poza wlasnym haslem i 2FA dostaje 403,
-takze pauza telewizora.
+(uprawnienia.py) i zakres (`konto`, `dom`, `instancja`), sprawdzane w jednym
+miejscu — _wymaga(). Konto `podglad` tylko oglada: kazda zmiana stanu poza
+wlasnym haslem i 2FA dostaje 403, takze pauza telewizora.
+
+DOMY (docs/architektura-domy.md §4.1, panel_domy.py). Trasy danych domu
+leza pod `/api/domy/<id>/...`: dom pochodzi ze sciezki, nigdy z ciasteczka
+ani z ciala. Najpierw dostep do domu (czlonkostwo albo aktywny administrator
+instalacji z wpisem w `audyt`) — bez niego 404, nie 403 — potem uprawnienie
+w tym domu (403). Stare trasy bez domu (`/api/day`) to alias jedynego domu
+konta; konto z wiecej niz jednym domem dostaje na nich 409.
 Statyczny front jest dostepny bez sesji: to sam kod ekranu logowania, zadnych
 danych.
 """
@@ -33,12 +40,15 @@ import mimetypes
 import re
 import sqlite3
 import threading
+from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import parse_qs, urlparse
 
+from . import domy as dm
 from .bramka_admin import (
     BramkaAdmin,
     BramkaError,
@@ -46,7 +56,7 @@ from .bramka_admin import (
     normalize_number,
     normalize_recipients,
 )
-from .config import Config, MissingSecretError, WatchedDevice
+from .config import Config, HomeConfig, MissingSecretError, WatchedDevice
 from .gametime import ACTIONS, GameRequests, TooManyRequests
 from .mdm import MdmApi, MdmError, build_api
 from .odbiorcy import ProfilePowiadomien
@@ -60,7 +70,15 @@ from .panel_auth import (
     box_from_env,
     csrf_ok,
 )
-from .panel_konta import PanelKonta
+from .panel_domy import (
+    PREFIKS_DOMU,
+    BezKonfiguracji,
+    DomyPanelu,
+    KontekstDomu,
+    admin_aktywny,
+    uprawnienia_sesji,
+)
+from .panel_konta import PanelKonta, WDomu
 from .panel_sso import SsoConfig
 from .panel_sso import config_from_env as sso_from_env
 from .store import from_iso, to_iso
@@ -77,6 +95,10 @@ from .uprawnienia import (
     TV_APLIKACJA,
     TV_PAUZA,
     WHATSAPP,
+    ZAKRES_DOM,
+    ZAKRES_INSTANCJA,
+    ZAKRES_KONTO,
+    nazwa_roli,
 )
 
 log = logging.getLogger(__name__)
@@ -127,13 +149,14 @@ class PanelQueries:
 
     def __init__(
         self,
-        cfg: Config,
+        cfg: HomeConfig | BezKonfiguracji,
         db_path: str,
         requests: GameRequests | None = None,
         tv_requests: TvPauseRequests | None = None,
     ) -> None:
+        #: Konfiguracja JEDNEGO domu; zapytania czytaja tylko jego baze.
         self.cfg = cfg
-        self.db_path = db_path
+        self.db_path = str(db_path)
         #: Kolejka zadan czasu gry (panel-auth.db) — None, gdy game_time wylaczone.
         self.requests = requests
         #: Kolejka zadan pauzy TV (panel-auth.db) — None, gdy czujnik TV wylaczony.
@@ -929,79 +952,138 @@ def _mdm_status(status: int) -> int:
 #: samo sprawdza sesje i CSRF, a bez sesji odsyla jeszcze na portal SSO.
 PUBLICZNA = "publiczna"
 
-#: Router POST: sciezka -> (uprawnienie, metoda handlera). Innych sciezek
-#: do_POST nie zna (404). Metoda trasy PUBLICZNA nie dostaje argumentow,
-#: pozostale — (sciezka, sesja) po sprawdzeniu sesji, CSRF i uprawnienia.
-#: Nowa trasa wymaga tu decyzji; test_uprawnienia.py pilnuje, ze kazda jest
-#: przypisana i ze `podglad` dostaje 403 na kazda, ktorej nie ma jego rola.
-POST_TRASY: dict[str, tuple[str, str]] = {
-    "/api/auth/login": (PUBLICZNA, "_login"),
-    "/api/auth/mfa": (PUBLICZNA, "_mfa"),
-    "/api/auth/logout": (PUBLICZNA, "_logout"),
-    "/api/auth/totp/setup": (KONTO_WLASNE, "_totp_setup"),
-    "/api/auth/totp/confirm": (KONTO_WLASNE, "_totp_confirm"),
-    "/api/auth/totp/disable": (KONTO_WLASNE, "_totp_disable"),
-    "/api/auth/password": (KONTO_WLASNE, "_change_password"),
-    "/api/game": (CZAS_GRY, "_game_request"),
-    "/api/tv/pause": (TV_PAUZA, "_tv_pause_request"),
-    "/api/tv/resume": (TV_PAUZA, "_tv_pause_request"),
-    "/api/tv/aplikacja/instaluj": (TV_APLIKACJA, "_tv_aplikacja"),
-    "/api/tv/aplikacja/paruj": (TV_APLIKACJA, "_tv_aplikacja"),
-    "/api/profile/whatsapp/start": (WHATSAPP, "_profile_post"),
-    "/api/profile/whatsapp/logout": (WHATSAPP, "_profile_post"),
-    "/api/profile/whatsapp/recipient": (WHATSAPP, "_profile_post"),
-    "/api/profile/whatsapp/recipients": (WHATSAPP, "_profile_post"),
-    "/api/profile/test": (WHATSAPP, "_profile_post"),
-    "/api/mdm/refresh": (MDM_KOMENDY, "_mdm_post"),
-    "/api/mdm/command": (MDM_KOMENDY, "_mdm_post"),
-    "/api/mdm/enroll": (MDM_KOMENDY, "_mdm_post"),
-    "/api/mdm/os-update": (MDM_KOMENDY, "_mdm_post"),
-    # Powiadomienia per konto (panel_konta.py): wlasny profil — kazde konto,
-    # tylko o sobie; cudze konta — zarzadzanie kontami.
-    "/api/konto/powiadomienia": (KONTO_WLASNE, "_konta_post"),
-    "/api/konto/kanaly": (KONTO_WLASNE, "_konta_post"),
-    "/api/konta/dodaj": (KONTA, "_konta_post"),
-    "/api/konta/usun": (KONTA, "_konta_post"),
-    "/api/konta/rola": (KONTA, "_konta_post"),
-    "/api/konta/uprawnienia": (KONTA, "_konta_post"),
-    "/api/konta/powiadomienia": (KONTA, "_konta_post"),
-    "/api/konta/kanaly": (KONTA, "_konta_post"),
-    "/api/konta/tryb": (KONTA, "_konta_post"),
+#: Zakresy tras (§4.1): `konto` — konto samo o sobie, `instancja` — wspolne
+#: dla instalacji (bot WhatsApp), `dom` — dane i czynnosci domu; trasa domu
+#: ma w kluczu PREFIKS_DOMU, a <id> pochodzi ze sciezki zadania.
+KONTO, DOM, INSTANCJA = ZAKRES_KONTO, ZAKRES_DOM, ZAKRES_INSTANCJA
+_D = PREFIKS_DOMU
+
+#: Router POST: sciezka -> (uprawnienie, metoda handlera, zakres). Innych
+#: sciezek do_POST nie zna (404). Metoda trasy PUBLICZNA nie dostaje
+#: argumentow, pozostale — (klucz trasy, sesja, kontekst domu albo None) po
+#: sprawdzeniu sesji, CSRF, domu i uprawnienia. Nowa trasa wymaga tu decyzji;
+#: test_uprawnienia.py i test_domy_panel.py pilnuja, ze kazda ma uprawnienie
+#: i zakres, ze trasa domu lezy pod prefiksem, a `podglad` i obcy dom
+#: dostaja odmowe.
+POST_TRASY: dict[str, tuple[str, str, str]] = {
+    "/api/auth/login": (PUBLICZNA, "_login", KONTO),
+    "/api/auth/mfa": (PUBLICZNA, "_mfa", KONTO),
+    "/api/auth/logout": (PUBLICZNA, "_logout", KONTO),
+    "/api/auth/totp/setup": (KONTO_WLASNE, "_totp_setup", KONTO),
+    "/api/auth/totp/confirm": (KONTO_WLASNE, "_totp_confirm", KONTO),
+    "/api/auth/totp/disable": (KONTO_WLASNE, "_totp_disable", KONTO),
+    "/api/auth/password": (KONTO_WLASNE, "_change_password", KONTO),
+    # Kanaly (numer, e-mail) sa osoby, wspolne dla jej domow.
+    "/api/konto/kanaly": (KONTO_WLASNE, "_konta_post", KONTO),
+    # Bot WhatsApp bramki jest jeden na instalacje.
+    "/api/profile/whatsapp/start": (WHATSAPP, "_profile_post", INSTANCJA),
+    "/api/profile/whatsapp/logout": (WHATSAPP, "_profile_post", INSTANCJA),
+    "/api/profile/whatsapp/recipient": (WHATSAPP, "_profile_post", INSTANCJA),
+    "/api/profile/whatsapp/recipients": (WHATSAPP, "_profile_post", INSTANCJA),
+    "/api/profile/test": (WHATSAPP, "_profile_post", INSTANCJA),
+    f"{_D}/game": (CZAS_GRY, "_game_request", DOM),
+    f"{_D}/tv/pause": (TV_PAUZA, "_tv_pause_request", DOM),
+    f"{_D}/tv/resume": (TV_PAUZA, "_tv_pause_request", DOM),
+    f"{_D}/tv/aplikacja/instaluj": (TV_APLIKACJA, "_tv_aplikacja", DOM),
+    f"{_D}/tv/aplikacja/paruj": (TV_APLIKACJA, "_tv_aplikacja", DOM),
+    f"{_D}/mdm/refresh": (MDM_KOMENDY, "_mdm_post", DOM),
+    f"{_D}/mdm/command": (MDM_KOMENDY, "_mdm_post", DOM),
+    f"{_D}/mdm/enroll": (MDM_KOMENDY, "_mdm_post", DOM),
+    f"{_D}/mdm/os-update": (MDM_KOMENDY, "_mdm_post", DOM),
+    # Powiadomienia (panel_konta.py): wlasne preferencje w domu — kazdy
+    # czlonek; czlonkowie domu — zarzadzanie kontami w tym domu.
+    f"{_D}/konto/powiadomienia": (KONTO_WLASNE, "_konta_post", DOM),
+    f"{_D}/konta/dodaj": (KONTA, "_konta_post", DOM),
+    f"{_D}/konta/usun": (KONTA, "_konta_post", DOM),
+    f"{_D}/konta/rola": (KONTA, "_konta_post", DOM),
+    f"{_D}/konta/uprawnienia": (KONTA, "_konta_post", DOM),
+    f"{_D}/konta/powiadomienia": (KONTA, "_konta_post", DOM),
+    f"{_D}/konta/kanaly": (KONTA, "_konta_post", DOM),
+    f"{_D}/konta/tryb": (KONTA, "_konta_post", DOM),
 }
 
-#: GET /api/*: sciezka -> uprawnienie; klucz z "/" na koncu to prefiks
-#: (UDID w sciezce). Numery WhatsAppa, UDID-y i stan aplikacji TV to ekrany
-#: zarzadzania — maja uprawnienia czynnosci, nie podgladu.
-GET_TRASY: dict[str, str] = {
-    "/api/health": PUBLICZNA,
-    "/api/auth/me": KONTO_WLASNE,
-    "/api/meta": PODGLAD,
-    "/api/screens": PODGLAD,
-    "/api/trends": PODGLAD,
-    "/api/devices": PODGLAD,
-    "/api/notifications": PODGLAD,
-    "/api/day": PODGLAD,
-    "/api/usage": PODGLAD,
-    "/api/export.csv": PODGLAD,
-    "/api/tv/pause": PODGLAD,
-    "/api/tv/aplikacja": TV_APLIKACJA,
-    "/api/profile/notify": WHATSAPP,
-    "/api/profile/whatsapp/qr": WHATSAPP,
-    "/api/mdm": MDM_PODGLAD,
-    "/api/mdm/devices/": MDM_PODGLAD,
-    "/api/konto/powiadomienia": KONTO_WLASNE,
-    "/api/konta": KONTA,
+#: GET /api/*: sciezka -> (uprawnienie, zakres); klucz z "/" na koncu to
+#: prefiks (UDID w sciezce). Numery WhatsAppa, UDID-y i stan aplikacji TV to
+#: ekrany zarzadzania — maja uprawnienia czynnosci, nie podgladu.
+GET_TRASY: dict[str, tuple[str, str]] = {
+    "/api/health": (PUBLICZNA, KONTO),
+    "/api/auth/me": (KONTO_WLASNE, KONTO),
+    "/api/profile/notify": (WHATSAPP, INSTANCJA),
+    "/api/profile/whatsapp/qr": (WHATSAPP, INSTANCJA),
+    f"{_D}/meta": (PODGLAD, DOM),
+    f"{_D}/screens": (PODGLAD, DOM),
+    f"{_D}/trends": (PODGLAD, DOM),
+    f"{_D}/devices": (PODGLAD, DOM),
+    f"{_D}/notifications": (PODGLAD, DOM),
+    f"{_D}/day": (PODGLAD, DOM),
+    f"{_D}/usage": (PODGLAD, DOM),
+    f"{_D}/export.csv": (PODGLAD, DOM),
+    f"{_D}/tv/pause": (PODGLAD, DOM),
+    f"{_D}/tv/aplikacja": (TV_APLIKACJA, DOM),
+    f"{_D}/mdm": (MDM_PODGLAD, DOM),
+    f"{_D}/mdm/devices/": (MDM_PODGLAD, DOM),
+    f"{_D}/konto/powiadomienia": (KONTO_WLASNE, DOM),
+    f"{_D}/konta": (KONTA, DOM),
+    # Dom -> Dziennik: zmiany w domu i wejscia administratora (§2.3).
+    f"{_D}/dziennik": (KONTA, DOM),
 }
+
+_SCIEZKA_DOMU = re.compile(r"/api/domy/([1-9][0-9]{0,8})(/.+)")
+
+
+class Trasa(NamedTuple):
+    #: Klucz w POST_TRASY / GET_TRASY (dla domu — z PREFIKS_DOMU).
+    klucz: str
+    uprawnienie: str
+    zakres: str
+    #: Metoda handlera (POST); None dla GET.
+    metoda: str | None
+    #: Dom ze sciezki; None = trasa bez domu albo alias (dom wybiera konto).
+    dom_id: int | None
+    alias: bool = False
+
+
+def _klucz_get(path: str) -> str | None:
+    if path in GET_TRASY and not path.endswith("/"):
+        return path
+    for klucz in GET_TRASY:
+        if klucz.endswith("/") and path.startswith(klucz) and len(path) > len(klucz):
+            return klucz
+    return None
+
+
+def trasa(metoda: str, path: str) -> Trasa | None:
+    """Trasa zadania albo None (404). `/api/domy/<id>/x` -> trasa domu
+    z <id>; stara sciezka `/api/x` trasy domu -> alias (dom z konta)."""
+    tabela = POST_TRASY if metoda == "POST" else GET_TRASY
+    dom_id, alias = None, False
+    if m := _SCIEZKA_DOMU.fullmatch(path):
+        dom_id, klucz_sciezki = int(m[1]), _D + m[2]
+    elif path.startswith("/api/domy/"):
+        return None
+    else:
+        klucz_sciezki = path
+    klucz = klucz_sciezki if metoda == "POST" else _klucz_get(klucz_sciezki)
+    if klucz is None or klucz not in tabela:
+        if dom_id is not None or not path.startswith("/api/"):
+            return None
+        # Alias trasy domu sprzed domow: /api/day -> /api/domy/<id>/day.
+        klucz_sciezki = _D + path.removeprefix("/api")
+        klucz = klucz_sciezki if metoda == "POST" else _klucz_get(klucz_sciezki)
+        if klucz is None or klucz not in tabela:
+            return None
+        alias = True
+    wpis = tabela[klucz]
+    upr, zakres = (wpis[0], wpis[2]) if metoda == "POST" else wpis
+    if (zakres == DOM) != (dom_id is not None or alias):
+        return None
+    return Trasa(klucz, upr, zakres, wpis[1] if metoda == "POST" else None, dom_id, alias)
 
 
 def get_uprawnienie(path: str) -> str | None:
     """Uprawnienie trasy GET albo None, gdy takiej trasy nie ma."""
-    if path in GET_TRASY and not path.endswith("/"):
-        return GET_TRASY[path]
-    for klucz, upr in GET_TRASY.items():
-        if klucz.endswith("/") and path.startswith(klucz) and len(path) > len(klucz):
-            return upr
-    return None
+    t = trasa("GET", path)
+    return None if t is None else t.uprawnienie
 
 
 def _cookie(name: str, value: str, max_age: int, *, http_only: bool, secure: bool) -> str:
@@ -1014,7 +1096,7 @@ def _cookie(name: str, value: str, max_age: int, *, http_only: bool, secure: boo
 
 
 def make_handler(
-    queries: PanelQueries,
+    domy: DomyPanelu,
     static_dir: Path,
     auth: PanelAuth,
     *,
@@ -1024,7 +1106,8 @@ def make_handler(
     sso: SsoConfig | None = None,
     konta: PanelKonta | None = None,
 ):
-    """`sso` = None: naglowki `Remote-*` ignorowane w calosci (panel_sso.py)."""
+    """`sso` = None: naglowki `Remote-*` ignorowane w calosci (panel_sso.py).
+    `domy`: domy panelu z `PanelQueries` kazdego domu (panel_domy.py)."""
     static_root = static_dir.resolve()
 
     def session_cookies(token: str, session: Session, max_age: int) -> list[str]:
@@ -1060,6 +1143,9 @@ def make_handler(
         #: Zadanie przyszlo z `Remote-User` przy wlaczonym SSO, czyli przez
         #: Authelie — wylogowanie musi skonczyc tez jej sesje.
         _via_sso = False
+        #: `Remote-Groups` zadania przez Authelie; None = bez naglowka SSO.
+        #: Tylko bezpiecznik roli administratora (panel_domy.admin_aktywny).
+        _grupy: tuple[str, ...] | None = None
 
         def log_message(self, fmt: str, *args) -> None:  # noqa: D102
             log.debug("panel: " + fmt, *args)
@@ -1113,6 +1199,7 @@ def make_handler(
             ident = sso.identity(self.headers)
             if ident is None:
                 return _bez_sso(session)
+            self._grupy = ident.groups
             if session is not None and session.login == ident.login:
                 return session
             if session is not None:
@@ -1123,18 +1210,37 @@ def make_handler(
             self._sso_cookies = session_cookies(token, session, int(auth.session_seconds))
             return session
 
-        def _wymaga(self, session: Session, uprawnienie: str) -> Session:
-            """Jedyne miejsce sprawdzania uprawnien. Uprawnienia z bazy panelu
-            (rola + odstepstwa konta, panel_auth), nigdy z `Remote-Groups`."""
-            if uprawnienie not in session.uprawnienia:
+        def _admin(self, session: Session) -> bool:
+            return admin_aktywny(session, self._grupy)
+
+        def _wymaga(self, session: Session, t: Trasa) -> KontekstDomu | None:
+            """Jedyne miejsce sprawdzania dostepu. Trasa domu: najpierw dom
+            (czlonkostwo albo aktywny administrator; inaczej 404, 409 przy
+            aliasie z wieloma domami), potem uprawnienie W TYM domu (403),
+            na koniec wpis w `audyt` dla administratora bez czlonkostwa.
+            Uprawnienia z bazy panelu, nigdy z `Remote-Groups`."""
+            ctx = None
+            admin = self._admin(session)
+            if t.zakres == DOM:
+                dom_id = t.dom_id if t.dom_id is not None else domy.alias(session, admin)
+                ctx = domy.dostep(session, dom_id, admin)
+                uprawnienia = ctx.uprawnienia
+            else:
+                uprawnienia = uprawnienia_sesji(session, admin)
+            if t.uprawnienie not in uprawnienia:
                 log.warning("panel: %r (rola %s) bez uprawnienia %s do %s %s",
-                            session.login, session.rola, uprawnienie, self.command,
+                            session.login, session.rola, t.uprawnienie, self.command,
                             urlparse(self.path).path)
                 raise AuthError(
-                    403, f"To konto nie ma uprawnienia „{uprawnienie}” "
-                    f"({OPISY.get(uprawnienie, '?')}) — poproś właściciela panelu.",
+                    403, f"To konto nie ma uprawnienia „{t.uprawnienie}” "
+                    f"({OPISY.get(t.uprawnienie, '?')}) — poproś właściciela panelu.",
                 )
-            return session
+            if ctx is not None:
+                domy.audytuj(session, ctx, self.command if self.command != "HEAD" else "GET",
+                             t.klucz)
+            elif t.zakres == INSTANCJA and self.command == "POST":
+                domy.audytuj_instancje(session, t.klucz)
+            return ctx
 
         def _deny(self, exc: AuthError) -> None:
             payload = {"error": exc.message}
@@ -1180,18 +1286,18 @@ def make_handler(
             return data
 
         def do_POST(self) -> None:  # noqa: N802
-            self._sso_cookies, self._via_sso = [], False
+            self._sso_cookies, self._via_sso, self._grupy = [], False, None
             path = urlparse(self.path).path
             try:
-                trasa = POST_TRASY.get(path)
-                if trasa is None:
+                t = trasa("POST", path)
+                if t is None:
                     self._json(404, {"error": "nie ma takiego endpointu"})
                     return
-                uprawnienie, metoda = trasa
-                if uprawnienie == PUBLICZNA:
-                    getattr(self, metoda)()
+                if t.uprawnienie == PUBLICZNA:
+                    getattr(self, t.metoda)()
                 else:
-                    getattr(self, metoda)(path, self._wymaga(self._authed(), uprawnienie))
+                    session = self._authed()
+                    getattr(self, t.metoda)(t.klucz, session, self._wymaga(session, t))
             except AuthError as exc:
                 self._deny(exc)
             except Exception:
@@ -1245,23 +1351,25 @@ def make_handler(
             )
             self._start_session(token, session, {})
 
-        def _totp_setup(self, _path: str, session: Session) -> None:
+        def _totp_setup(self, _path: str, session: Session, _ctx=None) -> None:
             self._json(200, auth.totp_setup(session))
 
-        def _totp_confirm(self, _path: str, session: Session) -> None:
+        def _totp_confirm(self, _path: str, session: Session, _ctx=None) -> None:
             codes = auth.totp_confirm(session, self._str(self._read_json(), "code", 32))
             self._json(200, {"ok": True, "backup_codes": codes})
 
-        def _totp_disable(self, _path: str, session: Session) -> None:
+        def _totp_disable(self, _path: str, session: Session, _ctx=None) -> None:
             data = self._read_json()
             auth.totp_disable(
                 session, self._str(data, "password", 512), self._str(data, "code", 32)
             )
             self._json(200, {"ok": True})
 
-        def _game_request(self, _path: str, session: Session) -> None:
-            """Zadanie czasu gry. NIE wykonuje go — dopisuje do kolejki,
-            ktora odbiera petla glowna (jedyny pisarz kidwatch.db)."""
+        def _game_request(self, _path: str, session: Session, ctx: KontekstDomu) -> None:
+            """Zadanie czasu gry. NIE wykonuje go — dopisuje do kolejki domu
+            (`dom_id`), ktora odbiera petla tego domu (jedyny pisarz jego bazy).
+            Dziecko musi nalezec do TEGO domu."""
+            queries = ctx.queries
             if queries.requests is None:
                 raise AuthError(404, "Czas gry jest wyłączony w konfiguracji")
             data = self._read_json()
@@ -1286,9 +1394,10 @@ def make_handler(
             log.info("panel: %s zleca czas gry %s dla %s", session.login, action, child)
             self._json(202, {"ok": True, "id": req_id})
 
-        def _tv_pause_request(self, path: str, session: Session) -> None:
-            """Pauza monitoringu TV. Jak czas gry: tylko zadanie w kolejce,
-            wykonuje je tik petli glownej (tvpause.py) — po kilkunastu s."""
+        def _tv_pause_request(self, path: str, session: Session, ctx: KontekstDomu) -> None:
+            """Pauza monitoringu TV. Jak czas gry: tylko zadanie w kolejce
+            domu, wykonuje je tik petli domu (tvpause.py) — po kilkunastu s."""
+            queries = ctx.queries
             action = "pause" if path.endswith("/pause") else "resume"
             if queries.tv_requests is None:
                 raise AuthError(404, "Czujnik TV jest wyłączony w konfiguracji")
@@ -1316,12 +1425,12 @@ def make_handler(
                      f" do {to_iso(until)}" if until else "")
             self._json(202, {"ok": True, "id": req_id})
 
-        def _tv_aplikacja(self, path: str, session: Session) -> None:
+        def _tv_aplikacja(self, path: str, session: Session, ctx: KontekstDomu) -> None:
             """Aplikacja Kidwatch TV (sources/tv_app.py): instalacja przez ADB
             i parowanie kodem z jej ekranu. Wykonuje petla serwisu."""
             from .sources import tv_app  # noqa: PLC0415
 
-            app = tv_app.AKTYWNA
+            app = aplikacja_tv(ctx.dom_id)
             if app is None:
                 raise AuthError(404, "Aplikacja TV jest wyłączona w konfiguracji")
             data = self._read_json()
@@ -1335,9 +1444,9 @@ def make_handler(
                     log.info("panel: %s sparowal aplikacje Kidwatch TV", session.login)
             except tv_app.AppError as exc:
                 raise AuthError(409, str(exc)) from exc
-            self._json(200, {**stan_aplikacji(), "message": komunikat})
+            self._json(200, {**stan_aplikacji(ctx.dom_id), "message": komunikat})
 
-        def _change_password(self, _path: str, session: Session) -> None:
+        def _change_password(self, _path: str, session: Session, _ctx=None) -> None:
             data = self._read_json()
             closed = auth.change_password(
                 session, self._str(data, "old", 512), self._str(data, "new", 512)
@@ -1350,7 +1459,7 @@ def make_handler(
                 raise AuthError(404, "Bramka powiadomień nie jest skonfigurowana")
             return bramka
 
-        def _profile_post(self, path: str, session: Session) -> None:
+        def _profile_post(self, path: str, session: Session, _ctx=None) -> None:
             """Akcje WhatsAppa. Sesja + CSRF jak kazda zmiana stanu; bramke
             wola serwer swoim kluczem — przegladarka go nie zna."""
             data = self._read_json()
@@ -1434,34 +1543,43 @@ def make_handler(
                 raise AuthError(503, "Zarządzanie kontami jest niedostępne")
             return konta
 
-        def _konta_post(self, path: str, session: Session) -> None:
+        def _w_domu(self, ctx: KontekstDomu) -> WDomu:
+            return WDomu(ctx.dom_id, ctx.uprawnienia, ctx.queries.children(),
+                         admin=ctx.admin, administracja=ctx.administracja)
+
+        def _konta_post(self, path: str, session: Session, ctx: KontekstDomu | None) -> None:
             k = self._konta()
             data = self._read_json()
+            if ctx is None:  # /api/konto/kanaly — kanaly osoby, bez domu
+                self._json(200, k.moje_kanaly(session, data))
+                return
             akcje = {
-                "/api/konto/powiadomienia": k.moje_preferencje,
-                "/api/konto/kanaly": k.moje_kanaly,
-                "/api/konta/dodaj": k.dodaj,
-                "/api/konta/usun": k.usun,
-                "/api/konta/rola": k.rola,
-                "/api/konta/uprawnienia": k.uprawnienia,
-                "/api/konta/powiadomienia": k.preferencje,
-                "/api/konta/kanaly": k.kanaly,
-                "/api/konta/tryb": k.tryb,
+                "/konto/powiadomienia": k.moje_preferencje,
+                "/konta/dodaj": k.dodaj,
+                "/konta/usun": k.usun,
+                "/konta/rola": k.rola,
+                "/konta/uprawnienia": k.uprawnienia,
+                "/konta/powiadomienia": k.preferencje,
+                "/konta/kanaly": k.kanaly,
+                "/konta/tryb": k.tryb,
             }
-            self._json(200, akcje[path](session, data))
+            self._json(200, akcje[path.removeprefix(PREFIKS_DOMU)](
+                session, data, self._w_domu(ctx)))
 
         # ---------------------------------------------------------------- MDM
         # Panel jest posrednikiem: token API serwera MDM zostaje w backendzie,
         # a przegladarka widzi tylko zalogowana sesje panelu (+ CSRF przy akcjach).
-        def _mdm_api(self) -> MdmApi:
-            if mdm is None:
+        def _mdm_api(self, ctx: KontekstDomu) -> MdmApi:
+            # Token MDM jest dzis jeden, Domu 1 (instancja); tokeny domow i
+            # sprawdzenie `udid ∈ dom` to etap E3b. Inny dom nie ma MDM.
+            if mdm is None or ctx.dom_id != dm.DOM_1:
                 raise MdmError(404, "integracja MDM wylaczona (mdm.enabled albo MDM_ADMIN_TOKEN)")
             return mdm
 
-        def _mdm_get(self, path: str) -> None:
+        def _mdm_get(self, path: str, ctx: KontekstDomu) -> None:
             try:
-                api = self._mdm_api()
-                if path == "/api/mdm":
+                api = self._mdm_api(ctx)
+                if path == "/mdm":
                     self._json(200, {
                         "available": True,
                         "health": api.health(),
@@ -1469,17 +1587,18 @@ def make_handler(
                         "os_update": api.request("GET", "/api/os-update"),
                         "events": api.request("GET", "/api/events?last=50"),
                     })
-                elif m := re.fullmatch(r"/api/mdm/devices/([0-9A-Fa-f-]{8,64})", path):
+                elif m := re.fullmatch(r"/mdm/devices/([0-9A-Fa-f-]{8,64})", path):
                     self._json(200, api.request("GET", f"/api/devices/{m[1]}"))
                 else:
                     self._json(404, {"error": "nie ma takiego endpointu"})
             except MdmError as exc:
-                if mdm is None:
+                if mdm is None or ctx.dom_id != dm.DOM_1:
                     self._json(200, {"available": False, "error": str(exc)})
                 else:
                     self._json(_mdm_status(exc.status), {"error": str(exc)})
 
-        def _mdm_post(self, path: str, session: Session) -> None:
+        def _mdm_post(self, path: str, session: Session, ctx: KontekstDomu) -> None:
+            path = path.removeprefix(PREFIKS_DOMU)
             data = self._read_json()
             udid = data.get("udid")
             if udid is not None and (
@@ -1487,10 +1606,10 @@ def make_handler(
             ):
                 raise AuthError(400, "Niepoprawny UDID")
             try:
-                api = self._mdm_api()
-                if path == "/api/mdm/refresh" and udid:
+                api = self._mdm_api(ctx)
+                if path == "/mdm/refresh" and udid:
                     result = api.request("POST", f"/api/devices/{udid}/refresh")
-                elif path == "/api/mdm/command" and udid:
+                elif path == "/mdm/command" and udid:
                     rtype = data.get("request_type")
                     if rtype not in ("DeviceLock", "RestartDevice"):
                         raise AuthError(400, "Dozwolone: DeviceLock, RestartDevice")
@@ -1498,10 +1617,10 @@ def make_handler(
                     if rtype == "DeviceLock" and data.get("Message"):
                         body["Message"] = self._str(data, "Message", 200)
                     result = api.request("POST", f"/api/devices/{udid}/commands", body)
-                elif path == "/api/mdm/enroll":
+                elif path == "/mdm/enroll":
                     label = self._str(data, "label", 32)
                     result = api.request("POST", "/api/enrollments", {"label": label})
-                elif path == "/api/mdm/os-update":
+                elif path == "/mdm/os-update":
                     if data.get("clear"):
                         body = {"clear": True}
                     elif data.get("disabled"):
@@ -1546,7 +1665,7 @@ def make_handler(
             self.do_GET()
 
         def do_GET(self) -> None:  # noqa: N802
-            self._sso_cookies, self._via_sso = [], False
+            self._sso_cookies, self._via_sso, self._grupy = [], False, None
             url = urlparse(self.path)
             if url.path.startswith("/api/"):
                 self._api(url.path, {k: v[-1] for k, v in parse_qs(url.query).items()})
@@ -1571,67 +1690,98 @@ def make_handler(
             if session is None:
                 self._unauthorized()
                 return
-            uprawnienie = get_uprawnienie(path)
-            if uprawnienie is None:
+            t = trasa("GET", path)
+            if t is None:
                 self._json(404, {"error": "nie ma takiego endpointu"})
                 return
             try:
-                self._wymaga(session, uprawnienie)
+                ctx = self._wymaga(session, t)
             except AuthError as exc:
                 self._json(exc.status, {"error": exc.message})
                 return
-            if path == "/api/auth/me":
-                self._json(200, {
-                    "login": session.login,
-                    "session_expires_at": datetime.fromtimestamp(
-                        session.expires_at, UTC).isoformat(),
-                    # sso: sesja z Authelii; logout_url: "Wyloguj" ma przejsc
-                    # przez portal, inaczej nastepne zadanie zalogowaloby od nowa.
-                    "sso": session.kind == "sso",
-                    # Front chowa przyciski wedlug `uprawnienia` (nie nazwy
-                    # roli); serwer i tak odmawia (403) niezaleznie od frontu.
-                    "rola": session.rola,
-                    "uprawnienia": sorted(session.uprawnienia),
-                    "logout_url": sso.logout_url if self._via_sso else None,
-                    **auth.account(session),
-                })
+            if ctx is None:
+                self._api_konta(t.klucz, session)
                 return
-            if path == "/api/meta":
+            self._api_domu(t.klucz.removeprefix(PREFIKS_DOMU), path, session, ctx, params)
+
+        def _api_konta(self, klucz: str, session: Session) -> None:
+            """GET poza domem: /api/auth/me i ekran bota WhatsApp."""
+            if klucz == "/api/auth/me":
+                self._json(200, self._me(session))
+                return
+            try:
+                self._profile_get(klucz, session)
+            except AuthError as exc:
+                self._json(exc.status, {"error": exc.message})
+
+        def _me(self, session: Session) -> dict:
+            """Konto, jego domy z uprawnieniami per dom (przelacznik domow)
+            i — dla zgodnosci z frontem sprzed domow — `rola`/`uprawnienia`
+            jedynego domu (przy wielu: tylko konto i instancja)."""
+            admin = self._admin(session)
+            poza = uprawnienia_sesji(session, admin)
+            widoczne = domy.widoczne(session, admin)
+            lista = [{
+                "id": w.dom.id,
+                "nazwa": w.dom.nazwa,
+                "rola": w.rola,
+                "administracja": w.administracja,
+                "uprawnienia": sorted(w.uprawnienia | poza),
+            } for w in widoczne]
+            jedyny = widoczne[0] if len(widoczne) == 1 else None
+            return {
+                "login": session.login,
+                "session_expires_at": datetime.fromtimestamp(
+                    session.expires_at, UTC).isoformat(),
+                # sso: sesja z Authelii; logout_url: "Wyloguj" ma przejsc
+                # przez portal, inaczej nastepne zadanie zalogowaloby od nowa.
+                "sso": session.kind == "sso",
+                # Front chowa przyciski wedlug `uprawnienia` (nie nazwy
+                # roli); serwer i tak odmawia (403) niezaleznie od frontu.
+                "rola": nazwa_roli(jedyny.rola) if jedyny and jedyny.rola else None,
+                "uprawnienia": sorted(poza | (jedyny.uprawnienia if jedyny else frozenset())),
+                "domy": lista,
+                "admin_instancji": admin,
+                "logout_url": sso.logout_url if self._via_sso else None,
+                **auth.account(session),
+            }
+
+        def _api_domu(self, rest: str, path: str, session: Session, ctx: KontekstDomu,
+                      params: dict[str, str]) -> None:
+            """GET trasy domu; `rest` = klucz bez PREFIKS_DOMU (`/day`)."""
+            queries = ctx.queries
+            if rest == "/meta":
                 self._json(200, queries.meta())
                 return
-            if path in ("/api/konto/powiadomienia", "/api/konta"):
+            if rest in ("/konto/powiadomienia", "/konta", "/dziennik"):
                 try:
-                    k = self._konta()
-                    self._json(200, k.moje(session) if path == "/api/konto/powiadomienia"
-                               else k.lista(session))
+                    k, wd = self._konta(), self._w_domu(ctx)
+                    self._json(200, {"/konto/powiadomienia": k.moje, "/konta": k.lista,
+                                     "/dziennik": k.dziennik}[rest](session, wd))
                 except AuthError as exc:
                     self._json(exc.status, {"error": exc.message})
                 return
-            if path.startswith("/api/profile/"):
-                try:
-                    self._profile_get(path, session)
-                except AuthError as exc:
-                    self._json(exc.status, {"error": exc.message})
+            if rest == "/export.csv":
+                self._export(queries, params)
                 return
-            if path == "/api/export.csv":
-                self._export(params)
+            if rest == "/tv/aplikacja":
+                self._json(200, stan_aplikacji(ctx.dom_id))
                 return
-            if path == "/api/tv/aplikacja":
-                self._json(200, stan_aplikacji())
-                return
-            if path == "/api/mdm" or path.startswith("/api/mdm/"):
-                self._mdm_get(path)
+            if rest == "/mdm" or rest.startswith("/mdm/"):
+                # Prefiks (UDID w sciezce): reszta sciezki zadania, nie klucz.
+                m = _SCIEZKA_DOMU.fullmatch(path)
+                self._mdm_get(m[2] if m else path.removeprefix("/api"), ctx)
                 return
             routes = {
-                "/api/screens": lambda c: queries.screens(c, params),
-                "/api/trends": lambda c: queries.trends(c, params),
-                "/api/devices": lambda c: queries.devices(c, params),
-                "/api/notifications": lambda c: queries.notifications(c, params),
-                "/api/day": lambda c: queries.day(c, params),
-                "/api/usage": lambda c: queries.usage(c, params),
-                "/api/tv/pause": lambda c: queries.tv_pause(c),
+                "/screens": lambda c: queries.screens(c, params),
+                "/trends": lambda c: queries.trends(c, params),
+                "/devices": lambda c: queries.devices(c, params),
+                "/notifications": lambda c: queries.notifications(c, params),
+                "/day": lambda c: queries.day(c, params),
+                "/usage": lambda c: queries.usage(c, params),
+                "/tv/pause": lambda c: queries.tv_pause(c),
             }
-            route = routes.get(path)
+            route = routes.get(rest)
             if route is None:
                 self._json(404, {"error": "nie ma takiego endpointu"})
                 return
@@ -1651,8 +1801,8 @@ def make_handler(
                 log.exception("panel: blad przy %s", path)
                 self._json(500, {"error": "blad serwera"})
 
-        def _export(self, params: dict[str, str]) -> None:
-            """CSV z agregatow dziennych. Sesja sprawdzona wyzej w _api."""
+        def _export(self, queries: PanelQueries, params: dict[str, str]) -> None:
+            """CSV z agregatow dziennych. Sesja i dom sprawdzone wyzej w _api."""
             try:
                 first, last = queries.export_range(params)
                 conn = queries.connect()
@@ -1714,11 +1864,18 @@ def _bramka_admin(cfg: Config) -> BramkaAdmin | None:
     return BramkaAdmin(bc, key)
 
 
-def stan_aplikacji() -> dict:
-    """Stan aplikacji Kidwatch TV dla panelu (`available: false` = wylaczona)."""
+def aplikacja_tv(dom_id: int):
+    """Aplikacja Kidwatch TV domu. Rejestr jest jeszcze jeden na proces
+    (`tv_app.AKTYWNA`, petla Domu 1; per dom — etap E3b/E6), wiec inny dom
+    jej nie ma, zamiast dostac telewizor Domu 1."""
     from .sources import tv_app  # noqa: PLC0415
 
-    app = tv_app.AKTYWNA
+    return tv_app.AKTYWNA if dom_id == dm.DOM_1 else None
+
+
+def stan_aplikacji(dom_id: int = dm.DOM_1) -> dict:
+    """Stan aplikacji Kidwatch TV dla panelu (`available: false` = wylaczona)."""
+    app = aplikacja_tv(dom_id)
     if app is None:
         return {"available": False}
     st = app.stan()
@@ -1733,14 +1890,43 @@ def stan_aplikacji() -> dict:
     }
 
 
-def start_panel(cfg: Config) -> ThreadingHTTPServer:
+#: Konfiguracja domu spoza config.yaml (E2: z bazy); None = dom bez konfiguracji.
+KonfiguracjaDomu = Callable[[dm.Dom], HomeConfig | None]
+
+
+def queries_domow(cfg: Config, konfiguracja_domu: KonfiguracjaDomu | None = None,
+                  ) -> Callable[[dm.Dom], PanelQueries]:
+    """Fabryka `PanelQueries` domu: baza domu (`sciezka_bazy_domu`)
+    i konfiguracja z `konfiguracja_domu` — `run` podaje te sama, na ktorej
+    chodzi srodowisko domu (dla Domu 1 w trybie `baza`: z bazy, E2). Bez niej
+    Dom 1 w trybie `yaml` bierze config.yaml, jak przed domami; dom bez
+    konfiguracji — panel bez urzadzen."""
+
+    def zbuduj(dom: dm.Dom) -> PanelQueries:
+        home: HomeConfig | BezKonfiguracji | None = None
+        if konfiguracja_domu is not None:
+            home = konfiguracja_domu(dom)
+        if home is None and dom.id == dm.DOM_1 and dom.zrodlo_konfiguracji == dm.ZRODLO_YAML:
+            home = cfg
+        if home is None:
+            home = BezKonfiguracji(timezone=dom.strefa)
+        requests = (GameRequests(cfg.panel_auth_path, dom_id=dom.id)
+                    if home.game_time.enabled else None)
+        tv_requests = (TvPauseRequests(cfg.panel_auth_path, dom_id=dom.id)
+                       if home.tv.enabled else None)
+        return PanelQueries(home, str(dm.sciezka_bazy_domu(dom.id, cfg.store.path)),
+                            requests, tv_requests)
+
+    return zbuduj
+
+
+def start_panel(cfg: Config, *, konfiguracja_domu: KonfiguracjaDomu | None = None,
+                ) -> ThreadingHTTPServer:
     """Startuje serwer panelu w watku demona i zwraca go (do `shutdown()`)."""
     auth = PanelAuth(
         cfg.panel_auth_path, box=box_from_env(), session_seconds=cfg.panel.session_hours * 3600
     )
-    requests = GameRequests(cfg.panel_auth_path) if cfg.game_time.enabled else None
-    tv_requests = TvPauseRequests(cfg.panel_auth_path) if cfg.tv.enabled else None
-    queries = PanelQueries(cfg, cfg.store.path, requests, tv_requests)
+    domy_panelu = DomyPanelu(cfg.panel_auth_path, queries_domow(cfg, konfiguracja_domu))
     if not auth.has_users():
         log.warning(
             "panel: brak kont — nikt sie nie zaloguje. Zaloz konto: "
@@ -1753,10 +1939,9 @@ def start_panel(cfg: Config) -> ThreadingHTTPServer:
     server = ThreadingHTTPServer(
         (cfg.panel.host, cfg.panel.port),
         make_handler(
-            queries, Path(cfg.panel.static_dir), auth, cookie_secure=cfg.panel.cookie_secure,
+            domy_panelu, Path(cfg.panel.static_dir), auth, cookie_secure=cfg.panel.cookie_secure,
             bramka=_bramka_admin(cfg), mdm=build_api(cfg.mdm), sso=sso,
-            konta=PanelKonta(auth, ProfilePowiadomien(cfg.panel_auth_path),
-                             [d.child for d in cfg.devices]),
+            konta=PanelKonta(auth, ProfilePowiadomien(cfg.panel_auth_path)),
         ),
     )
     server.daemon_threads = True

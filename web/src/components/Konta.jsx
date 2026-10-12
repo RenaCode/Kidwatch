@@ -1,9 +1,12 @@
-/* Powiadomienia per konto: wlasny profil (kazde konto) i zarzadzanie kontami
-   (uprawnienie konta.zarzadzanie). Serwer: /api/konto/* i /api/konta/*
-   (panel_konta.py). Pelne numery i adresy nigdy nie wracaja z serwera -
+/* Powiadomienia per konto: wlasny profil (kazde konto) i zarzadzanie
+   czlonkami WYBRANEGO domu (uprawnienie konta.zarzadzanie w tym domu).
+   Serwer: /api/konto/kanaly (kanaly osoby, wspolne dla jej domow)
+   i /api/domy/<id>/konto/*, /api/domy/<id>/konta/* (panel_konta.py) -
+   prefiks domu dokleja api.js. Pelne numery i adresy nigdy nie wracaja z serwera -
    pokazujemy maski, a zmiana to wpisanie nowej wartosci z haslem albo 2FA. */
 import React, { useCallback, useEffect, useState } from 'react';
 import { get, post } from '../utils/api';
+import { roleLabel } from '../utils/domy';
 import {
   CHANNEL_LABEL, channelsSummary, modeNotice, permissionChange, prefsFromProfile, prefsPayload,
   quietProblem, samePrefs, toggle, toggleChild,
@@ -228,17 +231,22 @@ export function MyNotifications() {
         <span>Moje powiadomienia</span>
         <span className="hint">{data.profil.ma_kanal ? channelsSummary(data.profil) : 'brak kanału — nic nie przychodzi'}</span>
       </div>
-      {notice && <div className="notice" style={{ marginBottom: 12 }}>{notice}</div>}
+      {notice && data.profil.czlonek && <div className="notice" style={{ marginBottom: 12 }}>{notice}</div>}
       <div className="grid grid-2">
         <div>
-          <div className="stat-label" style={{ marginBottom: 8 }}>Kanały</div>
+          <div className="stat-label" style={{ marginBottom: 8 }}>Kanały (wspólne dla Twoich domów)</div>
           <ChannelsForm profil={data.profil}
-                        onSave={async (b) => { const r = await post('/api/konto/kanaly', b); setData(r); }} />
+                        onSave={async (b) => { await post('/api/konto/kanaly', b); await load(); }} />
         </div>
         <div>
-          <div className="stat-label" style={{ marginBottom: 8 }}>Preferencje</div>
-          <PrefsForm profil={data.profil} katalog={data}
-                     onSave={async (b) => { const r = await post('/api/konto/powiadomienia', b); setData(r); }} />
+          <div className="stat-label" style={{ marginBottom: 8 }}>Preferencje w tym domu</div>
+          {data.profil.czlonek ? (
+            <PrefsForm profil={data.profil} katalog={data}
+                       onSave={async (b) => { const r = await post('/api/konto/powiadomienia', b); setData(r); }} />
+          ) : (
+            <p className="dim">Nie jesteś członkiem tego domu (wgląd administratora) — jego
+              powiadomienia dostają tylko członkowie.</p>
+          )}
         </div>
       </div>
     </div>
@@ -246,7 +254,7 @@ export function MyNotifications() {
 }
 
 /* ---------------------------------------------------------------- konta */
-function AddAccount({ confirm, onUsed, onDone }) {
+function AddAccount({ role, confirm, onUsed, onDone }) {
   const [login, setLogin] = useState('');
   const [rola, setRola] = useState('podglad');
   const [msg, setMsg] = useState(null);
@@ -276,8 +284,7 @@ function AddAccount({ confirm, onUsed, onDone }) {
         <label className="field" style={{ marginBottom: 0 }}>
           <span className="field-label">Rola</span>
           <select className="input-field" value={rola} onChange={(e) => setRola(e.target.value)}>
-            <option value="podglad">podgląd</option>
-            <option value="wlasciciel">właściciel</option>
+            {role.map((r) => <option key={r} value={r}>{roleLabel(r)}</option>)}
           </select>
         </label>
         <button className="btn-ghost" type="submit" disabled={busy || !login.trim() || !confirm}>
@@ -316,7 +323,7 @@ function AccountRow({ konto, katalog, confirm, onUsed, onChanged }) {
         <select className="input-field" style={{ width: 'auto' }} value={konto.rola}
                 disabled={busy || !confirm} aria-label={`Rola konta ${konto.login}`}
                 onChange={(e) => act('/api/konta/rola', { rola: e.target.value }, 'Rola zmieniona.')}>
-          {katalog.role.map((r) => <option key={r} value={r}>{r === 'podglad' ? 'podgląd' : 'właściciel'}</option>)}
+          {katalog.role.map((r) => <option key={r} value={r}>{roleLabel(r)}</option>)}
         </select>
         {konto.totp ? <span className="badge ok">2FA</span> : <span className="badge">bez 2FA</span>}
         <span className="dim">{channelsSummary(p)}{p.aktywne === false ? ' · wyłączone' : ''}</span>
@@ -326,9 +333,9 @@ function AccountRow({ konto, katalog, confirm, onUsed, onChanged }) {
           </button>
           {!konto.ja && (
             <button type="button" className="btn-link" disabled={busy || !confirm}
-                    onClick={() => window.confirm(`Usunąć konto ${konto.login}?`)
-                      && act('/api/konta/usun', {}, 'Konto usunięte.')}>
-              Usuń
+                    onClick={() => window.confirm(`Usunąć ${konto.login} z tego domu?`)
+                      && act('/api/konta/usun', {}, 'Konto usunięte z domu.')}>
+              Usuń z domu
             </button>
           )}
         </span>
@@ -405,10 +412,13 @@ export function Accounts() {
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 12, maxWidth: 560 }}>
         <ConfirmField value={confirm} onChange={setConfirm}
                       label="Twoje hasło albo kod 2FA — potwierdza jedną zmianę niżej" />
-        <button className="btn-ghost" disabled={!confirm}
-                onClick={() => setMode(data.tryb === 'konta' ? 'trasy' : 'konta')}>
-          {data.tryb === 'konta' ? 'Wróć do listy bramki' : 'Przełącz na powiadomienia per konto'}
-        </button>
+        {/* Tryb tras (lista bramki) jest tylko w Domu 1 - inne domy zawsze per konto. */}
+        {(data.tryb_trasy || data.tryb !== 'konta') && (
+          <button className="btn-ghost" disabled={!confirm}
+                  onClick={() => setMode(data.tryb === 'konta' ? 'trasy' : 'konta')}>
+            {data.tryb === 'konta' ? 'Wróć do listy bramki' : 'Przełącz na powiadomienia per konto'}
+          </button>
+        )}
       </div>
       <Msg msg={msg} />
       <div style={{ margin: '12px 0' }}>
@@ -417,12 +427,37 @@ export function Accounts() {
                       onUsed={() => setConfirm('')} onChanged={load} />
         ))}
       </div>
-      <AddAccount confirm={confirm} onUsed={() => setConfirm('')} onDone={load} />
+      <AddAccount role={data.role} confirm={confirm} onUsed={() => setConfirm('')} onDone={load} />
       <p className="dim" style={{ fontSize: '0.76rem', marginTop: 10 }}>
         Przed przełączeniem na tryb kont uzupełnij kanały (albo przenieś listę bramki:
         <code> kidwatch konta-migruj</code>). Wspólne dla domu zostają: bot WhatsApp, MDM,
         UniFi, telewizor, NextDNS.
       </p>
+    </div>
+  );
+}
+
+/* Dom -> Dziennik (§2.3): zmiany w domu i kazde wejscie administratora
+   instalacji, ktory nie jest czlonkiem. Bez wartosci sekretow. */
+export function AuditLog() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    get('/api/dziennik').then(setData, (e) => setError(e.message));
+  }, []);
+  if (error) return <div className="glass-card"><div className="form-error">{error}</div></div>;
+  if (!data) return <div className="glass-card"><div className="empty loading-pulse">Wczytywanie…</div></div>;
+  return (
+    <div className="glass-card">
+      {data.wpisy.length === 0 && <div className="empty">Brak wpisów.</div>}
+      {data.wpisy.slice(0, 50).map((w, i) => (
+        <div key={i} style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: '0.84rem', padding: '4px 0' }}>
+          <span className="dim">{new Date(w.ts).toLocaleString('pl-PL')}</span>
+          <strong>{w.login || 'system'}</strong>
+          <span className={w.akcja.startsWith('admin.') ? 'badge warn' : 'badge'}>{w.akcja}</span>
+          <span>{w.opis}</span>
+        </div>
+      ))}
     </div>
   );
 }

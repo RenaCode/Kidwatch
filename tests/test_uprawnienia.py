@@ -19,8 +19,9 @@ from conftest import make_config, panel_login
 from kidwatch import panel, panel_auth, uprawnienia
 from kidwatch.__main__ import main
 from kidwatch.config import PanelConfig, StoreConfig
-from kidwatch.panel import GET_TRASY, POST_TRASY, PUBLICZNA, get_uprawnienie, start_panel
+from kidwatch.panel import GET_TRASY, POST_TRASY, PUBLICZNA, get_uprawnienie, start_panel, trasa
 from kidwatch.panel_auth import PanelAuth
+from kidwatch.panel_domy import PREFIKS_DOMU
 from kidwatch.store import Store
 from kidwatch.uprawnienia import ROLE_UPRAWNIENIA, ROLE_VIEWER, UPRAWNIENIA
 from test_panel_auth import CONFIG
@@ -37,24 +38,42 @@ PODGLAD = ROLE_UPRAWNIENIA[ROLE_VIEWER]
 
 
 def _get_path(klucz: str) -> str:
+    """Stara sciezka (alias Domu 1, jedyny dom konta) — tak wola front sprzed
+    domow i tak dzialaja testy ponizej. Sciezki z domem: test_domy_panel.py."""
+    klucz = klucz.replace(PREFIKS_DOMU, "/api")
     return klucz + UDID if klucz.endswith("/") else klucz
+
+
+def _zakres_zgodny(path: str, uprawnienie: str, zakres: str) -> None:
+    """Trasa domu lezy pod prefiksem domu i odwrotnie; uprawnienie domu nie
+    wisi na trasie bez domu, a instancji — na trasie domu."""
+    assert zakres in (uprawnienia.ZAKRES_KONTO, uprawnienia.ZAKRES_DOM,
+                      uprawnienia.ZAKRES_INSTANCJA), (path, zakres)
+    assert path.startswith(PREFIKS_DOMU + "/") == (zakres == uprawnienia.ZAKRES_DOM), path
+    if uprawnienie != PUBLICZNA:
+        if uprawnienia.ZAKRESY[uprawnienie] == uprawnienia.ZAKRES_DOM:
+            assert zakres == uprawnienia.ZAKRES_DOM, path
+        if uprawnienia.ZAKRESY[uprawnienie] == uprawnienia.ZAKRES_INSTANCJA:
+            assert zakres == uprawnienia.ZAKRES_INSTANCJA, path
 
 
 # ===================================================================== router
 @pytest.mark.parametrize("path", sorted(POST_TRASY))
-def test_kazda_trasa_POST_ma_uprawnienie_i_handler(path):
-    uprawnienie, metoda = POST_TRASY[path]
+def test_kazda_trasa_POST_ma_uprawnienie_zakres_i_handler(path):
+    uprawnienie, metoda, zakres = POST_TRASY[path]
     assert uprawnienie in UPRAWNIENIA or (uprawnienie == PUBLICZNA and path in PUBLICZNE_POST), (
         f"{path}: trasa bez decyzji o uprawnieniu ({uprawnienie!r})"
     )
+    _zakres_zgodny(path, uprawnienie, zakres)
     handler = panel.make_handler(None, Path("."), None)
     assert callable(getattr(handler, metoda, None)), f"{path}: brak metody {metoda}"
 
 
 @pytest.mark.parametrize("path", sorted(GET_TRASY))
-def test_kazda_trasa_GET_ma_uprawnienie(path):
-    uprawnienie = GET_TRASY[path]
+def test_kazda_trasa_GET_ma_uprawnienie_i_zakres(path):
+    uprawnienie, zakres = GET_TRASY[path]
     assert uprawnienie in UPRAWNIENIA or (uprawnienie == PUBLICZNA and path in PUBLICZNE_GET)
+    _zakres_zgodny(path, uprawnienie, zakres)
 
 
 def test_router_nie_ma_tras_poza_tabelami():
@@ -66,21 +85,40 @@ def test_router_nie_ma_tras_poza_tabelami():
     assert not re.findall(r'"/api/', post), "do_POST ma trase poza POST_TRASY"
     api = zrodlo[zrodlo.index("def _api"):zrodlo.index("def _export")]
     for p in set(re.findall(r'"(/api/[^"]*)"', api)):
+        assert get_uprawnienie(p) is not None, f"GET {p} bez wpisu w GET_TRASY"
+    domu = zrodlo[zrodlo.index("def _api_domu"):zrodlo.index("def _export")]
+    for p in set(re.findall(r'"(/[a-z][^"]*)"', domu)) - {"/api"}:
         if p.endswith("/"):  # prefiks rozdzielajacy handlery, nie trasa
-            assert any(k.startswith(p) for k in GET_TRASY), p
+            assert any(k.startswith(PREFIKS_DOMU + p) for k in GET_TRASY), p
         else:
-            assert get_uprawnienie(p) is not None, f"GET {p} bez wpisu w GET_TRASY"
+            assert PREFIKS_DOMU + p in GET_TRASY, f"GET domu {p} bez wpisu w GET_TRASY"
     metody = set(re.findall(r"def (do_[A-Z]+)\(", zrodlo))
     assert metody == {"do_GET", "do_HEAD", "do_POST"}, metody
     # Zadna metoda nie sprawdza juz roli po swojemu — tylko _wymaga().
     assert "ROLE_OWNER" not in inspect.getsource(panel)
-    assert zrodlo.count("not in session.uprawnienia") == 1
+    assert zrodlo.count("not in uprawnienia") == 1
+    assert "session.uprawnienia" not in zrodlo
 
 
 def test_prefiks_GET_tylko_z_dalsza_sciezka():
     assert get_uprawnienie(f"/api/mdm/devices/{UDID}") == uprawnienia.MDM_PODGLAD
+    assert get_uprawnienie(f"/api/domy/2/mdm/devices/{UDID}") == uprawnienia.MDM_PODGLAD
     assert get_uprawnienie("/api/mdm/devices/") is None
     assert get_uprawnienie("/api/nieznana") is None
+
+
+def test_trasa_rozpoznaje_dom_alias_i_odrzuca_reszte():
+    t = trasa("GET", "/api/domy/12/day")
+    assert (t.klucz, t.dom_id, t.alias) == (f"{PREFIKS_DOMU}/day", 12, False)
+    t = trasa("GET", "/api/day")
+    assert (t.klucz, t.dom_id, t.alias) == (f"{PREFIKS_DOMU}/day", None, True)
+    assert trasa("POST", "/api/domy/3/mdm/command").metoda == "_mdm_post"
+    # Trasa bez domu nie istnieje pod prefiksem domu i odwrotnie.
+    assert trasa("GET", "/api/domy/1/auth/me") is None
+    assert trasa("POST", "/api/domy/1/profile/test") is None
+    for zla in ("/api/domy/0/day", "/api/domy/-1/day", "/api/domy/x/day", "/api/domy/1",
+                "/api/domy/01/day", "/api/domy/1/day/", "/api/domy/1/../day"):
+        assert trasa("GET", zla) is None, zla
 
 
 # ====================================================================== model
@@ -139,19 +177,39 @@ def server(tmp_path, monkeypatch):
     auth.add_user("rodzic1", HASLO)
     auth.add_user("rodzic2", HASLO, panel_auth.ROLE_VIEWER)
     srv = start_panel(cfg)
+    srv.auth = auth
     yield srv, auth
     srv.shutdown()
 
 
-def naglowki(srv, login: str) -> dict[str, str]:
+def naglowki(srv, login: str, path: str | None = None) -> dict[str, str]:
+    """Sesja z hasla. Dla trasy z zakresem instancji (bot WhatsApp) jako
+    wlasciciel — aktywny administrator instalacji: flaga + grupa `admins`
+    przez Authelie (§2.3); sam `wlasciciel` Domu 1 tego zakresu nie ma."""
     c = panel_login(srv.server_address[1], login, HASLO)
     j = dict(x.split("=", 1) for x in c.split("; "))
-    return {"Cookie": c, "X-CSRF-Token": j["kidwatch_csrf"]}
+    h = {"Cookie": c, "X-CSRF-Token": j["kidwatch_csrf"]}
+    if path and login == "rodzic1" and _instancji(path):
+        from kidwatch.domy import RejestrDomow  # noqa: PLC0415
+
+        auth = srv.auth
+        RejestrDomow(auth.path).ustaw_admin_instancji(auth.user_id(login), True)
+        h |= {"Remote-User": login, "Remote-Groups": "admins"}
+    return h
 
 
-ZAMKNIETE_POST = sorted(p for p, (u, _) in POST_TRASY.items()
+def _admin(srv, path: str) -> dict[str, str]:
+    return naglowki(srv, "rodzic1", path)
+
+
+def _instancji(path: str) -> bool:
+    t = trasa("POST", path) or trasa("GET", path)
+    return t is not None and t.zakres == uprawnienia.ZAKRES_INSTANCJA
+
+
+ZAMKNIETE_POST = sorted(_get_path(p) for p, (u, _, _) in POST_TRASY.items()
                         if u != PUBLICZNA and u not in PODGLAD)
-ZAMKNIETE_GET = sorted(_get_path(p) for p, u in GET_TRASY.items()
+ZAMKNIETE_GET = sorted(_get_path(p) for p, (u, _) in GET_TRASY.items()
                        if u != PUBLICZNA and u not in PODGLAD)
 
 
@@ -164,8 +222,11 @@ def test_listy_zamknietych_tras_nie_sa_puste():
 def test_podglad_403_na_kazda_zamknieta_trase_POST(server, path):
     srv, _ = server
     status, _, payload = call(srv, "POST", path, {}, naglowki(srv, "rodzic2"))
-    assert status == 403 and POST_TRASY[path][0] in payload["error"], (path, payload)
+    assert status == 403 and trasa("POST", path).uprawnienie in payload["error"], (path, payload)
     status, _, payload = call(srv, "POST", path, {}, naglowki(srv, "rodzic1"))
+    if _instancji(path):  # bez roli administratora — tak samo jak podglad
+        assert status == 403 and uprawnienia.WHATSAPP in payload["error"], (path, payload)
+        status, _, payload = call(srv, "POST", path, {}, _admin(srv, path))
     assert "nie ma uprawnienia" not in (payload or {}).get("error", ""), (path, payload)
 
 
@@ -175,6 +236,9 @@ def test_podglad_403_na_kazda_zamknieta_trase_GET(server, path):
     status, _, payload = call(srv, "GET", path, headers=naglowki(srv, "rodzic2"))
     assert status == 403 and "nie ma uprawnienia" in payload["error"], (path, payload)
     status, _, payload = call(srv, "GET", path, headers=naglowki(srv, "rodzic1"))
+    if _instancji(path):
+        assert status == 403 and "nie ma uprawnienia" in payload["error"], (path, payload)
+        status, _, payload = call(srv, "GET", path, headers=_admin(srv, path))
     assert "nie ma uprawnienia" not in (payload or {}).get("error", ""), (path, payload)
 
 
@@ -247,8 +311,13 @@ def test_cli_user_uprawnienia(tmp_path, monkeypatch, capsys):
 
     # Zmiana roli kasuje odstepstwa — nie przechodza po cichu na nowa role.
     assert main(["--config", str(cfg), "user-rola", "rodzic2", "wlasciciel"]) == 0
+    # Jedyne konto z zarzadzaniem kontami w domu nie spadnie do podgladu...
+    assert main(["--config", str(cfg), "user-rola", "rodzic2", "podglad"]) == 1
+    monkeypatch.setattr("sys.stdin", io.StringIO("haslo-ze-stdin-456\n"))
+    assert main(["--config", str(cfg), "user-add", "rodzic1", "--password-stdin"]) == 0
+    # ...dopoki nie ma drugiego.
     assert main(["--config", str(cfg), "user-rola", "rodzic2", "podglad"]) == 0
-    u = auth.list_users()[0]
+    u = next(u for u in auth.list_users() if u["login"] == "rodzic2")
     assert u["odstepstwa"] == [] and "tv.pauza" not in u["uprawnienia"]
 
 

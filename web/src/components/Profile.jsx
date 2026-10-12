@@ -13,7 +13,7 @@ import {
   sourcesLabel, testSummary, validateRecipients,
 } from '../utils/recipients';
 import TwoFactor from './TwoFactor';
-import { Accounts, MyNotifications } from './Konta';
+import { Accounts, AuditLog, MyNotifications } from './Konta';
 
 const STATUS = {
   WORKING: { label: 'połączony', badge: 'ok' },
@@ -445,12 +445,14 @@ export default function Profile({ user, onChanged, onClose, tvPause, onTvPauseCh
       <MyNotifications />
       {can(user, 'konta.zarzadzanie') && (
         <>
-          <div className="stat-label">Konta</div>
+          <div className="stat-label">Konta{user?.dom ? ` — ${user.dom.nazwa}` : ''}</div>
           <Accounts />
+          <div className="stat-label">Dziennik domu</div>
+          <AuditLog />
         </>
       )}
-      {/* Bot WhatsApp (nadawca) i lista odbiorcow bramki sa wspolne dla domu
-          i aplikacji RenaCode - wymagaja uprawnienia (uprawnienia.js). */}
+      {/* Bot WhatsApp (nadawca) i lista odbiorcow bramki sa wspolne dla calej
+          instalacji i aplikacji RenaCode - wymagaja uprawnienia (uprawnienia.js). */}
       {can(user, 'whatsapp.konfiguracja') && (
         <>
           <div className="stat-label">Powiadomienia / WhatsApp (bot i lista bramki)</div>

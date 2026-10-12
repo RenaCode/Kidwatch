@@ -27,7 +27,7 @@ from kidwatch.scheduler import device_loop
 from kidwatch.sources.nextdns import MultiNextDnsSource, parse_log_entry
 from kidwatch.sources.tv import TvProbe, TvUnavailable, TvWatcher
 from kidwatch.store import Store
-from test_profile import HASLO, call
+from test_profile import HASLO, admin_przez_sso, call
 from test_tv import FlakyShell, Sink, _no_sleep
 
 
@@ -46,18 +46,20 @@ def test_odrzucony_klucz_bramki_nie_wylogowuje_z_panelu(tmp_path, monkeypatch):
     monkeypatch.setattr(panel_mod, "_bramka_admin", lambda cfg: BramkaAdmin(
         BramkaConfig(url="http://bramka"), "k", transport=httpx.MockTransport(handler)))
     PanelAuth(cfg.panel_auth_path).add_user("rodzic", HASLO)
+    sso = admin_przez_sso(cfg.panel_auth_path, "rodzic", monkeypatch)
     server = start_panel(cfg)
     try:
         port = server.server_address[1]
         cookie = panel_login(port, "rodzic", HASLO)
         csrf = next(c.split("=", 1)[1] for c in cookie.split("; ")
                     if c.startswith("kidwatch_csrf"))
-        h = {"Cookie": cookie, "X-CSRF-Token": csrf}
+        h = {"Cookie": cookie, "X-CSRF-Token": csrf, **sso}
         status, data = call(port, "POST", "/api/profile/whatsapp/start", {"confirm": HASLO}, h)
         assert status == 502 and "zly klucz" in data["error"]
-        assert call(port, "GET", "/api/profile/whatsapp/qr", headers={"Cookie": cookie})[0] == 502
+        assert call(port, "GET", "/api/profile/whatsapp/qr",
+                    headers={"Cookie": cookie, **sso})[0] == 502
         # Sesja panelu nadal wazna.
-        assert call(port, "GET", "/api/auth/me", headers={"Cookie": cookie})[0] == 200
+        assert call(port, "GET", "/api/auth/me", headers={"Cookie": cookie, **sso})[0] == 200
     finally:
         server.shutdown()
 

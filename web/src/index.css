@@ -648,6 +648,8 @@ select.input-field option { background: var(--bg-dark); color: var(--text-main);
 .crumb-meta { color: var(--text-muted); font-size: 0.95rem; }
 .crumb-meta:first-letter { text-transform: uppercase; }
 .top-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: none; }
+/* Przelacznik domu (tylko przy wiecej niz jednym domu konta). */
+.home-switch select { width: auto; max-width: 14rem; padding-top: 8px; padding-bottom: 8px; }
 
 .icon-btn {
   position: relative; width: 42px; height: 42px; border-radius: 13px; cursor: pointer;

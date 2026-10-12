@@ -403,9 +403,16 @@ def test_zarzadca_w_domu_1_ma_lustro_w_users(tmp_path):
     c = rejestr.czlonkostwo(uid, DOM_1)
     oczekiwane = uprawnienia.ROLE_DOMU_UPRAWNIENIA["zarzadca"] - {"tv.aplikacja"}
     assert c.uprawnienia == oczekiwane
-    u = next(u for u in auth.list_users() if u["login"] == "konto-z")
-    assert u["rola"] == "podglad"  # stary obraz zna tylko wlasciciel/podglad
-    assert frozenset(u["uprawnienia"]) == oczekiwane  # ...i liczy te same uprawnienia
+    # Lustro w `users` (to czyta obraz sprzed domow): tylko wlasciciel/podglad...
+    assert _sql(path, "SELECT rola FROM users WHERE id = ?", (uid,)) == [("podglad",)]
+    odst = _sql(path, "SELECT uprawnienie, nadane FROM user_uprawnienia WHERE user_id = ?", (uid,))
+    stary = uprawnienia.efektywne("podglad", {n for n, x in odst if x},
+                                  {n for n, x in odst if not x})
+    # ...i te same uprawnienia efektywne, poza nowymi `dom.*`, ktorych obraz
+    # sprzed E3a nie zna (liczy lustro bez nich — inaczej nadpisalby role).
+    assert stary == oczekiwane - domy._NOWE_E3A
+    # Panel od E3a pokazuje role w domu.
+    assert next(u for u in auth.list_users() if u["login"] == "konto-z")["rola"] == "zarzadca"
     # Start nie spycha zarzadcy do podgladu, mimo ze w users jest `podglad`.
     assert not rejestr.migruj().zmiany
     assert rejestr.czlonkostwo(uid, DOM_1).rola == "zarzadca"
@@ -440,6 +447,9 @@ def test_konto_administracyjne_nie_dostaje_domu(tmp_path):
     _sql(path, "DELETE FROM czlonkostwa WHERE user_id = ?", (uid,))
     _sql(path, "UPDATE users SET admin_instancji = 1 WHERE id = ?", (uid,))
 
+    # E3a: start nie dopisuje czlonkostwa, tylko raz poprawia lustro w users.
+    assert RejestrDomow(path).migruj().uzgodnione == ("konto-admin",)
+    assert _sql(path, "SELECT rola FROM users WHERE id = ?", (uid,)) == [(domy.BEZ_DOMU,)]
     assert not RejestrDomow(path).migruj().zmiany
     assert RejestrDomow(path).konta_bez_domu() == ["konto-admin"]
     assert RejestrDomow(path).uprawnienia(uid, DOM_1) == frozenset()

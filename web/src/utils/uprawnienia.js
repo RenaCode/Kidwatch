@@ -1,6 +1,7 @@
-/* Uprawnienia konta z /api/auth/me (`uprawnienia`), liczone na serwerze
-   z roli i pojedynczych odstepstw konta (src/kidwatch/uprawnienia.py, baza
-   panelu - nie naglowek SSO). Front chowa przyciski wedlug uprawnien, nie
+/* Uprawnienia konta z /api/auth/me, liczone na serwerze z roli i pojedynczych
+   odstepstw konta W DOMU (src/kidwatch/uprawnienia.py, baza panelu - nie
+   naglowek SSO). Panel podaje tu konto w kontekscie wybranego domu
+   (utils/domy.js: userInHome), wiec `uprawnienia` to uprawnienia w tym domu. Front chowa przyciski wedlug uprawnien, nie
    nazwy roli; serwer i tak odmawia (403) niezaleznie od frontu.
 
    Brak pola (serwer sprzed modelu uprawnien) = brak uprawnien: lepiej schowac
@@ -11,7 +12,8 @@ export const VIEWER = 'podglad';
 export const ALL = [
   'konto.wlasne', 'podglad.historia', 'mdm.podglad', 'mdm.komendy',
   'czas_gry.zmiana', 'tv.pauza', 'tv.aplikacja', 'whatsapp.konfiguracja',
-  'konta.zarzadzanie', 'powiadomienia.techniczne',
+  'konta.zarzadzanie', 'powiadomienia.techniczne', 'dom.urzadzenia', 'dom.integracje',
+  'dom.zaproszenia',
 ];
 
 export function isViewer(user) {

@@ -48,14 +48,25 @@ pusty zbior. Wyjatek administratora instalacji (§2.3: flaga + grupa SSO
 `admins` + wpis w `audyt`) zalezy od sesji i dochodzi w panelu, nad ta
 funkcja.
 
-ZRODLO PRAWDY O ROLACH W DOMU 1. Do E4 (§6 p. 7) `users.rola`
-i `user_uprawnienia` sa lustrem roli w Domu 1, zeby obraz sprzed domow
-dzialal na tej samej bazie. W E1 panel liczy uprawnienia jak dotad
-(z `users`), a kazda zmiana konta przepisuje rola do `czlonkostwa`
-(`uzgodnij_konto_conn`). Start uzgadnia oba miejsca: role zmienione przez
-stary obraz po wycofaniu wracaja do `czlonkostwa`. E3a, przelaczajac
-odczyt na `czlonkostwa`, odwraca kierunek uzgadniania przy starcie;
-lustro w `users` usuwa E4.
+ZRODLO PRAWDY O ROLACH W DOMU 1 (od E3a). Prawda sa `czlonkostwa`: panel
+liczy z nich uprawnienia, a kazda zmiana idzie przez `ustaw_czlonkostwo_conn`
+albo `usun_czlonkostwo_conn`, ktore w tej samej transakcji przepisuja
+lustro do `users.rola` + `user_uprawnienia` (obraz sprzed domow czyta role
+stamtad; lustro zyje do E4, §6 p. 7). Konto BEZ czlonkostwa w Domu 1 (konto
+administracyjne, gosc innego domu z E4) ma w lustrze role `BEZ_DOMU` —
+stary obraz nie zna jej i daje takiemu kontu tylko `konto.wlasne`.
+
+Start (`uzgodnij_konto_conn`) nie nadaje juz czlonkostwa kazdemu kontu.
+Lustro rozne od czlonkostwa oznacza zmiane zrobiona POZA tym kodem —
+starym obrazem po wycofaniu albo reczna edycja bazy — i tylko taka zmiana
+wraca do `czlonkostwa` (degradacja konta zrobiona w czasie wycofania nie
+moze sie po powrocie cofnac). Konto z `BEZ_DOMU` zostaje bez domu.
+
+Dopisane w E3a (addytywnie, kontrakt E1 bez zmian): `BEZ_DOMU`,
+`zapisz_audyt`, `admin_instancji`, `ustaw_admin_instancji_conn`,
+`usun_czlonkostwo_conn`, `czlonkostwo_conn`, `OstatniZarzadzajacy`
+i odpowiedniki w `RejestrDomow` (`usun_czlonkostwo`,
+`ustaw_admin_instancji`, `admin_instancji`, `zapisz_audyt`, `audyt`).
 """
 
 from __future__ import annotations
@@ -90,6 +101,10 @@ NAZWA_DOMU_1 = "Dom 1"
 #: (tylko Dom 1, etap przejsciowy), 'baza' = tabele ponizej (od E2).
 ZRODLO_YAML = "yaml"
 ZRODLO_BAZA = "baza"
+
+#: Lustro `users.rola` konta, ktore NIE jest czlonkiem Domu 1. Obraz sprzed
+#: domow nie zna tej roli: konto dostaje w nim tylko `konto.wlasne`.
+BEZ_DOMU = "bez-domu"
 
 #: Rola konta (users.rola) -> rola w Domu 1 i z powrotem.
 ROLA_DOMU_Z_KONTA = {
@@ -311,6 +326,19 @@ def _stan_czlonkostwa(conn: sqlite3.Connection, dom_id: int, user_id: int) -> St
     return row[0], nadane, odebrane
 
 
+def czlonkostwo_conn(conn: sqlite3.Connection, user_id: int,
+                     dom_id: int) -> tuple[str, frozenset[str], frozenset[str]] | None:
+    """(rola, nadane, odebrane) konta w domu albo None — na polaczeniu
+    wolajacego (PanelAuth liczy z tego uprawnienia sesji)."""
+    if not _jest_tabela(conn, "czlonkostwa"):
+        return None
+    return _stan_czlonkostwa(conn, dom_id, user_id)
+
+
+#: Uprawnienia dodane w E3a — obraz E1 i starsze ich nie znaja.
+_NOWE_E3A = frozenset({upr.DOM_URZADZENIA, upr.DOM_INTEGRACJE, upr.DOM_ZAPROSZENIA})
+
+
 def lustro_konta(stan: Stan) -> Stan:
     """Rola w Domu 1 -> to, co ma zobaczyc obraz sprzed domow w `users`.
 
@@ -323,7 +351,10 @@ def lustro_konta(stan: Stan) -> Stan:
     if rola in wprost:
         return wprost[rola], nadane, odebrane
     if rola in upr.ROLE_DOMU_UPRAWNIENIA:
-        cel = upr.efektywne(rola, nadane, odebrane, role=upr.ROLE_DOMU_UPRAWNIENIA)
+        # Bez uprawnien, ktorych obraz sprzed E3a nie zna: on liczy to samo
+        # lustro bez nich i przy roznicy nadpisalby czlonkostwo (zarzadca
+        # po wycofaniu i powrocie stalby sie `podglad` z nadaniami).
+        cel = upr.efektywne(rola, nadane, odebrane, role=upr.ROLE_DOMU_UPRAWNIENIA) - _NOWE_E3A
         baza = upr.ROLE_UPRAWNIENIA[upr.ROLE_VIEWER]
         return upr.ROLE_VIEWER, frozenset(cel - baza), frozenset(baza - cel - upr.STALE)
     return stan
@@ -371,29 +402,57 @@ def _dom_istnieje(conn: sqlite3.Connection, dom_id: int) -> bool:
 
 def uzgodnij_konto_conn(conn: sqlite3.Connection, user_id: int,
                         teraz: float | None = None) -> bool:
-    """Czlonkostwo konta w Domu 1 := rola z `users` (E1: `users` jest prawda).
+    """Start: czlonkostwo w Domu 1 a lustro w `users` (od E3a prawda jest
+    czlonkostwo, docstring modulu).
 
-    Bez zmiany, gdy lustro czlonkostwa juz zgadza sie z `users` — dzieki temu
-    `zarzadca` zapisany lustrem jako `podglad` + nadania nie spada do
-    `podglad`. Konto z flaga `admin_instancji` nie dostaje czlonkostwa
-    (konto administracyjne bez domow, §2.3). Na polaczeniu i w transakcji
-    wolajacego. Zwraca, czy cos zapisano."""
+    - lustro zgodne z czlonkostwem — nic (takze `zarzadca` zapisany jako
+      `podglad` + nadania);
+    - lustro rozne — zmiana zrobiona starym obrazem albo recznie: wraca do
+      czlonkostwa (`users.rola = BEZ_DOMU` = konto wypisane z Domu 1);
+    - konto bez czlonkostwa z lustrem `BEZ_DOMU` — zostaje bez domu;
+    - konto bez czlonkostwa z rola konta (zalozone starym obrazem po
+      wycofaniu) — czlonek Domu 1 z ta rola, jak przed domami; konto
+      z flaga `admin_instancji` zamiast tego dostaje lustro `BEZ_DOMU`.
+
+    Na polaczeniu i w transakcji wolajacego. Zwraca, czy cos zapisano."""
     if not _dom_istnieje(conn, DOM_1):
         return False
     konto = _stan_konta(conn, user_id)
     if konto is None:
         return False
     obecne = _stan_czlonkostwa(conn, DOM_1, user_id)
-    if obecne is None and _admin_instancji(conn, user_id):
+    if obecne is not None:
+        if obecne[0] == BEZ_DOMU or (konto[0] == BEZ_DOMU and obecne[0] not in upr.ROLE_DOMU):
+            # Obraz z E1 dopisuje czlonkostwo kazdemu kontu, takze z lustrem
+            # BEZ_DOMU (rola przechodzi bez zmian) — sprzatamy je.
+            _usun_wiersz_czlonkostwa(conn, DOM_1, user_id)
+            return True
+        if lustro_konta(obecne) == konto:
+            return False
+        if konto[0] == BEZ_DOMU:
+            _usun_wiersz_czlonkostwa(conn, DOM_1, user_id)
+            return True
+        _zapisz_czlonkostwo(conn, DOM_1, user_id, rola_z_konta(konto),
+                            time.time() if teraz is None else teraz)
+        return True
+    if konto[0] == BEZ_DOMU:
         return False
-    if obecne is not None and lustro_konta(obecne) == konto:
-        return False
+    if admin_instancji(conn, user_id):
+        _zapisz_konto(conn, user_id, (BEZ_DOMU, frozenset(), frozenset()))
+        return True
     _zapisz_czlonkostwo(conn, DOM_1, user_id, rola_z_konta(konto),
                         time.time() if teraz is None else teraz)
     return True
 
 
-def _admin_instancji(conn: sqlite3.Connection, user_id: int) -> bool:
+def _usun_wiersz_czlonkostwa(conn: sqlite3.Connection, dom_id: int, user_id: int) -> None:
+    # czlonkostwa_uprawnienia i czlonkostwa_powiadomienia znikaja kaskada (FK).
+    conn.execute("DELETE FROM czlonkostwa WHERE dom_id = ? AND user_id = ?", (dom_id, user_id))
+
+
+def admin_instancji(conn: sqlite3.Connection, user_id: int) -> bool:
+    """Flaga administratora instalacji z bazy (§2.3). Sama flaga niczego nie
+    otwiera — panel wymaga jeszcze grupy `admins` (SSO) albo TOTP (haslo)."""
     try:
         row = conn.execute("SELECT admin_instancji FROM users WHERE id = ?",
                            (user_id,)).fetchone()
@@ -402,12 +461,91 @@ def _admin_instancji(conn: sqlite3.Connection, user_id: int) -> bool:
     return bool(row and row[0])
 
 
+#: Nazwa z E1, zostawiona dla zgodnosci.
+_admin_instancji = admin_instancji
+
+#: Wartosci `users.admin_instancji`: 0 — nie; 1 — administrator (przez
+#: Authelie z grupa `admins` albo haslem z TOTP); 2 — administrator TYLKO
+#: przez Authelie: sesja z hasla nigdy nie daje roli, nawet z TOTP (przeglad
+#: E3a, B-2). Obraz sprzed E3a czyta kolumne jako prawde/falsz i roli
+#: administratora nie zna — 2 nic w nim nie otwiera.
+ADMIN = 1
+ADMIN_TYLKO_SSO = 2
+
+
+def tryb_admina(conn: sqlite3.Connection, user_id: int) -> int:
+    """0, ADMIN albo ADMIN_TYLKO_SSO. Nieznana wartosc (reczna edycja) =
+    ADMIN_TYLKO_SSO: wezsza droga, nie szersza."""
+    try:
+        row = conn.execute("SELECT admin_instancji FROM users WHERE id = ?",
+                           (user_id,)).fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    if not row or not row[0]:
+        return 0
+    return ADMIN if row[0] == ADMIN else ADMIN_TYLKO_SSO
+
+
+def ustaw_admin_instancji_conn(conn: sqlite3.Connection, user_id: int, wlaczona: bool,
+                               teraz: float | None = None, *, tylko_sso: bool = False) -> bool:
+    """Flaga `admin_instancji` (tylko CLI `user-admin`); `tylko_sso` —
+    rola wylacznie przez Authelie. Zwraca, czy sie zmienila; zmiana idzie do
+    `audyt` jako zdarzenie instancji."""
+    row = conn.execute("SELECT login, admin_instancji FROM users WHERE id = ?",
+                       (user_id,)).fetchone()
+    if row is None:
+        raise LookupError(f"nie ma konta {user_id}")
+    nowa = (ADMIN_TYLKO_SSO if tylko_sso else ADMIN) if wlaczona else 0
+    if tryb_admina(conn, user_id) == nowa:
+        return False
+    conn.execute("UPDATE users SET admin_instancji = ? WHERE id = ?", (nowa, user_id))
+    opis = {0: "odebrany", ADMIN: "nadany", ADMIN_TYLKO_SSO: "nadany (tylko przez Authelie)"}
+    zapisz_audyt(conn, None, row[0], "instancja.admin",
+                 f"administrator instalacji: {opis[nowa]}", teraz)
+    return True
+
+
+class OstatniZarzadzajacy(ValueError):
+    """Zmiana zostawilaby dom bez czlonka z `konta.zarzadzanie` (§2.3)."""
+
+
+def _zarzadzajacy(conn: sqlite3.Connection, dom_id: int) -> set[int]:
+    out = set()
+    for (uid,) in conn.execute("SELECT user_id FROM czlonkostwa WHERE dom_id = ?", (dom_id,)):
+        stan = _stan_czlonkostwa(conn, dom_id, uid)
+        if stan and upr.KONTA in upr.efektywne(*stan, role=upr.ROLE_DOMU_UPRAWNIENIA):
+            out.add(uid)
+    return out
+
+
+def _pilnuj_zarzadzajacego(conn: sqlite3.Connection, dom_id: int, przed: set[int]) -> None:
+    """Dom, ktory mial kogos z `konta.zarzadzanie`, nie moze go stracic —
+    zostaloby tylko CLI. Dom bez takiego czlonka (swiezy) moze rosnac."""
+    if przed and not _zarzadzajacy(conn, dom_id):
+        raise OstatniZarzadzajacy(
+            "w domu musi zostać co najmniej jedno konto z zarządzaniem kontami"
+        )
+
+
+def _wyloguj(conn: sqlite3.Connection, user_id: int) -> None:
+    """Sesje i bilety konta po zmianie jego czlonkostwa — jak PanelAuth.set_role:
+    front rysuje przyciski i domy z /api/auth/me, a po odebraniu uprawnien
+    mialby je na ekranie do odswiezenia (uprawnienia serwer i tak czyta przy
+    kazdym zadaniu)."""
+    for tabela in ("sessions", "tickets"):
+        if _jest_tabela(conn, tabela):
+            conn.execute(f"DELETE FROM {tabela} WHERE user_id = ?", (user_id,))  # noqa: S608
+
+
 def ustaw_czlonkostwo_conn(conn: sqlite3.Connection, dom_id: int, user_id: int, rola: str,
                            nadane: frozenset[str] = frozenset(),
                            odebrane: frozenset[str] = frozenset(),
                            teraz: float | None = None) -> None:
     """Rola konta w domu. W Domu 1 takze lustro w `users` (obraz sprzed
-    domow czyta role stamtad). Na polaczeniu i w transakcji wolajacego."""
+    domow czyta role stamtad). Sesje konta sa uniewazniane. Na polaczeniu
+    i w transakcji wolajacego.
+    `OstatniZarzadzajacy`, gdy dom stracilby ostatniego zarzadzajacego —
+    wolajacy wycofuje transakcje."""
     if rola not in upr.ROLE_DOMU:
         raise ValueError(f"nieznana rola w domu {rola!r} (dozwolone: {', '.join(upr.ROLE_DOMU)})")
     zle = (set(nadane) | set(odebrane)) - set(upr.UPRAWNIENIA)
@@ -415,10 +553,28 @@ def ustaw_czlonkostwo_conn(conn: sqlite3.Connection, dom_id: int, user_id: int, 
         raise ValueError(f"niedozwolone odstepstwa: {sorted(zle or set(odebrane) & upr.STALE)}")
     if not _dom_istnieje(conn, dom_id):
         raise LookupError(f"nie ma domu {dom_id}")
+    przed = _zarzadzajacy(conn, dom_id)
     stan = (rola, frozenset(nadane), frozenset(odebrane))
     _zapisz_czlonkostwo(conn, dom_id, user_id, stan, time.time() if teraz is None else teraz)
     if dom_id == DOM_1:
         _zapisz_konto(conn, user_id, lustro_konta(stan))
+    _pilnuj_zarzadzajacego(conn, dom_id, przed)
+    _wyloguj(conn, user_id)
+
+
+def usun_czlonkostwo_conn(conn: sqlite3.Connection, dom_id: int, user_id: int) -> bool:
+    """Wypisuje konto z domu (z odstepstwami i preferencjami powiadomien
+    w tym domu). W Domu 1 lustro `BEZ_DOMU`. Konto zostaje — o jego
+    usunieciu decyduje wolajacy. Zwraca, czy czlonkostwo bylo."""
+    if _stan_czlonkostwa(conn, dom_id, user_id) is None:
+        return False
+    przed = _zarzadzajacy(conn, dom_id)
+    _usun_wiersz_czlonkostwa(conn, dom_id, user_id)
+    if dom_id == DOM_1:
+        _zapisz_konto(conn, user_id, (BEZ_DOMU, frozenset(), frozenset()))
+    _pilnuj_zarzadzajacego(conn, dom_id, przed)
+    _wyloguj(conn, user_id)
+    return True
 
 
 # =================================================================== migracja
@@ -472,7 +628,8 @@ def migruj_conn(conn: sqlite3.Connection, *, strefa: str | None = None,
                 if uzgodnij_konto_conn(conn, uid, teraz):
                     rola = _stan_czlonkostwa(conn, DOM_1, uid)
                     _audyt(conn, teraz, DOM_1, login, "migracja.czlonkostwo",
-                           f"rola w Domu 1 z roli konta: {rola[0] if rola else '?'}")
+                           f"rola w Domu 1 z roli konta: {rola[0]}" if rola
+                           else "konto wypisane z Domu 1 (lustro bez domu)")
                     uzgodnione.append(login)
         conn.execute("COMMIT")
     except BaseException:
@@ -485,6 +642,12 @@ def _audyt(conn: sqlite3.Connection, ts: float, dom_id: int | None, login: str |
            akcja: str, opis: str) -> None:
     conn.execute("INSERT INTO audyt (ts, dom_id, login, akcja, opis) VALUES (?, ?, ?, ?, ?)",
                  (ts, dom_id, login, akcja, opis))
+
+
+def zapisz_audyt(conn: sqlite3.Connection, dom_id: int | None, login: str | None, akcja: str,
+                 opis: str, ts: float | None = None) -> None:
+    """Wiersz dziennika (§2.2 `audyt`). `opis` bez wartosci sekretow."""
+    _audyt(conn, time.time() if ts is None else ts, dom_id, login, akcja, opis[:500])
 
 
 # ================================================================ integracje (E2)
@@ -879,14 +1042,43 @@ class RejestrDomow:
     def ustaw_czlonkostwo(self, dom_id: int, user_id: int, rola: str,
                           nadane: frozenset[str] = frozenset(),
                           odebrane: frozenset[str] = frozenset()) -> None:
+        self._w_transakcji(ustaw_czlonkostwo_conn, dom_id, user_id, rola, nadane, odebrane)
+
+    def _w_transakcji(self, fn, *args, **kwargs):
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                ustaw_czlonkostwo_conn(conn, dom_id, user_id, rola, nadane, odebrane)
+                wynik = fn(conn, *args, **kwargs)
                 conn.execute("COMMIT")
             except BaseException:
                 conn.execute("ROLLBACK")
                 raise
+        return wynik
+
+    def usun_czlonkostwo(self, dom_id: int, user_id: int) -> bool:
+        return self._w_transakcji(usun_czlonkostwo_conn, dom_id, user_id)
+
+    def admin_instancji(self, user_id: int) -> bool:
+        with self._conn() as conn:
+            return admin_instancji(conn, user_id)
+
+    def ustaw_admin_instancji(self, user_id: int, wlaczona: bool, *,
+                              tylko_sso: bool = False) -> bool:
+        return self._w_transakcji(ustaw_admin_instancji_conn, user_id, wlaczona,
+                                  tylko_sso=tylko_sso)
+
+    def zapisz_audyt(self, dom_id: int | None, login: str | None, akcja: str, opis: str) -> None:
+        with self._conn() as conn:
+            zapisz_audyt(conn, dom_id, login, akcja, opis)
+
+    def audyt(self, dom_id: int, limit: int = 100) -> list[dict]:
+        """Dziennik domu, najnowsze pierwsze (panel: Dom -> Dziennik)."""
+        with self._conn() as conn:
+            if not _jest_tabela(conn, "audyt"):
+                return []
+            return [dict(r) for r in conn.execute(
+                "SELECT ts, login, akcja, opis FROM audyt WHERE dom_id = ? "
+                "ORDER BY ts DESC, id DESC LIMIT ?", (dom_id, limit))]
 
     # ------------------------------------------------------------ E2: domy
     def dodaj_dom(self, nazwa: str, *, strefa: str = "Europe/Warsaw",
