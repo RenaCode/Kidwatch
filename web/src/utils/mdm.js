@@ -15,7 +15,8 @@ export function isMeaningfulEvent(event) {
 }
 
 const ALARM = new Set(['checkout', 'profile_missing', 'push_token_dead', 'cert_mismatch',
-  'enrollment_reuse', 'unknown_identity', 'os_update_failed']);
+  'enrollment_reuse', 'unknown_identity', 'os_update_failed', 'policy_entry_rejected',
+  'kind_mismatch']);
 
 /* 'warn' | 'ok' | '' - kolor plakietki zdarzenia. Zmiana nadzoru to alarm
    tylko przy UTRACIE; odzyskanie nadzoru jest dobra wiadomoscia. */
@@ -30,6 +31,19 @@ export function eventTone(event) {
 export function isCriticalNote(note) {
   if (note.kind === 'watchdog' || note.kind === 'dns_profile') return true;
   return note.kind === 'mdm' && (note.priority ?? 0) >= 4;
+}
+
+/* Karta urzadzenia MDM: ikona, nazwa systemu i czy restart ma sens.
+   `kind` podaje serwer od E5; starszy serwer - rozstrzyga ProductName.
+   RestartDevice wymaga nadzoru (schemat Apple) - bez niego iOS go odrzuca. */
+export function mdmDevice(d) {
+  const iphone = d.kind === 'iphone' || (!d.kind && String(d.product || '').startsWith('iPhone'));
+  return {
+    icon: iphone ? 'phone' : 'tablet',
+    os: iphone ? 'iOS' : 'iPadOS',
+    canRestart: d.supervised === true,
+    restartHint: d.supervised === true ? '' : 'Restart wymaga nadzoru urządzenia',
+  };
 }
 
 /* "40 min" / "3 h" / "2 d" - jak dlugo od chwili `iso`. */

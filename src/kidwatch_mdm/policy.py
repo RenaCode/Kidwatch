@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 #: Ograniczenia domyslne. Kazde dziala WYLACZNIE na nadzorowanym iPadzie
 #: (schemat: supervised: true) — na zwyklym iOS je ignoruje.
@@ -64,6 +64,17 @@ DEFAULT_SOFTWARE_UPDATE: dict[str, Any] = {
         "InstallSecurityUpdate": "AlwaysOn",
     },
     "Beta": {"ProgramEnrollment": "AlwaysOff"},
+}
+
+#: Klucze `softwareupdate.settings`, ktore dzialaja tylko pod nadzorem
+#: (schemat: allowed-enrollments: [supervised]). None = caly klucz, slownik =
+#: podklucze. Urzadzenie bez nadzoru dostaje deklaracje bez nich — inaczej
+#: moze odrzucic cala deklaracje. Zgodnosc ze schematem: test_mdm_e5_uwagi.py.
+SUPERVISED_ONLY_SOFTWARE_UPDATE: dict[str, Any] = {
+    "AutomaticActions": None,
+    "Beta": {"ProgramEnrollment": None, "RequireProgram": None},
+    "Deferrals": None,
+    "RapidSecurityResponse": None,
 }
 
 #: Statusy, ktore iPad ma raportowac sam przy kazdej zmianie (DDM).
@@ -119,6 +130,12 @@ class DevicePolicy(BaseModel):
     restrictions: dict[str, Any] = Field(default_factory=dict)
     blocked_apps: list[str] | None = None
 
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _kind_lower(cls, v: object) -> object:
+        # `kind: iPhone` w YAML-u to nie powod, zeby nie wstal serwer iPadow.
+        return v.strip().lower() if isinstance(v, str) else v
+
     @field_validator("dns_url")
     @classmethod
     def _doh(cls, v: str | None) -> str | None:
@@ -141,22 +158,37 @@ class Policy(BaseModel):
     #: Klucz = etykieta podana przy tworzeniu zaproszenia (np. "dziecko1").
     devices: dict[str, DevicePolicy] = Field(default_factory=dict)
     refresh_hours: float = 6.0
+    #: Wpisy iPhone'ow odrzucone przy wczytaniu: {etykieta: bledy}. Ustawia
+    #: load(); serwer zapisuje je jako zdarzenie (alarm w Kidwatchu).
+    _rejected: dict[str, list[str]] = PrivateAttr(default_factory=dict)
+
+    @property
+    def rejected(self) -> dict[str, list[str]]:
+        return self._rejected
 
     def device(self, label: str) -> DevicePolicy:
         return self.devices.get(label) or DevicePolicy(name=label)
 
     def kind(self, label: str, product: str | None = None) -> MdmKind:
-        """iPhone, gdy tak mowi polityka ALBO gdy urzadzenie zglosilo sie jako
-        iPhone (ProductName). Drugie lapie iPhone'a zapisanego pod etykieta bez
-        `kind: iphone`: dostanie polityke bez kluczy nadzoru, a nie blokady,
-        ktore iOS po cichu zignoruje. iPad nie zglasza sie jako „iPhone…"."""
-        if self.device(label).kind == "iphone" or (product or "").startswith("iPhone"):
+        """Rodzaj wg ProductName, gdy urzadzenie juz go zglosilo; inaczej wg
+        polityki. „iPhone…" lapie iPhone'a zapisanego pod etykieta bez
+        `kind: iphone`; „iPad…" chroni iPada przed `kind: iphone` wpisanym
+        pod jego etykieta przez pomylke — po cichu stracilby blokady i DNS
+        (kind_mismatch, alarm w Kidwatchu)."""
+        product = product or ""
+        if product.startswith("iPad"):
+            return "ipad"
+        if self.device(label).kind == "iphone" or product.startswith("iPhone"):
             return "iphone"
         return "ipad"
 
+    def kind_mismatch(self, label: str, product: str | None) -> bool:
+        """Polityka mowi iPhone, a urzadzenie zglasza sie jako iPad."""
+        return self.device(label).kind == "iphone" and (product or "").startswith("iPad")
+
     def restrictions_for(self, label: str, kind: MdmKind | None = None) -> dict[str, Any]:
         dev = self.device(label)
-        if "iphone" in (kind, dev.kind):
+        if (kind or dev.kind) == "iphone":
             # Tylko wlasne klucze urzadzenia, i to tylko zadeklarowanego jako
             # iPhone — tylko te walidacja sprawdzila pod katem nadzoru. Domyslne
             # i wspolne sa dla nadzorowanych iPadow.
@@ -180,9 +212,17 @@ def load_schema(path: str | os.PathLike | None) -> dict | None:
 
 def validate(policy: Policy, schema: dict | None) -> list[str]:
     """Bledy polityki. Pusta lista = mozna startowac."""
-    errors: list[str] = []
+    return [error for _, error in validate_entries(policy, schema)]
+
+
+def validate_entries(policy: Policy, schema: dict | None) -> list[tuple[str | None, str]]:
+    """Bledy z wpisem, ktorego dotycza: (etykieta urzadzenia albo None dla
+    ustawien wspolnych, tresc). Przypisanie nie z tekstu bledu — iPhone
+    z etykieta `software_update` nie moze polknac bledu wspolnych ustawien."""
+    entries: list[tuple[str | None, str]] = []
     labels = ["(wspolne)", *(lb for lb, d in policy.devices.items() if d.kind != "iphone")]
     for label in labels:
+        errors: list[str] = []
         restr = (
             {**DEFAULT_RESTRICTIONS, **policy.restrictions}
             if label == "(wspolne)"
@@ -205,15 +245,17 @@ def validate(policy: Policy, schema: dict | None) -> list[str]:
                     and not (expected is int and isinstance(value, bool))
                 ):
                     errors.append(f"{label}: {key} ma typ {spec['type']}, dostalem {value!r}")
+        owner = None if label == "(wspolne)" else label
+        entries += [(owner, e) for e in errors]
     for label, dev in policy.devices.items():
         if dev.kind == "iphone":
-            errors += _iphone_errors(label, dev, schema)
+            entries += [(label, e) for e in _iphone_errors(label, dev, schema)]
     if schema is not None:
         su_keys = schema["declarations"]["com.apple.configuration.softwareupdate.settings"]["keys"]
         for key in policy.software_update:
             if key not in su_keys:
-                errors.append(f"software_update: nieznany klucz {key!r}")
-    return errors
+                entries.append((None, f"software_update: nieznany klucz {key!r}"))
+    return entries
 
 
 def _iphone_errors(label: str, dev: DevicePolicy, schema: dict | None) -> list[str]:
@@ -251,9 +293,45 @@ def _iphone_errors(label: str, dev: DevicePolicy, schema: dict | None) -> list[s
 
 
 def load(path: str | os.PathLike, schema: dict | None = None) -> Policy:
+    """Polityka gotowa do startu albo PolicyError.
+
+    Zasada: zaden blad w polityce nie moze po cichu ZDJAC ochrony z iPada.
+
+    Bledny wpis, o ktorym wiadomo, ze to iPhone (`kind: iphone` i bez
+    `dns_url`), NIE zatrzymuje startu: trafia do kwarantanny (zostaje sama
+    nazwa i rodzaj, bez wlasnych ograniczen — iPhone traci tez te dzialajace
+    bez nadzoru) i do `policy.rejected`, a serwer zapisuje zdarzenie, z ktorego
+    Kidwatch robi alarm. Brak startu odcialby od komend wszystkie iPady.
+
+    Zatrzymuje start, jak przed E5:
+      * blad we wspolnych ustawieniach albo we wpisie iPada;
+      * blad we wpisie `kind: iphone` z `dns_url` — iPhone nigdy go nie ma (DNS
+        idzie recznym profilem), wiec to najpewniej iPad z pomylonym `kind`,
+        a kwarantanna skasowalaby mu DNS i blokady;
+      * kwarantanna wpisu, pod ktorego etykieta w bazie jest zapisany iPad —
+        tego load() nie wie, sprawdza MDMService przy starcie.
+    Sprawdzenie na sucho: `kidwatch-mdm check-policy`.
+    """
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     policy = Policy.model_validate(raw)
-    errors = validate(policy, schema)
-    if errors:
-        raise PolicyError("polityka odrzucona:\n  " + "\n  ".join(errors))
+    iphones = {
+        label for label, d in policy.devices.items() if d.kind == "iphone" and not d.dns_url
+    }
+    rejected: dict[str, list[str]] = {}
+    fatal: list[str] = []
+    for label, error in validate_entries(policy, schema):
+        if label in iphones:
+            rejected.setdefault(label, []).append(error)
+        elif label is not None and policy.devices[label].kind == "iphone":
+            fatal.append(
+                f"{error} (wpis ma dns_url, ktorego iPhone nie uzywa — jesli to iPad, "
+                f"usun `kind: iphone`; jesli iPhone, usun dns_url)"
+            )
+        else:
+            fatal.append(error)
+    if fatal:
+        raise PolicyError("polityka odrzucona:\n  " + "\n  ".join(fatal))
+    for label in rejected:
+        policy.devices[label] = DevicePolicy(name=policy.devices[label].name, kind="iphone")
+    policy._rejected = rejected
     return policy

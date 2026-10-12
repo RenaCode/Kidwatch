@@ -108,8 +108,32 @@ placeholdery.
        # bez dns_url — DNS idzie ręcznym profilem z kroku 3
    ```
 
-   Podmień Sekret i zrestartuj `kidwatch-mdm` (polityka czyta się przy
-   starcie; błędny klucz zatrzyma start z opisem w logu).
+   **Sprawdź na sucho przed podmianą Sekretu** (to samo sprawdzenie, które
+   robi serwer przy starcie):
+
+   ```sh
+   uv run python -m kidwatch_mdm check-policy policy.yaml \
+     --schema tools/apple_schema_index.json
+   ```
+
+   Kod 0 = można wgrywać. Potem podmień Sekret i zrestartuj `kidwatch-mdm`
+   (polityka czyta się przy starcie). Zasada: **żaden błąd w polityce nie
+   zdejmuje po cichu ochrony z iPada.**
+   - Błąd we wpisie, o którym wiadomo, że to iPhone (`kind: iphone`, bez
+     `dns_url`, pod etykietą nie ma zapisanego iPada): serwer **wstaje**
+     (iPady dalej zarządzane), a ten wpis idzie do kwarantanny — iPhone traci
+     **wszystkie** własne ograniczenia z wpisu, także działające bez nadzoru
+     (np. `allowCamera`). Alarm „MDM: wpis … w polityce odrzucony” przychodzi
+     raz na zmianę błędów, nie po każdym restarcie.
+   - Start zatrzymują, jak dotąd: błąd we wspólnych ustawieniach albo we
+     wpisie iPada; błąd we wpisie `kind: iphone` **z `dns_url`** (iPhone go
+     nie używa, więc to najpewniej iPad z pomylonym `kind`); błąd we wpisie,
+     pod którego etykietą jest zapisany iPad.
+   - `kind: iphone` pomyłkowo pod etykietą iPada **bez błędów** we wpisie:
+     iPad zostaje iPadem z pełnym wpisem (zgłasza się jako iPad) i jest alarm
+     „pomyłka rodzaju”. Jeśli taki wpis jest w kwarantannie, a iPad zapisze się
+     dopiero później, nie dostaje ograniczeń z wpisu — alarm mówi to wprost
+     (priorytet 5).
 7. **Zapis do MDM**: w panelu (zakładka MDM → link do zapisu, etykieta
    `iphone1`) albo `kubectl -n default exec deploy/kidwatch-mdm --
    kidwatch-mdm enroll iphone1`. Link otwórz w Safari **na iPhonie** →
@@ -117,7 +141,8 @@ placeholdery.
 8. **Sprawdzenie**:
    - push „iPhone Dziecka 1: zapisany do MDM” z tekstem o braku nadzoru;
    - zakładka MDM: iPhone, nadzór „nie”, lista aplikacji;
-   - blokada ekranu z panelu działa; restart odmawia z „wymaga nadzoru”.
+   - blokada ekranu z panelu działa; przycisk restartu jest nieaktywny
+     („Restart wymaga nadzoru urządzenia”), a API odmawia (409).
 9. **„Gotowe, gdy”** (§7 E5 w `docs/architektura-domy.md`):
    - iPhone zapisany do MDM (krok 8);
    - ruch DNS liczony jako sesje — kilka minut YouTube na iPhonie daje push
@@ -135,9 +160,15 @@ placeholdery.
 
 ## 5. Wycofanie
 
-- Kod: revert PR → nowy obraz. **Najpierw** usuń iPhone'a z `kidwatch-config`
-  (albo zmień `kind` na `ipad`) — stary obraz nie zna `kind: iphone`
-  i Kidwatch nie wystartuje z taką konfiguracją.
+- Kod: revert PR → nowy obraz. **Najpierw** usuń iPhone'a z konfiguracji
+  Domu 1 — stary obraz nie zna `kind: iphone` i Kidwatch nie wystartuje:
+  - tryb `yaml` (Sekret `kidwatch-config`): usuń wpis (albo zmień `kind` na
+    `ipad`) i wgraj konfigurację;
+  - tryb `baza` (E2, `docs/sejf-domow.md`): urządzenia czyta się z tabeli
+    `urzadzenia`, więc sam Sekret nie wystarczy. Przełącz dom na YAML bez
+    iPhone'a (`kidwatch dom-zrodlo 1 yaml` przy działającym podzie, potem
+    restart) albo usuń iPhone'a z bazy ponownym `dom-importuj 1 --zapisz`
+    z konfiguracji bez niego — i dopiero wtedy cofaj obraz.
 - Stary `kidwatch-mdm` ignoruje `kind` w polityce i wyśle iPhone'owi blokady
   iPada (iOS je zignoruje bez szkody). iPady bez zmian w obie strony.
 - Telefon: Ustawienia → Ogólne → VPN i urządzenia → usuń profil zarządzania

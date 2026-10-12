@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .pki import CA, fingerprint, identity_pkcs12
-from .policy import MdmKind, Policy
+from .policy import SUPERVISED_ONLY_SOFTWARE_UPDATE, MdmKind, Policy
 
 BASE_ID = "com.renacode.kidwatch.mdm"
 NAMESPACE = uuid.UUID("2f1c7a1e-4b8e-4c1e-9d3a-6b6d0c8f5e21")
@@ -129,7 +129,7 @@ def restrictions_profile(
     iPhone dostaje tylko wlasne klucze dzialajace bez nadzoru — czesto zadne
     (pusty payload niczego nie ogranicza, ale zmiana polityki dalej dochodzi
     ta sama droga)."""
-    kind = "iphone" if "iphone" in (kind, policy.device(label).kind) else "ipad"
+    kind = kind or policy.device(label).kind
     restrictions = policy.restrictions_for(label, kind)
     payload = {
         "PayloadType": "com.apple.applicationaccess",
@@ -185,7 +185,7 @@ def declarations(
     iPhone to osobna decyzja, nie skutek uboczny jednego pola z DeviceInformation.
     """
     dev = policy.device(label)
-    if "iphone" in (kind, dev.kind):
+    if (kind or dev.kind) == "iphone":
         supervised = False
     configs: list[dict] = [
         _declaration(
@@ -197,12 +197,7 @@ def declarations(
 
     su = dict(policy.software_update)
     if not supervised:
-        for key in ("AutomaticActions", "Deferrals", "RapidSecurityResponse"):
-            su.pop(key, None)
-        if isinstance(su.get("Beta"), dict):
-            su["Beta"] = {k: v for k, v in su["Beta"].items() if k != "ProgramEnrollment"}
-            if not su["Beta"]:
-                su.pop("Beta")
+        su = _bez_kluczy_nadzoru(su, SUPERVISED_ONLY_SOFTWARE_UPDATE)
     if su:
         configs.append(
             _declaration("com.apple.configuration.softwareupdate.settings", "softwareupdate", su)
@@ -248,6 +243,20 @@ def declarations(
         {"StandardConfigurations": [c["Identifier"] for c in configs]},
     )
     return [activation, *configs]
+
+
+def _bez_kluczy_nadzoru(payload: dict, supervised_only: dict) -> dict:
+    """Kopia bez kluczy nadzoru; slownik, ktory zostal pusty, znika."""
+    out: dict = {}
+    for key, value in payload.items():
+        if key in supervised_only and supervised_only[key] is None:
+            continue
+        if isinstance(supervised_only.get(key), dict) and isinstance(value, dict):
+            value = _bez_kluczy_nadzoru(value, supervised_only[key])
+            if not value:
+                continue
+        out[key] = value
+    return out
 
 
 def declarations_token(decls: list[dict]) -> str:

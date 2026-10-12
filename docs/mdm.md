@@ -63,6 +63,14 @@ kubectl -n default create secret generic kidwatch-mdm-policy --from-file=policy.
 
 Repo jest publiczne — prawdziwej polityki (adresy NextDNS, etykiety dzieci) nie commituj.
 
+**Każdą zmianę polityki sprawdź na sucho przed podmianą Sekretu** — błąd we wspólnych ustawieniach albo we wpisie iPada zatrzymuje start serwera (i komendy dla wszystkich iPadów):
+
+```sh
+uv run python -m kidwatch_mdm check-policy policy.yaml --schema tools/apple_schema_index.json
+```
+
+Błędny wpis iPhone'a (`kind: iphone`, bez `dns_url`, bez zapisanego pod tą etykietą iPada) nie zatrzymuje startu: trafia do kwarantanny z alarmem w Kidwatchu (raz na zmianę błędów). iPhone traci wtedy **wszystkie** własne ograniczenia z wpisu, także te działające bez nadzoru. Wpis `kind: iphone` z `dns_url` albo z etykietą zapisanego iPada zatrzymuje start jak dotąd — kwarantanna zdjęłaby iPadowi DNS i blokady. Szczegóły: [`docs/iphone.md`](iphone.md) krok 6.
+
 ## Krok 3 — DNS i ArgoCD
 
 1. Rekord `mdm.renacode.com` → adres VPS (tak jak `kidwatch.renacode.com`).
@@ -135,7 +143,7 @@ Token przychodzi sam z Sekretu `kidwatch-mdm-admin` (chart kidwatch, `mdmAdminSe
 | POST | `/api/devices/<udid>/commands` | `{"request_type": "DeviceLock", "Message": "..."}` albo `RestartDevice` (iPhone bez nadzoru: 409) |
 | POST | `/api/enrollments` | `{"label": "dziecko1"}` → link do profilu zapisu (24 h, jednorazowy) |
 | GET/PUT | `/api/os-update` | `{"target_version": "27.1", "deadline": "2026-10-20T20:00:00"}`, `{"clear": true}`, `{"disabled": true}` |
-| GET | `/api/events?since=<id>` | dziennik: `checkout`, `profile_missing`, `apps_installed`, `command_error`, `push_token_dead`, `os_update_failed`, `signature_rejected`… |
+| GET | `/api/events?since=<id>` | dziennik: `checkout`, `profile_missing`, `apps_installed`, `command_error`, `push_token_dead`, `os_update_failed`, `signature_rejected`, `policy_entry_rejected`, `kind_mismatch`… |
 | GET | `/api/policy` | polityka w użyciu |
 
 ## Czego serwer świadomie nie robi

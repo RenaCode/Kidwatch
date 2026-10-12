@@ -30,6 +30,8 @@ from pathlib import Path
 from . import apns_cert
 
 DEFAULT_APNS_DIR = Path.home() / ".kidwatch-mdm" / "apns"
+#: Indeks schematu w repo (check-policy na Macu, bez zmiennych obrazu).
+REPO_SCHEMA = Path(__file__).resolve().parents[2] / "tools" / "apple_schema_index.json"
 #: Co ile uzgadniac stan iPadow z polityka. Zmiana z API wymusza obieg od razu.
 RECONCILE_SECONDS = 300
 #: Ponowienie po nieudanym uzgadnianiu.
@@ -149,6 +151,32 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_check_policy(args) -> int:
+    """Walidacja polityki na sucho — PRZED podmiana Sekretu i restartem."""
+    from . import policy as policy_mod
+
+    path = args.schema or _env("KIDWATCH_MDM_SCHEMA") or str(REPO_SCHEMA)
+    if not Path(path).is_file():
+        # Serwer w obrazie waliduje ze schematem — „OK" bez niego byloby falszywe.
+        print(f"BLAD: brak indeksu schematu Apple ({path}); podaj --schema")
+        return 2
+    schema = policy_mod.load_schema(path)
+    try:
+        policy = policy_mod.load(args.file, schema)
+    except (policy_mod.PolicyError, ValueError, OSError) as exc:
+        print(f"BLAD — serwer NIE wystartuje z ta polityka:\n{exc}")
+        return 1
+    for label, errors in policy.rejected.items():
+        print(f"BLAD — wpis {label} pojdzie do kwarantanny (bez wlasnych ograniczen):")
+        for error in errors:
+            print(f"  {error}")
+    if policy.rejected:
+        return 1
+    kinds = ", ".join(f"{label}={d.kind}" for label, d in policy.devices.items())
+    print(f"polityka poprawna: {kinds or 'brak urzadzen'}")
+    return 0
+
+
 def cmd_init_ca(args) -> int:
     from .pki import CA
 
@@ -214,6 +242,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("run", help="serwer MDM (konfiguracja ze zmiennych srodowiska)")
     sp.set_defaults(func=cmd_run)
+
+    sp = sub.add_parser("check-policy", help="sprawdz polityke na sucho, przed restartem")
+    sp.add_argument("file", help="plik polityki YAML")
+    sp.add_argument("--schema", help="indeks schematu Apple (domyslnie $KIDWATCH_MDM_SCHEMA "
+                    "albo tools/apple_schema_index.json z repo)")
+    sp.set_defaults(func=cmd_check_policy)
 
     sp = sub.add_parser("init-ca", help="nowe CA tozsamosci urzadzen (raz na zawsze)")
     sp.add_argument("--dir", required=True)
