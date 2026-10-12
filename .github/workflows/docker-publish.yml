@@ -63,6 +63,26 @@ jobs:
       - run: helm lint charts/kidwatch-mdm
       - run: helm template kidwatch-mdm charts/kidwatch-mdm > /dev/null
 
+  # `plutil -lint` profili .mobileconfig istnieje tylko na macOS, wiec w jobie
+  # `testy` (ubuntu) te testy sa pomijane. Tu biegna naprawde, a brak plutil
+  # = blad (KIDWATCH_WYMAGAJ_PLUTIL), nie pominiecie. Job NIE jest w `needs`
+  # obrazow ani tagu: nie blokuje i nie opoznia wdrozenia. Bez pinu Xcode
+  # i symulatora — plutil jest w systemie.
+  plutil:
+    name: plutil (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: command -v plutil
+      # -rA: w logu kazdy test z wynikiem PASSED, widac, ze sie wykonal.
+      - run: uv run pytest -m plutil -v -rA
+        env:
+          KIDWATCH_WYMAGAJ_PLUTIL: "1"
+
   # Aplikacja Kidwatch TV (tv-app/): APK budowany przy kazdym pushu i PR-ze,
   # a na main wkladany do obrazu - panel instaluje go na telewizor przez ADB.
   tv-app:

@@ -8,6 +8,7 @@ nieszkodliwe: iPad je zignoruje, a Ty bys myslal, ze DNS jest nieusuwalny.
 from __future__ import annotations
 
 import json
+import os
 import plistlib
 import shutil
 import subprocess
@@ -166,11 +167,21 @@ def test_polskie_znaki_przezywaja_zapis_do_plista(tmp_path):
     assert "Michała" in loaded["PayloadDisplayName"]
 
 
-@pytest.mark.skipif(shutil.which("plutil") is None, reason="plutil jest tylko na macOS")
-@pytest.mark.parametrize("supervised", [False, True])
-def test_plutil_lint_przechodzi(tmp_path, supervised):
+#: Job CI na macOS ustawia 1: tam brak plutil ma byc BLEDEM, nie pominieciem —
+#: inaczej ten test cicho nie bieglby nigdzie (ubuntu nie ma plutil).
+WYMAGAJ_PLUTIL = os.environ.get("KIDWATCH_WYMAGAJ_PLUTIL") == "1"
+
+
+@pytest.mark.plutil
+@pytest.mark.skipif(
+    shutil.which("plutil") is None and not WYMAGAJ_PLUTIL, reason="plutil jest tylko na macOS"
+)
+@pytest.mark.parametrize(("kind", "supervised"),
+                         [("ipad", False), ("ipad", True), ("iphone", False)])
+def test_plutil_lint_przechodzi(tmp_path, kind, supervised):
+    assert shutil.which("plutil"), "brak plutil — ten test wymaga macOS"
     out = tmp_path / "p.mobileconfig"
-    argv = ["--name", "iPad Kuby", "--doh-url", DOH, "--out", str(out)]
+    argv = ["--name", "Urzadzenie Kuby", "--doh-url", DOH, "--out", str(out), "--kind", kind]
     if supervised:
         argv.append("--supervised")
     main(argv)
