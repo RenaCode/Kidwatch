@@ -54,7 +54,7 @@ DAY = FIXTURES / "day.jsonl"
 SNAPSHOT = FIXTURES / "day.expected.txt"
 HASLO = "haslo-testowe-123"
 #: Obraz na produkcji przed E2 (E1, #47) — test wycofania uruchamia JEGO kod.
-STARY_OBRAZ = "2723214"
+STARY_OBRAZ = "2723214507c06c0ab3c97d9ede5b947b4ca0907e"
 ODCISK = "ab" * 32
 PUBLICZNY = "9.9.9.9"
 
@@ -189,9 +189,10 @@ def dom1(tmp_path, monkeypatch):
 
 
 def _importuj(d, sejf, *, zapisz=True):
-    sekrety = sekrety_z_yaml(d["home"], domy.katalog_domu(DOM_1, d["inst"].store.path))
+    katalog = domy.katalog_domu(DOM_1, d["inst"].store.path)
+    sekrety = sekrety_z_yaml(d["home"], katalog)
     return importuj(d["rejestr"], DOM_1, d["home"], sekrety, sejf=sejf, zapisz=zapisz,
-                    kto="test")
+                    kto="test", plik_tokenu_tv=katalog / "tv-app" / "token")
 
 
 def _wyczysc_env():

@@ -390,6 +390,35 @@ def porownaj_sekrety(yaml: Mapping[str, Mapping[str, str]], baza: SekretyDomu,
     return out
 
 
+def _nowszy_token_tv(rejestr: RejestrDomow, dom_id: int, sejf: Sejf,
+                     sekrety_yaml: Mapping[str, Mapping[str, str]], plik: Path | None
+                     ) -> tuple[dict[str, dict[str, str]], list[str]]:
+    """Ponowny import nie cofa tokenu aplikacji TV: po sparowaniu w trybie
+    `baza` nowy token jest tylko w bazie, a plik na /data zostaje stary.
+    Token z bazy wygrywa, gdy pliku nie ma albo jest starszy niz ostatnia
+    zmiana integracji `tv`; nowszy plik (parowanie po powrocie do yaml) —
+    wygrywa plik."""
+    wynik = {t: dict(p) for t, p in sekrety_yaml.items()}
+    dom = rejestr.dom(dom_id)
+    tv = rejestr.integracja(dom_id, "tv")
+    if plik is None or dom is None or not dom.ma_dek or tv is None \
+            or "app_token" not in tv.sekrety_pola:
+        return wynik, []
+    w_bazie = rejestr.sekrety_domu(dom_id, sejf).get("tv", "app_token")
+    z_pliku = wynik.get("tv", {}).get("app_token")
+    if not w_bazie or w_bazie == z_pliku:
+        return wynik, []
+    try:
+        plik_nowszy = plik.stat().st_mtime > (tv.zmienione_at or 0)
+    except OSError:
+        plik_nowszy = False
+    if z_pliku and plik_nowszy:
+        return wynik, []
+    wynik.setdefault("tv", {})["app_token"] = w_bazie
+    return wynik, [f"token aplikacji TV: zostaje nowszy z bazy ({plik} "
+                   f"{'starszy' if z_pliku else 'nie istnieje'})"]
+
+
 @dataclass
 class RaportImportu:
     dom_id: int
@@ -408,16 +437,20 @@ class RaportImportu:
 def importuj(rejestr: RejestrDomow, dom_id: int, home: HomeConfig, sekrety_yaml:
              Mapping[str, Mapping[str, str]], *, sejf: Sejf, zapisz: bool,
              kto: str | None = None,
-             resolver: Callable[[str, int], list[str]] | None = None) -> RaportImportu:
+             resolver: Callable[[str, int], list[str]] | None = None,
+             plik_tokenu_tv: Path | None = None) -> RaportImportu:
     """`dom-importuj`: zapis -> odczyt -> porownanie w jednej transakcji.
     `zapisz=False` (podglad) albo jakakolwiek roznica = ROLLBACK, baza bez
     zmian. Strefa domu ZAWSZE z HomeConfig (Dom 1 zalozony przez PanelAuth
     ma domyslne Europe/Warsaw niezaleznie od config.yaml)."""
-    plan = plan_z_home(home, sekrety_yaml)
-    sieci, hosty, ostrzezenia = sieci_i_hosty(home, resolver=resolver)
     dom = rejestr.dom(dom_id)
     if dom is None:
         raise LookupError(f"nie ma domu {dom_id}")
+    sekrety_yaml, ostrzezenie_tv = _nowszy_token_tv(rejestr, dom_id, sejf, sekrety_yaml,
+                                                    plik_tokenu_tv)
+    plan = plan_z_home(home, sekrety_yaml)
+    sieci, hosty, ostrzezenia = sieci_i_hosty(home, resolver=resolver)
+    ostrzezenia += ostrzezenie_tv
     plan.dozwolone_sieci = list(dict.fromkeys([*dom.dozwolone_sieci, *sieci]))
     plan.dozwolone_hosty = list(dict.fromkeys([*dom.dozwolone_hosty, *hosty]))
     raport = RaportImportu(

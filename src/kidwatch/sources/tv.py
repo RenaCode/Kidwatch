@@ -403,12 +403,22 @@ class AdbTcpShell:
         from adb_shell.adb_device_async import AdbDeviceTcpAsync  # noqa: PLC0415
 
         if self._dev is None or not self._dev.available:
-            host = self.host
+            hosty = [self.host]
             if self.straznik is not None:
-                host = str(await self.straznik.rozwiaz(self.host, self.port))
-            dev = AdbDeviceTcpAsync(host, self.port, default_transport_timeout_s=self.timeout)
-            await dev.connect(rsa_keys=[self.signer], auth_timeout_s=self.timeout,
-                              read_timeout_s=self.timeout)
+                # Tylko adresy sprawdzone przez straznika; kolejny, gdy poprzedni
+                # nie odpowiada.
+                hosty = [str(ip) for ip in await self.straznik.rozwiaz_wszystkie(
+                    self.host, self.port)]
+            for i, host in enumerate(hosty):
+                dev = AdbDeviceTcpAsync(host, self.port,
+                                        default_transport_timeout_s=self.timeout)
+                try:
+                    await dev.connect(rsa_keys=[self.signer], auth_timeout_s=self.timeout,
+                                      read_timeout_s=self.timeout)
+                    break
+                except (OSError, TimeoutError):
+                    if i == len(hosty) - 1:
+                        raise
             self._dev = dev
         return self._dev
 

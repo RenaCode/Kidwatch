@@ -80,15 +80,24 @@ def _connect(url: str, timeout: float,
     parts = urlsplit(url)
     if parts.scheme != "https":
         raise UnifiError(f"unifi.url musi byc https://, jest {url!r}")
-    host = parts.hostname
+    hosty = [parts.hostname]
     if straznik is not None:
-        # Dom z konfiguracja w bazie (straznik.py, SSRF): laczymy sie z adresem,
-        # ktory przeszedl sprawdzenie, nie z nazwa rozwiazywana drugi raz.
-        host = str(straznik.rozwiaz_sync(parts.hostname or "", parts.port or 443))
-    conn = http.client.HTTPSConnection(
-        host, parts.port or 443, timeout=timeout, context=_context()
-    )
-    conn.connect()
+        # Dom z konfiguracja w bazie (straznik.py, SSRF): laczymy sie z adresami,
+        # ktore przeszly sprawdzenie (kolejny, gdy poprzedni nie odpowiada), nie
+        # z nazwa rozwiazywana drugi raz.
+        hosty = [str(ip) for ip in straznik.rozwiaz_wszystkie_sync(parts.hostname or "",
+                                                                   parts.port or 443)]
+    for i, host in enumerate(hosty):
+        conn = http.client.HTTPSConnection(
+            host, parts.port or 443, timeout=timeout, context=_context()
+        )
+        try:
+            conn.connect()
+            break
+        except OSError:
+            conn.close()
+            if i == len(hosty) - 1:
+                raise
     der = conn.sock.getpeercert(binary_form=True)
     return conn, hashlib.sha256(der).hexdigest()
 

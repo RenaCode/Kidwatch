@@ -73,7 +73,9 @@ tailscale:
 # TV_SONY_PSK (Sony REST: antena i HDMI; bez niego tylko stan zasilania TV),
 # KIDWATCH_KEK (sejf integracji domow, 32 B w base64 — generuje wlasciciel,
 # kopia POZA kopia PVC; bez niego Dom 1 z config.yaml dziala jak dotad):
-# docs/sejf-domow.md.
+# docs/sejf-domow.md. UWAGA: gdy Dom 1 ma juz konfiguracje w bazie, odtworzony
+# Sekret BEZ KIDWATCH_KEK = pod w CrashLoop; wyjscie bez exec: klucz
+# KIDWATCH_DOM_1_ZRODLO=yaml w tym samym Sekrecie (docs/sejf-domow.md pkt 4).
 secretName: kidwatch-secrets
 
 # Rekordy parowania <UDID>.plist, wygenerowane JEDNORAZOWO na Macu po kablu.

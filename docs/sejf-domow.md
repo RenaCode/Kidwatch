@@ -19,6 +19,10 @@ Wszystkie polecenia w klastrze uruchamia się w podzie:
 
 ```sh
 k() { kubectl -n default exec deploy/kidwatch -c kidwatch -- python -m kidwatch "$@"; }
+# klucz z menedżera haseł na stdin (bez zapisu w historii powłoki):
+kp() { read -rs 'K?KIDWATCH_KEK z menedżera haseł: '; echo
+       printf '%s\n' "$K" | kubectl -n default exec -i deploy/kidwatch -c kidwatch -- \
+         python -m kidwatch klucze-potwierdz; unset K; }
 ```
 
 Zasady:
@@ -30,7 +34,11 @@ Zasady:
   w kopii Sekretów klastra — osobno od kopii wolumenu `/data`.
 - Bez KEK Dom 1 z `config.yaml` działa jak dotąd. Nie startuje tylko dom
   w trybie `baza` (Dom 1 po imporcie — wtedy pod kończy się kodem 2, w logu
-  „konfiguracja z bazy nie wystartowała”).
+  „konfiguracja z bazy nie wystartowała”, i wpada w CrashLoop). Wyjście
+  **bez `kubectl exec`**: pkt 4.
+- Po przełączeniu Domu 1 na bazę **każde** odtworzenie Sekretu
+  `kidwatch-secrets` (`docs/uruchomienie-od-zera.md` §7) musi zawierać
+  `KIDWATCH_KEK` z menedżera haseł.
 
 ## 1. Wdrożenie obrazu E2
 
@@ -82,7 +90,8 @@ kubectl -n default exec deploy/kidwatch -c kidwatch -- \
 
    ```sh
    k dom-importuj 1 --zapisz
-   k domy --sprawdz                       # „wszystko sie odszyfrowuje”
+   k domy --sprawdz          # „kluczy domow: 1, integracji: N” i „WYNIK: wszystko sie odszyfrowuje”
+   kp                        # klucz z MENEDŻERA HASEŁ otwiera bazę: „POTWIERDZONO”
    kubectl -n default rollout restart deploy/kidwatch
    kubectl -n default logs deploy/kidwatch -c kidwatch | grep "Dom 1: konfiguracja z bazy"
    ```
@@ -92,6 +101,10 @@ kubectl -n default exec deploy/kidwatch -c kidwatch -- \
    przed i po). `config.yaml` w Sekrecie `kidwatch-config` **zostaje** do
    końca następnego etapu — to droga powrotu.
 
+   `kp` kończy się „ODMOWA” (kod 1), gdy klucz z menedżera haseł nie jest
+   bieżącym kluczem albo baza nie ma czym go potwierdzić. Wtedy **nie
+   restartuj** — wróć `k dom-zrodlo 1 yaml` i sprawdź wpis w menedżerze.
+
 Uwagi:
 - Do E3a panel dalej czyta listę urządzeń z `config.yaml`; zmiany
   konfiguracji Domu 1 rób na razie w obu miejscach albo wróć do `yaml`,
@@ -100,11 +113,39 @@ Uwagi:
 - Token MDM Domu 1 to w E2 kopia `MDM_ADMIN_TOKEN`. Zmiana tokenu serwera
   MDM = ponowny import (albo powrót do `yaml`).
 - Token aplikacji Kidwatch TV: po imporcie plik leży w pamięci poda,
-  a ponowne sparowanie z panelu zapisuje nowy token w bazie.
+  a ponowne sparowanie z panelu zapisuje nowy token w bazie (plik na `/data`
+  zostaje stary). Ponowny import zachowuje token z bazy, gdy plik na `/data`
+  jest starszy albo go nie ma (ostrzeżenie w podglądzie); nowszy plik
+  (parowanie po powrocie do `yaml`) wygrywa. Po powrocie do `yaml` TV może
+  wymagać ponownego sparowania.
 
 ## 4. Cofnięcie
 
-- Konfiguracja: `k dom-zrodlo 1 yaml` + restart poda. Działa bez KEK.
+- **Pod w CrashLoop** (brak lub zły `KIDWATCH_KEK`, uszkodzony wiersz) —
+  `kubectl exec` nie zadziała, kontener nie żyje. Wymuszenie `config.yaml`
+  kluczem w Sekrecie (ArgoCD nim nie zarządza, więc go nie cofnie):
+
+  ```sh
+  kubectl -n default patch secret kidwatch-secrets --type merge \
+    -p '{"stringData": {"KIDWATCH_DOM_1_ZRODLO": "yaml"}}'
+  kubectl -n default rollout restart deploy/kidwatch
+  kubectl -n default logs deploy/kidwatch -c kidwatch | grep KIDWATCH_DOM_1_ZRODLO
+  ```
+
+  W logu: `KIDWATCH_DOM_1_ZRODLO=yaml: Dom 1 z config.yaml mimo trybu
+  baza`. Baza zostaje bez zmian. Po naprawie przyczyny (KEK z menedżera
+  haseł z powrotem w Sekrecie, `kp` = „POTWIERDZONO”) usuń klucz
+  i zrestartuj:
+
+  ```sh
+  kubectl -n default patch secret kidwatch-secrets --type json \
+    -p '[{"op": "remove", "path": "/data/KIDWATCH_DOM_1_ZRODLO"}]'
+  kubectl -n default rollout restart deploy/kidwatch
+  ```
+
+  Inna wartość niż `yaml` jest ignorowana z ostrzeżeniem w logu.
+- Konfiguracja z działającym podem: `k dom-zrodlo 1 yaml` + restart poda.
+  Działa bez KEK.
 - Obraz: poprzedni obraz (sprzed E2) ignoruje tabele integracji i tryb
   `baza` — czyta `config.yaml` i zmienne środowiskowe jak dawniej.
   Sprawdzone testem na prawdziwym kodzie obrazu `sha-2723214`
@@ -127,8 +168,12 @@ uv run kidwatch domy --baza ./kopia-panel-auth.db --sprawdz
 unset KIDWATCH_KEK; rm ./kopia-panel-auth.db
 ```
 
-Wynik „wszystko sie odszyfrowuje” = kopia + KEK odtwarzają integracje.
-Każdy `BLAD:` wskazuje dom i integrację. Bez KEK kopia odtwarza konta,
+Wynik to liczby i werdykt, np. „kluczy domow: 1, integracji: 6” i „WYNIK:
+wszystko sie odszyfrowuje” = kopia + KEK odtwarzają integracje. „WYNIK: nic
+nie potwierdzono” (kod 1) = w kopii nie ma żadnego klucza domu (kopia sprzed
+importu, zły plik) — to **nie jest** test klucza, niezależnie od klucza.
+Każdy `BLAD:` wskazuje dom i integrację. Kopię można też sprawdzić kluczem
+podanym na stdin: `uv run kidwatch klucze-potwierdz --baza ./kopia-panel-auth.db`. Bez KEK kopia odtwarza konta,
 domy i urządzenia, a integracje trzeba wpisać od nowa (dla Domu 1:
 `dom-zrodlo 1 yaml` i ponowny import z nowym KEK).
 
@@ -137,7 +182,9 @@ domy i urządzenia, a integracje trzeba wpisać od nowa (dla Domu 1:
 Adresy wpisywane przy integracjach (UniFi, TV, Home Assistant, AdGuard,
 iPady z odczytem wprost) muszą być publiczne albo leżeć w
 `domy.dozwolone_sieci`. Sprawdzane po rozwiązaniu nazwy przy zapisie i przy
-**każdym** połączeniu (także przekierowaniu). Hosty API NextDNS i ntfy:
+**każdym** połączeniu. Połączenie idzie tylko na sprawdzone adresy (kolejny,
+gdy poprzedni nie odpowiada). Klienci nie śledzą przekierowań; gdyby kiedyś
+śledzili, każdy skok przechodzi przez ten sam transport. Hosty API NextDNS i ntfy:
 tylko `api.nextdns.io`, `ntfy.sh` i `dozwolone_hosty`. Zmienia je wyłącznie
 administrator instancji:
 
@@ -153,24 +200,56 @@ to druga, niezależna bariera.
 
 ## 7. Rotacja KEK
 
-```sh
-NOWY=$(openssl rand -base64 32)                 # do menedżera haseł jako nowy wpis
-STARY=<obecny KIDWATCH_KEK z menedżera haseł>
-kubectl -n default patch secret kidwatch-secrets --type merge --patch-file /dev/stdin <<EOF
-{"stringData": {"KIDWATCH_KEK": "$NOWY", "KIDWATCH_KEK_POPRZEDNI": "$STARY"}}
-EOF
-unset NOWY STARY
-kubectl -n default rollout restart deploy/kidwatch
-k klucze-rotuj                                  # przepakowuje tylko klucze domów
-k domy --sprawdz
-kubectl -n default patch secret kidwatch-secrets --type json \
-  -p '[{"op": "remove", "path": "/data/KIDWATCH_KEK_POPRZEDNI"}]'
-kubectl -n default rollout restart deploy/kidwatch
-k domy --sprawdz                                # bez poprzedniego klucza
-```
+Kolejność jest ważna: **najpierw dowód, że nowy klucz z menedżera haseł
+otwiera bazę, dopiero potem usuwanie czegokolwiek**. `kp`
+(`klucze-potwierdz`) odmawia (kod 1), gdy klucz z menedżera nie jest
+bieżącym kluczem procesu albo choć jeden klucz domu jest jeszcze na starym.
+Bez „POTWIERDZONO” **nie wolno** wykonać kroku 4 ani 5 — to warunek, nie
+uwaga.
 
-Po rotacji zrób test odtworzenia (pkt 5) i dopiero wtedy usuń stary wpis
-z menedżera haseł.
+1. Nowy klucz obok starego:
+
+   ```sh
+   NOWY=$(openssl rand -base64 32)               # NOWY wpis w menedżerze haseł; stary zostaje
+   printf '%s\n' "$NOWY"
+   read -rs 'STARY?obecny KIDWATCH_KEK z menedżera haseł: '; echo
+   kubectl -n default patch secret kidwatch-secrets --type merge --patch-file /dev/stdin <<EOF
+   {"stringData": {"KIDWATCH_KEK": "$NOWY", "KIDWATCH_KEK_POPRZEDNI": "$STARY"}}
+   EOF
+   unset NOWY STARY
+   kubectl -n default rollout restart deploy/kidwatch
+   ```
+
+2. Przepakowanie i sprawdzenie:
+
+   ```sh
+   k klucze-rotuj                                # przepakowuje tylko klucze domów
+   k domy --sprawdz
+   ```
+
+3. **Dowód z menedżera haseł** — wklej NOWY klucz z menedżera (nie
+   z historii powłoki):
+
+   ```sh
+   kp                                            # musi być „POTWIERDZONO”
+   ```
+
+   Do tego test odtworzenia z kopii (pkt 5) **nowym** kluczem z menedżera.
+
+4. Dopiero teraz usuń klucz poprzedni z Sekretu i sprawdź start bez niego:
+
+   ```sh
+   kubectl -n default patch secret kidwatch-secrets --type json \
+     -p '[{"op": "remove", "path": "/data/KIDWATCH_KEK_POPRZEDNI"}]'
+   kubectl -n default rollout restart deploy/kidwatch
+   k domy --sprawdz
+   ```
+
+5. **Stary klucz w menedżerze haseł zostaje**, dopóki istnieje choć jedna
+   kopia bazy sprzed rotacji: jej klucze domów są zapakowane STARYM kluczem
+   i nowy ich nie otworzy (`kp` podaje datę ostatniej rotacji: „kopie bazy
+   sprzed …”). Usunięcie starego wpisu jest nieodwracalne — wolno dopiero
+   po usunięciu ostatniej takiej kopii.
 
 ## 8. Nowy klucz danych jednego domu
 
@@ -187,7 +266,9 @@ zewnętrzne (klucz NextDNS itd.) zmienia się w ich usługach i w panelu.
 
 | Komunikat | Znaczenie | Co zrobić |
 |---|---|---|
-| `brak KIDWATCH_KEK w srodowisku` | dom w trybie `baza`, a Sekret bez klucza | pkt 2 albo `dom-zrodlo 1 yaml` |
+| `brak KIDWATCH_KEK w srodowisku` | dom w trybie `baza`, a Sekret bez klucza; pod w CrashLoop | pkt 4 (`KIDWATCH_DOM_1_ZRODLO=yaml` bez exec), potem KEK z menedżera haseł |
+| `WYNIK: nic nie potwierdzono` | baza/kopia bez kluczy domów — test niczego nie dowodzi | właściwa kopia (po imporcie) |
+| `ODMOWA: klucz … NIE jest potwierdzony` | klucz z menedżera haseł nie otwiera bazy albo nie jest bieżący | nie usuwaj żadnego klucza; sprawdź wpis, `klucze-rotuj` |
 | `DEK domu N zapakowany kluczem X, a proces zna Y` | KEK zmieniony bez `KIDWATCH_KEK_POPRZEDNI` | pkt 7 (dodaj poprzedni, `klucze-rotuj`) |
 | `… nie odszyfrowuja sie (… z innego domu/typu)` | szyfrogram przeniesiony między wierszami albo uszkodzony | wpisz integrację od nowa |
 | `adres … jest poza siecią domu` | adres integracji spoza `dozwolone_sieci` | pkt 6, jeśli adres jest właściwy |
