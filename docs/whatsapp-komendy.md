@@ -69,12 +69,24 @@ Bez zapisu na telewizor, bez głośności, bez restartu i wyłączania iPada.
   Wynik LLM przechodzi tę samą drogę co dokładna komenda: uprawnienia,
   limity, kod.
 - Do dostawcy nie idzie numer telefonu, login, nazwa domu ani nic z bazy.
-- Zapas: dostawcy po kolei (`llm.dostawcy`, domyślnie Gemini, potem
-  Anthropic). Limit kosztu: `llm.wywolan_na_dobe` (domyślnie 200).
-- Brak kluczy, limit albo awaria obu: dokładne komendy działają dalej,
-  a wolny tekst dostaje „Nie rozumiem teraz swobodnego tekstu, napisz np. …”.
-  Awaria obu dostawców daje alarm instancji: od razu, potem po 1 h, 2 h,
-  4 h… najwyżej raz na dobę.
+- **Dostawca: na razie sam Gemini** (decyzja 2026-10-12). Anthropic jest
+  w kodzie jako opcjonalny drugi dostawca (`llm.dostawcy: [gemini,
+  anthropic]` + `KIDWATCH_LLM_ANTHROPIC_KEY`); bez klucza jest pomijany.
+- **Klucz Gemini jest dziś wspólny** z Traderem i Dietetykiem — wspólne
+  limity, w przeszłości dzienny 429. Docelowo klucz zostanie rozdzielony
+  (osobny projekt/klucz dla Kidwatcha). Do tego czasu Kidwatch oszczędza
+  wspólny limit:
+  - dokładne komendy (`stan`, `koniec`, `+15`, `TAK 1234`…) w ogóle nie
+    wołają LLM;
+  - dobowy limit wywołań Kidwatcha `llm.wywolan_na_dobe` (domyślnie 100);
+  - krótki timeout `llm.timeout_seconds` (domyślnie 6 s);
+  - **429 = chwilowa niedostępność**: bez alarmu, czytelna odpowiedź
+    („Nie rozumiem teraz swobodnego tekstu, napisz np. …”) i przerwa
+    `llm.przerwa_po_429_seconds` (domyślnie 15 min), w której Gemini nie
+    jest wołany wcale.
+- Inna awaria wszystkich dostawców (zły klucz, brak środków, 5xx, timeout):
+  ta sama odpowiedź plus alarm instancji — od razu, potem po 1 h, 2 h,
+  4 h… najwyżej raz na dobę. Dokładne komendy działają zawsze.
 
 ## Włączenie
 
@@ -82,8 +94,9 @@ Bez zapisu na telewizor, bez głośności, bez restartu i wyłączania iPada.
    /v1/whatsapp/skrzynka/potwierdz`, `id` w odpowiedzi wysyłki) i z
    jawnym odbiorcą (`funkcje: ["odbiorca"]`). Bez odbiorcy bot nie pobiera
    skrzynki — odpowiedź poszłaby trasami do wszystkich.
-2. Opcjonalnie klucze LLM w Sekrecie `kidwatch-secrets` (envFrom):
-   `KIDWATCH_LLM_GEMINI_KEY`, `KIDWATCH_LLM_ANTHROPIC_KEY`.
+2. Klucz Gemini w Sekrecie `kidwatch-secrets` (envFrom):
+   `KIDWATCH_LLM_GEMINI_KEY` — dziś kopia klucza Tradera i Dietetyka. Bez
+   niego działają tylko dokładne komendy.
 3. W konfiguracji (Sekret `kidwatch-config`): `whatsapp_komendy.enabled: true`,
    restart poda.
 4. Opiekunowie muszą mieć numer WhatsApp w swoim profilu (Ustawienia →

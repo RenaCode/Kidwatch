@@ -10,17 +10,22 @@ zabezpieczenie.
 Do dostawcy idzie WYLACZNIE tresc wiadomosci i nazwy dzieci/urzadzen domu.
 Bez numeru telefonu, loginu, nazwy domu i czegokolwiek z bazy.
 
-Zapas: dostawcy po kolei (`llm.dostawcy`). Brak klucza = dostawca pominiety;
-blad (429 dobowego limitu Gemini, brak srodkow na koncie Anthropic, 5xx,
-timeout) = nastepny. Gdy nie zostal zaden — `AWARIA` (bot odpowiada
-"napisz dokladna komende" i wysyla alarm instancji z rosnacym odstepem).
-Limit kosztu: `llm.wywolan_na_dobe` wywolan HTTP na dobe UTC, wspolny.
+Dostawcy po kolei (`llm.dostawcy`, domyslnie SAM Gemini — decyzja
+2026-10-12; Anthropic opcjonalnie, bez klucza pominiety). Klucz Gemini jest
+dzis WSPOLNY z Traderem i Dietetykiem (wspolne limity, bywal dzienny 429),
+docelowo zostanie rozdzielony. Dlatego: dokladne komendy w ogole nie wolaja
+LLM, dobowy limit wywolan Kidwatcha (`llm.wywolan_na_dobe`), krotki timeout,
+a 429 to CHWILOWA niedostepnosc — `CHWILOWO`, bez alarmu, i przerwa
+`llm.przerwa_po_429_seconds`, w ktorej dostawcy nie wolamy wcale. Inny blad
+(zly klucz, brak srodkow, 5xx, timeout) u wszystkich — `AWARIA`: bot odpowiada
+"napisz dokladna komende" i wysyla alarm instancji z rosnacym odstepem.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
@@ -40,6 +45,9 @@ OK = "ok"
 BRAK = "brak"
 #: Byli dostawcy z kluczem i wszyscy padli.
 AWARIA = "awaria"
+#: Dostawcy chwilowo niedostepni: 429 (klucz Gemini jest WSPOLNY z innymi
+#: aplikacjami RenaCode, wspolne limity) albo przerwa po 429. Bez alarmu.
+CHWILOWO = "chwilowo"
 
 SYSTEM = """Jesteś parserem komend aplikacji rodzicielskiej Kidwatch. Zamieniasz \
 wiadomość rodzica na JEDNĄ akcję z zamkniętej listy. Niczego nie wykonujesz.
@@ -108,13 +116,23 @@ def _schemat_gemini(dzieci: list[str], urzadzenia: list[str]) -> dict:
 
 
 class BladDostawcy(RuntimeError):
-    pass
+    def __init__(self, tekst: str, status: int | None = None) -> None:
+        super().__init__(tekst)
+        self.status = status
 
 
 def _status(r: httpx.Response, kto: str) -> None:
     if r.status_code >= 400:
         # Tresc bledu dostawcy bywa dluga; kod i poczatek wystarcza.
-        raise BladDostawcy(f"{kto}: HTTP {r.status_code} {r.text[:120]!r}")
+        raise BladDostawcy(f"{kto}: HTTP {r.status_code} {r.text[:120]!r}", r.status_code)
+
+
+def _status_bledu(exc: Exception) -> int | None:
+    if isinstance(exc, BladDostawcy):
+        return exc.status
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code
+    return None
 
 
 class Gemini:
@@ -207,6 +225,9 @@ class Rozpoznawacz:
                 else:
                     dostawcy.append(Anthropic(klucz, cfg.model_anthropic, self.client))
         self.dostawcy = dostawcy
+        #: dostawca -> do kiedy (monotonic) go nie wolamy po 429.
+        self._przerwa: dict[str, float] = {}
+        self.zegar = time.monotonic
 
     @property
     def dostepny(self) -> bool:
@@ -216,7 +237,13 @@ class Rozpoznawacz:
                         urzadzenia: Mapping[str, str | None]) -> WynikLlm:
         bledy: list[str] = []
         proby = 0
+        limitowane = 0
         for d in self.dostawcy:
+            if self._przerwa.get(d.nazwa, 0) > self.zegar():
+                # Po 429 nie dokladamy zapytan do wspolnego limitu klucza.
+                limitowane += 1
+                bledy.append(f"{d.nazwa}: przerwa po 429")
+                continue
             if not self.rezerwuj():
                 log.warning("komendy: dobowy limit wywolan LLM wyczerpany")
                 break
@@ -228,12 +255,18 @@ class Rozpoznawacz:
             except (httpx.HTTPError, BladDostawcy) as exc:
                 bledy.append(str(exc) if isinstance(exc, BladDostawcy)
                              else f"{d.nazwa}: {type(exc).__name__}")
+                if _status_bledu(exc) == 429:
+                    limitowane += 1
+                    proby -= 1
+                    self._przerwa[d.nazwa] = self.zegar() + self.cfg.przerwa_po_429_seconds
             except Exception as exc:  # noqa: BLE001 - dostawca nie wywroci petli
                 bledy.append(f"{d.nazwa}: {type(exc).__name__}")
             else:
                 return WynikLlm(OK, dane, d.nazwa, tuple(bledy))
             log.warning("komendy: LLM %s", bledy[-1])
-        return WynikLlm(AWARIA if proby else BRAK, bledy=tuple(bledy))
+        if proby:
+            return WynikLlm(AWARIA, bledy=tuple(bledy))
+        return WynikLlm(CHWILOWO if limitowane else BRAK, bledy=tuple(bledy))
 
     async def aclose(self) -> None:
         if self._owns_client:

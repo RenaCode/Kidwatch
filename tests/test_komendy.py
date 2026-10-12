@@ -371,3 +371,35 @@ def test_kod_jest_losowy_i_czterocyfrowy(tmp_path):
                           llm=False, wiadomosc_id=None, waznosc=120) for i in range(200)}
     assert all(len(c) == 4 and c.isdigit() for c in kody)
     assert len(kody) > 150
+
+
+async def test_domyslnie_sam_gemini(monkeypatch):
+    monkeypatch.setenv("KIDWATCH_LLM_GEMINI_KEY", "g")
+    monkeypatch.setenv("KIDWATCH_LLM_ANTHROPIC_KEY", "a")
+    r = Rozpoznawacz(LlmKomendConfig(), lambda: True)
+    assert [d.nazwa for d in r.dostawcy] == ["gemini"]
+    await r.aclose()
+
+
+async def test_429_wspolnego_klucza_to_chwilowa_niedostepnosc_z_przerwa():
+    from kidwatch.komendy_llm import CHWILOWO  # noqa: PLC0415
+
+    wywolania = []
+
+    def gemini(req):
+        wywolania.append(req)
+        return httpx.Response(429, json={"error": {"status": "RESOURCE_EXHAUSTED"}})
+
+    rezerwacje = []
+    r = Rozpoznawacz(LlmKomendConfig(przerwa_po_429_seconds=900),
+                     lambda: rezerwacje.append(1) or True,
+                     dostawcy=[Gemini("g", "m", klient(gemini))])
+    teraz = [1000.0]
+    r.zegar = lambda: teraz[0]
+    assert (await r.rozpoznaj("x", DZIECI, URZADZENIA)).status == CHWILOWO
+    # W czasie przerwy: bez zapytania do Gemini i bez zuzywania limitu.
+    assert (await r.rozpoznaj("x", DZIECI, URZADZENIA)).status == CHWILOWO
+    assert len(wywolania) == 1 and len(rezerwacje) == 1
+    teraz[0] += 901
+    await r.rozpoznaj("x", DZIECI, URZADZENIA)
+    assert len(wywolania) == 2

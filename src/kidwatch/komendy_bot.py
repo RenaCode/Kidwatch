@@ -423,6 +423,8 @@ class BotKomend:
             raise Odpowiedz(bez, kb.BEZ_LLM, dom_id=dom.dom_id, szczegol="brak kluczy LLM")
         wynik = await self.llm.rozpoznaj(tekst, dom.dzieci, dom.urzadzenia)
         if wynik.status != OK:
+            # CHWILOWO (429 wspolnego klucza) i BRAK (limit, brak kluczy):
+            # czytelna odpowiedz, bez alarmu. Alarm tylko przy AWARII.
             if wynik.status == AWARIA:
                 await self._alarm_llm_awaria(wynik.bledy)
             raise Odpowiedz(bez, kb.BEZ_LLM, dom_id=dom.dom_id,
@@ -724,7 +726,8 @@ class BotKomend:
         tytul = "Kidwatch: komendy z WhatsAppa bez LLM"
         tresc = ("Żaden dostawca LLM nie odpowiada (" + "; ".join(bledy) + "). Dokładne "
                  "komendy działają; wolny tekst dostaje prośbę o dokładną komendę. "
-                 "Sprawdź klucze i środki (KIDWATCH_LLM_GEMINI_KEY, KIDWATCH_LLM_ANTHROPIC_KEY).")
+                 "Sprawdź klucz KIDWATCH_LLM_GEMINI_KEY (wspólny z innymi aplikacjami) "
+                 "i ewentualnie KIDWATCH_LLM_ANTHROPIC_KEY.")
         log.error("komendy: %s — %s", tytul, tresc)
         if self.alarm is None:
             return

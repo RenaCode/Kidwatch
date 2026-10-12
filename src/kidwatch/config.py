@@ -497,13 +497,19 @@ class LlmKomendConfig(_Base):
 
     #: Kolejnosc prob; nastepny dostawca dostaje wiadomosc, gdy poprzedni
     #: padl (limit 429, brak srodkow, timeout) albo nie ma klucza.
+    #: Domyslnie sam Gemini (decyzja 2026-10-12). Anthropic mozna dopisac
+    #: jako drugiego; bez klucza i tak jest pomijany.
     dostawcy: list[Literal["gemini", "anthropic"]] = Field(
-        default_factory=lambda: ["gemini", "anthropic"])
+        default_factory=lambda: ["gemini"])
     model_gemini: str = "gemini-2.5-flash-lite"
     model_anthropic: str = "claude-haiku-4-5"
-    timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
-    #: Limit kosztu: tyle wywolan (wszystkich dostawcow razem) na dobe UTC.
-    wywolan_na_dobe: int = Field(default=200, ge=0, le=10000)
+    #: Krotko: rodzic czeka na odpowiedz, a wiszace wywolanie nic nie da.
+    timeout_seconds: float = Field(default=6.0, ge=1.0, le=60.0)
+    #: Limit kosztu i udzialu we WSPOLNYM limicie klucza Gemini (Trader,
+    #: Dietetyk): tyle wywolan (wszystkich dostawcow razem) na dobe UTC.
+    wywolan_na_dobe: int = Field(default=100, ge=0, le=10000)
+    #: Po 429 dostawca nie jest wolany przez tyle sekund.
+    przerwa_po_429_seconds: float = Field(default=900.0, ge=0, le=24 * 3600)
 
     def klucz(self, dostawca: str) -> str | None:
         env = {"gemini": "KIDWATCH_LLM_GEMINI_KEY",

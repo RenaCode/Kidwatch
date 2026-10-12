@@ -632,6 +632,18 @@ async def test_oba_dostawcy_padli_dokladne_komendy_dzialaja_alarm_z_odstepem(tmp
     assert len(s.alarmy) == 2
 
 
+async def test_429_gemini_bez_alarmu_dokladne_komendy_dzialaja(tmp_path):
+    g = Dostawca("gemini", blad=httpx.HTTPStatusError(
+        "429", request=httpx.Request("POST", "http://x"), response=httpx.Response(429)))
+    s = Swiat(tmp_path, dostawcy=[g])
+    assert "Nie rozumiem teraz swobodnego tekstu" in (await s.pisz(NR_A, "niech koncza"))[0]
+    assert s.alarmy == []
+    # Przerwa po 429: kolejny wolny tekst nie wola juz Gemini.
+    await s.pisz(NR_A, "niech koncza")
+    assert len(g.wywolania) == 1
+    assert "Zrozumiałem" in (await s.pisz(NR_A, "koniec Dziecko A"))[0]
+
+
 async def test_dobowy_limit_wywolan_llm(tmp_path):
     g = Dostawca("gemini", {"akcja": "pomoc", "dziecko": None, "urzadzenie": None,
                             "minuty": None, "godziny": None})
@@ -719,7 +731,8 @@ async def test_bramka_bez_id_w_odpowiedzi_dziala_jak_dotad():
 
     zapisy = []
     client = httpx.AsyncClient(transport=httpx.MockTransport(
-        lambda req: httpx.Response(200, json={"ok": True})))
+        lambda req: httpx.Response(200, json={"ok": True, "id": None})))
+    # Bramka PR #62: `id: null`, gdy poszlo mailem albo WAHA nie podala id.
     n = BramkaNotifier(BramkaConfig(url="http://bramka"), "k", client=client,
                        po_wysylce=lambda *a: zapisy.append(a))
     note = Notification(kind=NotifyKind.GAME, title="t", text="", dedup_key="d", ts=START)

@@ -187,8 +187,9 @@ watchdog:
 # Rodzic pisze do bota ("koniec Dziecko A", "+15", "stan" albo zwyklym
 # zdaniem), bot pyta "Zrozumialem: ...? Odpowiedz TAK 1234" i dopiero po
 # kodzie wykonuje. Szczegoly: docs/whatsapp-komendy.md. Wymaga bramki ze
-# skrzynka WhatsApp (W1) i jawnym odbiorca. Klucze LLM (opcjonalne) z
-# KIDWATCH_LLM_GEMINI_KEY / KIDWATCH_LLM_ANTHROPIC_KEY w kidwatch-secrets.
+# skrzynka WhatsApp (W1) i jawnym odbiorca. Wolny tekst rozpoznaje Gemini:
+# KIDWATCH_LLM_GEMINI_KEY w kidwatch-secrets (dzis klucz WSPOLNY z innymi
+# aplikacjami — 429 to chwilowa niedostepnosc, dokladne komendy dzialaja).
 whatsapp_komendy:
   enabled: false
   # poll_seconds: 5
@@ -197,10 +198,11 @@ whatsapp_komendy:
   # na_godzine: 10           # wiadomosci z jednego numeru na godzine
   # lost_mode: false         # dopiero po nadzorze iPadow i EnableLostMode w serwerze MDM
   # llm:
-  #   dostawcy: [gemini, anthropic]
+  #   dostawcy: [gemini]          # [gemini, anthropic] + KIDWATCH_LLM_ANTHROPIC_KEY
   #   model_gemini: gemini-2.5-flash-lite
-  #   model_anthropic: claude-haiku-4-5
-  #   wywolan_na_dobe: 200
+  #   timeout_seconds: 6
+  #   wywolan_na_dobe: 100
+  #   przerwa_po_429_seconds: 900
 
 notifiers:
   ntfy:

@@ -452,9 +452,10 @@ needs `PANEL_TOTP_KEY` in the `kidwatch-secrets` Secret.
 `whatsapp_komendy.enabled`). A household guardian (permission
 `whatsapp.komendy` — `wlasciciel-domu`; `zarzadca` only by explicit grant)
 writes to the bot: `stan`, `koniec`, `zablokuj ipad`, `+15`, `-15`,
-`odblokuj`, `cisza 2h`, or free text recognised by an LLM (Gemini, then
-Anthropic; optional keys `KIDWATCH_LLM_GEMINI_KEY` /
-`KIDWATCH_LLM_ANTHROPIC_KEY`) strictly into that closed list. Every change
+`odblokuj`, `cisza 2h`, or free text recognised by an LLM (Gemini,
+`KIDWATCH_LLM_GEMINI_KEY` — for now shared with other apps, so a 429 is
+treated as temporary unavailability; Anthropic optional) strictly into that
+closed list. Every change
 needs a one-time 4-digit code (`TAK 1234`, 2 min); relaxing actions have a
 daily per-child limit, every executed command is copied to the other
 guardians, unknown numbers get no reply. Log and an emergency switch for the
