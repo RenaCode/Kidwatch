@@ -35,7 +35,8 @@ liczby w podgladzie sa prawdziwe, nie szacowane.
 
 DOKONCZENIE. Gdy STAREGO konta juz nie ma, a NOWE jest i POWSTALO z tej
 zmiany (dowod: wpis `konto.login` „STARY -> NOWY” w audycie, nowszy niz
-zalozenie konta NOWY — _przemianowane) (przerwany albo
+zalozenie konta NOWY, najwyzej 24 h temu, bez sladow STAREGO loginu po
+nim — _przemianowane) (przerwany albo
 czesciowy przebieg: przy WAL panel-auth.db moze byc po zmianie, a baza domu
 jeszcze nie; wpis kolejki rozdzielony przez zywy proces tuz po zmianie),
 ponowne uruchomienie tego samego polecenia przepisuje same slady tekstowe —
@@ -102,24 +103,47 @@ def opis_zmiany(stary: str, nowy: str) -> str:
     return f"login konta zmieniony: {stary} -> {nowy}"
 
 
+#: Dokonczenie tylko tyle po pierwszym etapie: przerwany przebieg poprawia
+#: sie od razu, a pozniej STARY login mogl juz trafic do innej osoby.
+OKNO_DOKONCZENIA = 24 * 3600.0
+#: (tabela, kolumna loginu, kolumna czasu) — slady, ktore STARY login mogl
+#: zostawic PO zmianie, gdy uzyl go ktos inny (user-add STARY).
+_SLADY_PO_ZMIANIE = (("audyt", "login", "ts"), ("game_requests", "login", "created_at"),
+                     ("tv_pause_requests", "login", "created_at"))
+
+
 def _przemianowane(conn: sqlite3.Connection, stary: str, nowy: str,
-                   utworzone: float | None) -> bool:
-    """Dowod, ze konto NOWY to przemianowane STARE: wpis `konto.login`
-    (instancji, zapisany w tej samej transakcji co `users.login` przy
-    pierwszym etapie) z dokladnie ta para loginow, NOWSZY niz zalozenie
-    obecnego konta NOWY. Konto zalozone pod tym loginem po zmianie (stare
-    usuniete, login uzyty ponownie) dowodu nie ma."""
+                   utworzone: float | None, teraz: float) -> str | None:
+    """Czy konto NOWY to przemianowane STARE — None = tak, inaczej powod
+    odmowy. Wymagane: wpis `konto.login` (instancji, zapisany w tej samej
+    transakcji co `users.login` przy pierwszym etapie) z dokladnie ta para
+    loginow, nowszy niz zalozenie obecnego konta NOWY (login NOWY uzyty
+    ponownie), najwyzej OKNO_DOKONCZENIA temu, i zaden slad loginu STARY
+    nowszy niz ten wpis (STARY uzyty ponownie przez inna osobe — jej slady
+    trafilyby do NOWEGO)."""
     if not _tabela(conn, "main", "audyt"):
-        return False
+        return "brak dziennika audytu"
     row = conn.execute(
         "SELECT MAX(ts) FROM audyt WHERE akcja = 'konto.login' AND dom_id IS NULL "
         "AND login = ? AND opis = ?", (nowy, opis_zmiany(stary, nowy))).fetchone()
-    return bool(row and row[0] is not None and row[0] >= (utworzone or 0))
+    ts = row[0] if row else None
+    if ts is None or ts < (utworzone or 0):
+        return f"brak wpisu konto.login „{stary} -> {nowy}” dla obecnego konta {nowy!r}"
+    if teraz - ts > OKNO_DOKONCZENIA:
+        return (f"zmiana byla {int((teraz - ts) // 3600)} h temu — dokonczenie tylko do "
+                f"{int(OKNO_DOKONCZENIA // 3600)} h po niej")
+    for tabela, kolumna, czas in _SLADY_PO_ZMIANIE:
+        if _kolumna(conn, "main", tabela, kolumna) and conn.execute(
+                f"SELECT 1 FROM {tabela} WHERE {kolumna} = ? AND {czas} > ? "  # noqa: S608
+                f"LIMIT 1", (stary, ts)).fetchone():
+            return f"login {stary!r} byl uzywany po zmianie ({tabela}) — przez inna osobe?"
+    return None
 
 
 def _waliduj(conn: sqlite3.Connection, stary: str, nowy: str,
-             dokoncz: bool = False) -> tuple[int, bool]:
+             dokoncz: bool = False, teraz: float | None = None) -> tuple[int, bool]:
     """(id konta, czy tryb dokonczenia)."""
+    teraz = time.time() if teraz is None else teraz
     nowy_czysty = nowy.strip()
     if nowy_czysty != nowy or not login_ok(nowy):
         raise BladZmiany(f"login {nowy!r} niedozwolony — tylko a-z, 0-9, '.', '_', '-' "
@@ -132,12 +156,13 @@ def _waliduj(conn: sqlite3.Connection, stary: str, nowy: str,
                            (nowy,)).fetchone()
         if juz is None:
             raise BladZmiany(f"nie ma konta {stary!r} (ani {nowy!r} — nie ma czego dokonczyc)")
-        if not _przemianowane(conn, stary, nowy, juz[1]):
+        powod = _przemianowane(conn, stary, nowy, juz[1], teraz)
+        if powod is not None:
             # Konto NOWY istnieje, ale nie z tej zmiany (np. STARY usunieto,
-            # a NOWY to inna osoba): dokonczenie przepisaloby jej slady
-            # cudzego, usunietego konta — audyt, kolejke, dedup, historie.
+            # a NOWY to inna osoba) albo STARY login trafil potem do kogos
+            # innego: dokonczenie przepisaloby cudze slady na konto NOWY.
             raise BladZmiany(f"konto {nowy!r} istnieje, ale nie powstalo przez zmiane "
-                             f"z {stary!r} — brak wpisu konto.login w audycie")
+                             f"z {stary!r} (albo dokonczenie jest juz niebezpieczne): {powod}")
         return int(juz[0]), True
     if dokoncz:
         raise BladZmiany(f"konto {stary!r} nadal istnieje — to zwykla zmiana, bez --dokoncz")
@@ -267,7 +292,7 @@ def zmien_login(auth_path: str | Path, stary: str, nowy: str, *,
             aliasy[dom_id] = alias
         conn.execute("BEGIN IMMEDIATE")
         try:
-            uid, dokonczenie = _waliduj(conn, stary, nowy, dokoncz)
+            uid, dokonczenie = _waliduj(conn, stary, nowy, dokoncz, teraz)
             plan = PlanZmiany(stary, nowy, uid, dokonczenie=dokonczenie)
             _panel(conn, stary, nowy, uid, plan, teraz)
             for dom_id, alias in aliasy.items():
