@@ -440,6 +440,7 @@ class Srodowisko:
 
     def __init__(self, dom_id, home, zdarzenia):
         self.dom_id, self.home, self.zdarzenia = dom_id, home, zdarzenia
+        self.wersja = None
 
     def start(self):
         self.zdarzenia.append(f"start {self.home}")
@@ -593,3 +594,126 @@ def test_token_tv_ze_srodowiska_nie_podbija_wersji(tmp_path, kek):
     rejestr.sekrety_domu(dom, sejf).zapisz("tv", "app_token", _nowy_sekret("T"))
     assert rejestr.dom(dom).wersja == wersja
     assert rejestr.integracja(dom, "tv").sekrety_pola == ("app_token",)
+
+
+# ======================================================= poprawki po przegladzie
+def test_przelaczenie_zrodla_dns_w_jednym_zapisie(inst):
+    h = admin(inst)
+    wersja = inst.rejestr.dom(DOM_B).wersja
+    st, _, body = _zapisz(inst, h, {
+        "typ": "adguard", "wlaczona": True,
+        "ustawienia": {"base_url": "https://adguard.example.com", "username": "kidwatch"},
+        "sekrety": {"password": _nowy_sekret("ADGUARD")}, "wersja": wersja})
+    assert st == 200, body
+    assert {i["typ"]: i["wlaczona"] for i in body["zmienione"]} == {"adguard": True,
+                                                                    "nextdns": False}
+    assert inst.rejestr.integracja(DOM_B, "adguard").wlaczona
+    assert not inst.rejestr.integracja(DOM_B, "nextdns").wlaczona
+    assert body["start"] is None and body["dom"]["wersja"] == inst.rejestr.dom(DOM_B).wersja
+    # Samo wylaczenie jedynego zrodla dalej odrzucone.
+    st, _, body = _zapisz(inst, h, {"typ": "adguard", "wlaczona": False})
+    assert st == 400 and "nie wystartuje" in body["error"], body
+
+
+def test_zapis_z_nieaktualnej_wersji_409(inst):
+    h = admin(inst)
+    stara = inst.rejestr.dom(DOM_B).wersja
+    st, _, _ = _zapisz(inst, h, {"typ": "ntfy", "wlaczona": False, "ustawienia": {},
+                                 "wersja": stara})
+    assert st == 200
+    st, _, body = _zapisz(inst, h, {"typ": "unifi", "wlaczona": False, "wersja": stara})
+    assert st == 409 and "odśwież" in body["error"], body
+    assert inst.rejestr.integracja(DOM_B, "unifi").wlaczona
+
+
+def test_stan_do_odswiezania_bez_wpisu_w_dzienniku(inst):
+    h = admin(inst)
+
+    def odczyty():
+        with sqlite3.connect(inst.cfg.panel_auth_path) as conn:
+            return conn.execute("SELECT COUNT(*) FROM audyt WHERE akcja = "
+                                "'integracje.odczyt'").fetchone()[0]
+
+    przed = odczyty()
+    for _ in range(3):
+        st, _, body = call(inst, "GET", f"{URL}/stan", headers=h)
+        assert st == 200 and set(body) == {"dom", "start", "przeladowanie"}, body
+    assert odczyty() == przed
+    st, _, _ = call(inst, "GET", f"{URL}/stan", headers=sso(inst, "wlasciciel-b"))
+    assert st == 403
+
+
+def test_blad_po_udanym_zapisie_to_sukces_z_ostrzezeniem(inst, monkeypatch):
+    h = admin(inst)
+
+    def zepsute_maski(self, dom_id, sejf):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(dm.RejestrDomow, "maski", zepsute_maski)
+    st, _, body = _zapisz(inst, h, {"typ": "unifi", "wlaczona": False})
+    assert st == 200 and body["ok"] and "odśwież" in body["ostrzezenie"], body
+    assert not inst.rejestr.integracja(DOM_B, "unifi").wlaczona
+
+
+def test_bledy_startu_i_przeladowania_bez_sekretow(inst, caplog):
+    """Pola `start` i `przeladowanie.blad` niosa komunikaty z budowy domu —
+    tez bez wartosci sekretow."""
+    caplog.set_level(logging.DEBUG)
+    s = Slady(inst, caplog)
+    h = admin(inst)
+    # Konfiguracja, na ktorej dom nie wstaje (poza panelem, bez bezpiecznika).
+    with sqlite3.connect(inst.cfg.panel_auth_path) as conn:
+        conn.execute("UPDATE integracje SET ustawienia = ? WHERE dom_id = ? AND typ = 'nextdns'",
+                     ('{"profile_id": "abc999", "base_url": "https://obcy.example.com"}',
+                      DOM_B))
+    p = przeladowanie_domow(inst.rejestr, inst.cfg.split()[0], {}, inst.stany)
+    with pytest.raises(Exception) as exc:
+        p.konfiguracja(DOM_B)
+    inst.stany.ustaw(DOM_B, dm.StanDomu(1, inst.rejestr.dom(DOM_B).wersja, str(exc.value)))
+    st, _, body = s.zapisz(call(inst, "GET", URL, headers=h))
+    assert st == 200 and "spoza listy" in body["start"], body
+    assert body["przeladowanie"]["blad"]
+    s.zapisz(call(inst, "GET", f"{URL}/stan", headers=h))
+    assert s.przecieki(inst.kanarki["nextdns"], inst.kanarki["unifi"]) == []
+
+
+def test_mdm_w_panelu_z_tokenem_domu_z_bazy(tmp_path, monkeypatch, kek):
+    """Dom 1 w trybie `baza`: posrednik MDM panelu bierze token z sejfu domu
+    (ekran integracji), nie z MDM_ADMIN_TOKEN."""
+    from kidwatch import mdm as mdm_mod  # noqa: PLC0415
+    from kidwatch.konfiguracja_domu import zbuduj_dom  # noqa: PLC0415
+
+    monkeypatch.setenv("MDM_ADMIN_TOKEN", "TOKEN-Z-ENV-" + secrets.token_hex(6))
+    cfg, auth, rejestr = _uruchom_panel(tmp_path, monkeypatch, None)
+    auth.add_user("wlasciciel", HASLO)
+    rejestr.ustaw_zrodlo(DOM_1, dm.ZRODLO_BAZA)
+    _dziecko_z_urzadzeniem(rejestr, DOM_1, "phone-android")
+    sejf = Sejf(kek)
+    rejestr.zapisz_integracje(DOM_1, "nextdns", sejf=sejf, wlaczona=True,
+                              ustawienia={"profile_id": "abc999"},
+                              sekrety={"api_key": _nowy_sekret("K")}, resolver=_rozwiaz)
+    token = _nowy_sekret("MDM")
+    rejestr.zapisz_integracje(DOM_1, "mdm", sejf=sejf, wlaczona=True, ustawienia={},
+                              sekrety={"token": token}, resolver=_rozwiaz)
+    naglowki = []
+
+    def request(self, method, path, body=None):
+        naglowki.append(self._client.headers["Authorization"])
+        return {} if path != "/api/devices" else []
+
+    monkeypatch.setattr(mdm_mod.MdmApi, "request", request)
+    srv = start_panel(cfg, konfiguracja_domu=lambda dom: zbuduj_dom(
+        rejestr, dom.id, sejf, materializuj=False))
+    try:
+        st, _, body = call(srv, "GET", f"/api/domy/{DOM_1}/mdm",
+                           headers=sso(srv, "wlasciciel"))
+        assert st == 200 and body["available"], body
+        assert naglowki and set(naglowki) == {f"Bearer {token}"}
+        # Integracja MDM wylaczona w bazie: panel nie wraca po cichu do tokenu z env.
+        rejestr.zapisz_integracje(DOM_1, "mdm", sejf=sejf, wlaczona=False)
+        srv.domy_panelu.zapomnij(DOM_1)
+        st, _, body = call(srv, "GET", f"/api/domy/{DOM_1}/mdm",
+                           headers=sso(srv, "wlasciciel"))
+        assert st == 200 and body["available"] is False, body
+    finally:
+        srv.shutdown()

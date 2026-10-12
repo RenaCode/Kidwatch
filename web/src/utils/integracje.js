@@ -127,3 +127,27 @@ export const waitingForReload = (p) => !!p && p.automatyczne && !p.aktualna
 /* Ekran tylko dla aktywnego administratora instalacji (serwer i tak 403). */
 export const canEditIntegrations = (user) => !!user?.admin_instancji
   && Array.isArray(user?.uprawnienia) && user.uprawnienia.includes('dom.integracje');
+
+/* Sondowanie stanu po zapisie: co 4 s, najwyzej 2 minuty. */
+export const POLL_MS = 4000;
+export const POLL_LIMIT = 30;
+
+/* Odpowiedz zapisu -> stan ekranu: wszystkie zmienione karty (przelaczenie
+   zrodla DNS zmienia dwie), wersja domu, start i przeladowanie. */
+export function applySaved(data, r) {
+  const zmienione = r.zmienione || (r.integracja ? [r.integracja] : []);
+  const byTyp = Object.fromEntries(zmienione.map((i) => [i.typ, i]));
+  return {
+    ...data,
+    dom: r.dom || data.dom,
+    start: r.start !== undefined ? r.start : data.start,
+    przeladowanie: r.przeladowanie || data.przeladowanie,
+    integracje: data.integracje.map((i) => byTyp[i.typ] || i),
+  };
+}
+
+/* Odpowiedz GET .../integracje/stan -> stan ekranu (karty bez zmian). */
+export function applyState(data, st) {
+  if (!data) return data;
+  return { ...data, dom: st.dom || data.dom, start: st.start, przeladowanie: st.przeladowanie };
+}

@@ -6,7 +6,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { get, post } from '../utils/api';
 import {
-  formFromIntegration, isDirty, reloadNotice, savePayload, secretPlaceholder, waitingForReload,
+  POLL_LIMIT, POLL_MS, applySaved, applyState, formFromIntegration, isDirty, reloadNotice,
+  savePayload, secretPlaceholder, waitingForReload,
 } from '../utils/integracje';
 
 const NOTICE_CLASS = { ok: 'notice info', info: 'notice info', warn: 'notice', bad: 'form-error' };
@@ -81,7 +82,7 @@ function SecretField({ sekret, value, onChange, onRemove, disabled }) {
   );
 }
 
-function IntegrationCard({ integ, confirm, onUsed, onSaved }) {
+function IntegrationCard({ integ, confirm, wersja, onUsed, onSaved }) {
   const [form, setForm] = useState(() => formFromIntegration(integ));
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -94,9 +95,10 @@ function IntegrationCard({ integ, confirm, onUsed, onSaved }) {
   const send = async (path, body, okText) => {
     setBusy(true); setMsg(null);
     try {
-      const r = await post(path, { ...body, confirm });
-      setForm(formFromIntegration(r.integracja));
-      setMsg({ ok: true, text: okText });
+      // `wersja`: serwer odrzuci zapis (409), gdy ktos zmienil dom od wczytania.
+      const r = await post(path, { ...body, wersja, confirm });
+      if (r.integracja) setForm(formFromIntegration(r.integracja));
+      setMsg(r.ostrzezenie ? { ok: false, text: r.ostrzezenie } : { ok: true, text: okText });
       onSaved(r);
     } catch (e) {
       setMsg({ ok: false, text: e.message });
@@ -135,6 +137,7 @@ function IntegrationCard({ integ, confirm, onUsed, onSaved }) {
           ? `Zmienione: ${integ.zmienione_przez || '—'}${integ.zmienione_at ? `, ${new Date(integ.zmienione_at).toLocaleString('pl-PL')}` : ''}`
           : 'Jeszcze nie skonfigurowana.'}
       </p>
+      {integ.uwaga && <p className="dim" style={{ fontSize: '0.76rem' }}>{integ.uwaga}</p>}
       <div className="grid grid-2" style={{ gap: '0 16px' }}>
         {integ.pola.map((p) => (
           <SettingField key={p.pole} pole={p} value={form.pola[p.pole]} onChange={(v) => setPole(p.pole, v)} />
@@ -165,23 +168,31 @@ export default function Integrations() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  // Po zapisie: odswiezanie, az nadzorca przelaczy dom (albo zglosi blad).
-  const waiting = waitingForReload(data?.przeladowanie);
+  /* Po zapisie: sam stan przeladowania (bez masek i bez wpisu w dzienniku),
+     az nadzorca przelaczy dom, zglosi blad albo minie limit czasu. */
+  const [polls, setPolls] = useState(0);
+  const waiting = waitingForReload(data?.przeladowanie) && polls < POLL_LIMIT;
   useEffect(() => {
     if (!waiting) return undefined;
-    const id = setInterval(load, 4000);
+    const id = setInterval(async () => {
+      setPolls((n) => n + 1);
+      try {
+        const st = await get('/api/integracje/stan');
+        setData((d) => applyState(d, st));
+      } catch { /* nastepna proba za chwile */ }
+    }, POLL_MS);
     return () => clearInterval(id);
-  }, [waiting, load]);
+  }, [waiting]);
 
   if (error && !data) return <div className="glass-card"><div className="form-error">{error}</div></div>;
   if (!data) return <div className="glass-card"><div className="empty loading-pulse">Wczytywanie…</div></div>;
 
-  const onSaved = (r) => setData((d) => ({
-    ...d,
-    start: r.start,
-    przeladowanie: r.przeladowanie,
-    integracje: d.integracje.map((i) => (i.typ === r.integracja.typ ? r.integracja : i)),
-  }));
+  const onSaved = (r) => {
+    setPolls(0);
+    if (r.ostrzezenie) { load(); return; }
+    setData((d) => applySaved(d, r));
+  };
+  const timedOut = waitingForReload(data.przeladowanie) && polls >= POLL_LIMIT;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -191,6 +202,11 @@ export default function Integrations() {
           <span className="hint">wersja konfiguracji {data.dom.wersja}</span>
         </div>
         <Notice notice={reloadNotice(data.przeladowanie)} />
+        {timedOut && (
+          <div className="notice" style={{ marginTop: 10 }} role="status">
+            Nie potwierdzono przełączenia domu w ciągu 2 minut — odśwież ekran albo sprawdź log.
+          </div>
+        )}
         {data.start && (
           <div className="notice" style={{ marginTop: 10 }} role="alert">
             Na obecnej konfiguracji dom nie wystartuje: {data.start}
@@ -209,7 +225,7 @@ export default function Integrations() {
         </label>
       </div>
       {data.integracje.map((i) => (
-        <IntegrationCard key={i.typ} integ={i} confirm={confirm}
+        <IntegrationCard key={i.typ} integ={i} confirm={confirm} wersja={data.dom.wersja}
                          onUsed={() => setConfirm('')} onSaved={onSaved} />
       ))}
     </div>

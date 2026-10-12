@@ -227,8 +227,14 @@ def zbuduj_dom(rejestr: RejestrDomow, dom_id: int, sejf: Sejf, *,
     dostawca sekretow, straznik sieci, pliki z sekretow w pamieci poda.
     Kazdy blad (brak KEK, zly szyfrogram, adres spoza sieci) = wyjatek:
     dom nie startuje z polowa konfiguracji."""
-    dane = rejestr.dane_domu(dom_id)
-    sekrety = rejestr.sekrety_domu(dom_id, sejf)
+    return _home_domu(rejestr.dane_domu(dom_id), rejestr.sekrety_domu(dom_id, sejf),
+                      resolver=resolver, katalog=katalog, materializuj=materializuj)
+
+
+def _home_domu(dane: DaneDomu, sekrety: SekretyDomu, *,
+               resolver: Callable[[str, int], list[str]] | None,
+               katalog: str | Path | None, materializuj: bool) -> HomeConfig:
+    dom_id = dane.dom.id
     kat = katalog_sekretow_domu(dom_id, katalog)
     home = home_z_danych(dane, sekrety, katalog_plikow=kat)
     straznik = Straznik(dom_id, dane.dom.dozwolone_sieci, dane.dom.dozwolone_hosty,
@@ -237,6 +243,23 @@ def zbuduj_dom(rejestr: RejestrDomow, dom_id: int, sejf: Sejf, *,
     if materializuj:
         materializuj_pliki(sekrety, kat)
     return home.ustaw_srodowisko(sekrety, straznik)
+
+
+def zbuduj_dom_z_kopii(rejestr: RejestrDomow, dom_id: int, sejf: Sejf, *,
+                       resolver: Callable[[str, int], list[str]] | None = None,
+                       katalog: str | Path | None = None,
+                       materializuj: bool = False) -> tuple[int, HomeConfig] | None:
+    """Ostatnia konfiguracja, na ktorej dom WSTAL (RejestrDomow.zapamietaj_dobra):
+    (wersja, HomeConfig) albo None, gdy kopii nie ma. Te same kontrole co
+    `zbuduj_dom` plus wymagane sekrety."""
+    kopia = rejestr.kopia_domu(dom_id, sejf)
+    if kopia is None:
+        return None
+    wersja, dane, sekrety = kopia
+    home = _home_domu(dane, sekrety, resolver=resolver, katalog=katalog,
+                      materializuj=materializuj)
+    sprawdz_wymagane_sekrety(home)
+    return wersja, home
 
 
 def sprawdz_wymagane_sekrety(home: HomeConfig) -> None:

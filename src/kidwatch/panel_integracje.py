@@ -71,6 +71,8 @@ OPISY_SEKRETOW = {
     ("ntfy", "token"): "token dostępu",
     ("homeassistant", "webhook_id"): "identyfikator webhooka",
 }
+#: Zrodla DNS — dom ma wlaczone dokladnie jedno.
+ZRODLA_DNS = ("nextdns", "adguard")
 #: Pola modelu, ktorych nie ma w formularzu: `enabled` to przelacznik
 #: integracji, katalog klucza ADB ustawia srodowisko domu (pamiec poda).
 POMIJANE = frozenset({"enabled", "adb_key_dir"})
@@ -212,11 +214,25 @@ class PanelIntegracje:
                 "maska": maski.get(p),
                 "wielolinijkowy": (typ, p) in WIELOLINIJKOWE,
             } for p in dm.POLA_SEKRETOW[typ]],
+            "uwaga": ("Włączenie tego źródła DNS wyłącza drugie (NextDNS/AdGuard) w tym "
+                      "samym zapisie — dom ma dokładnie jedno." if typ in ZRODLA_DNS else None),
             "zmienione_przez": integracja.zmienione_przez if integracja else None,
             "zmienione_at": _iso(integracja.zmienione_at) if integracja else None,
         }
 
     # ------------------------------------------------------------- odczyt
+    def stan(self, session: Session, ctx) -> dict:
+        """Samo przeladowanie i start domu — do odswiezania ekranu po zapisie.
+        Bez ustawien i masek, wiec bez wpisu `integracje.odczyt` (dziennik
+        nie puchnie od sondowania); dostep jak przy liscie."""
+        dom = self._dostep(session, ctx)
+        sejf = self._sejf_lub_503()
+        return {
+            "dom": {"id": dom.id, "nazwa": dom.nazwa, "wersja": dom.wersja},
+            "start": self._blad_startu(dom.id, sejf),
+            "przeladowanie": self.przeladowanie(dom),
+        }
+
     def lista(self, session: Session, ctx) -> dict:
         dom = self._dostep(session, ctx)
         sejf = self._sejf_lub_503()
@@ -285,14 +301,31 @@ class PanelIntegracje:
         except AuthError as exc:
             raise AuthError(403 if exc.status == 401 else exc.status, exc.message) from exc
 
+    @staticmethod
+    def _wersja(data: dict) -> int | None:
+        w = data.get("wersja")
+        if w is None:
+            return None
+        if not isinstance(w, int) or isinstance(w, bool):
+            raise AuthError(400, "Niepoprawne pole 'wersja'")
+        return w
+
     def _zapisz(self, session: Session, ctx, typ: str, *, sejf: Sejf,
                 wlaczona: bool | None, ustawienia: dict | None,
-                sekrety: dict[str, str | None], tajne: list[str]) -> dict:
+                sekrety: dict[str, str | None], tajne: list[str],
+                wersja: int | None = None) -> dict:
+        # Zrodlo DNS jest dokladnie jedno: wlaczenie jednego wylacza drugie
+        # w tej samej transakcji (przelaczenie NextDNS <-> AdGuard z panelu).
+        wylacz = [t for t in ZRODLA_DNS if t != typ] if typ in ZRODLA_DNS and wlaczona else []
         try:
             self.rejestr.zapisz_integracje(
                 ctx.dom_id, typ, sejf=sejf, wlaczona=wlaczona, ustawienia=ustawienia,
                 sekrety=sekrety or None, kto=session.login, resolver=self.resolver,
-                sprawdz_dom=lambda conn: blad_startu_conn(conn, ctx.dom_id, sejf))
+                sprawdz_dom=lambda conn: blad_startu_conn(conn, ctx.dom_id, sejf),
+                wylacz=wylacz, oczekiwana_wersja=wersja)
+        except dm.ZmianaWersji as exc:
+            raise AuthError(409, "Konfiguracja domu zmieniła się od wczytania ekranu (inny "
+                                 "zapis albo CLI) — odśwież i wpisz zmianę ponownie.") from exc
         except (ValueError, SejfError) as exc:
             komunikat = bez_sekretow(str(exc), tajne)
             log.warning("panel: %s — integracja %s domu %d odrzucona: %s",
@@ -303,18 +336,31 @@ class PanelIntegracje:
             raise AuthError(400, komunikat + (f" — {WSKAZOWKA_SIECI}" if siec else "")) from exc
         log.warning("panel: %s zapisal integracje %s domu %d (sekrety: %s)", session.login,
                     typ, ctx.dom_id, ", ".join(sorted(sekrety)) or "bez zmian")
-        dom = self.rejestr.dom(ctx.dom_id)
-        assert dom is not None
-        maski = self.rejestr.maski(dom.id, sejf).get(typ, {})
-        return {
-            "ok": True,
-            "integracja": self._wiersz(typ, self.rejestr.integracja(dom.id, typ), maski),
-            "start": self._blad_startu(dom.id, sejf),
-            "przeladowanie": self.przeladowanie(dom),
-        }
+        try:
+            dom = self.rejestr.dom(ctx.dom_id)
+            assert dom is not None
+            maski = self.rejestr.maski(dom.id, sejf)
+            zmienione = [self._wiersz(t, self.rejestr.integracja(dom.id, t), maski.get(t, {}))
+                         for t in [typ, *wylacz]]
+            return {
+                "ok": True,
+                "integracja": zmienione[0],
+                "zmienione": zmienione,
+                "dom": {"id": dom.id, "nazwa": dom.nazwa, "wersja": dom.wersja},
+                "start": self._blad_startu(dom.id, sejf),
+                "przeladowanie": self.przeladowanie(dom),
+            }
+        except Exception as exc:
+            # Zapis JEST w bazie — odpowiedz bledem udawalaby, ze nic sie nie
+            # stalo, i zachecala do powtorki. Sukces z ostrzezeniem.
+            log.error("panel: integracja %s domu %d zapisana, ale odczyt stanu nieudany: %s",
+                      typ, ctx.dom_id, type(exc).__name__)
+            return {"ok": True, "ostrzezenie": "Zapisano, ale nie udało się odczytać stanu "
+                                               "domu po zapisie — odśwież ekran."}
 
     def zapisz(self, session: Session, data: dict, ctx) -> dict:
-        """{typ, wlaczona?, ustawienia?, sekrety?: {pole: wartosc}, confirm}."""
+        """{typ, wlaczona?, ustawienia?, sekrety?: {pole: wartosc}, wersja?, confirm}.
+        `wersja` — `domy.wersja` z ekranu; inna w chwili zapisu = 409."""
         self._dostep(session, ctx)
         typ = self._typ(data)
         sekrety = self._sekrety(typ, data)
@@ -324,22 +370,25 @@ class PanelIntegracje:
             if wlaczona is not None and not isinstance(wlaczona, bool):
                 raise AuthError(400, "Niepoprawne pole 'wlaczona'")
             ustawienia = self._ustawienia(data)
+            wersja = self._wersja(data)
             sejf = self._sejf_lub_503()
             self._potwierdz(session, data)
             return self._zapisz(session, ctx, typ, sejf=sejf, wlaczona=wlaczona,
-                                ustawienia=ustawienia, sekrety=dict(sekrety), tajne=tajne)
+                                ustawienia=ustawienia, sekrety=dict(sekrety), tajne=tajne,
+                                wersja=wersja)
         except AuthError as exc:
             exc.message = bez_sekretow(exc.message, tajne)
             raise
 
     def usun_sekret(self, session: Session, data: dict, ctx) -> dict:
-        """{typ, pole, confirm} — jawne usuniecie jednego sekretu."""
+        """{typ, pole, wersja?, confirm} — jawne usuniecie jednego sekretu."""
         self._dostep(session, ctx)
         typ = self._typ(data)
         pole = data.get("pole")
         if pole not in dm.POLA_SEKRETOW[typ]:
             raise AuthError(400, f"Integracja {typ} nie ma takiego sekretu")
+        wersja = self._wersja(data)
         sejf = self._sejf_lub_503()
         self._potwierdz(session, data)
         return self._zapisz(session, ctx, typ, sejf=sejf, wlaczona=None, ustawienia=None,
-                            sekrety={pole: None}, tajne=[])
+                            sekrety={pole: None}, tajne=[], wersja=wersja)

@@ -155,8 +155,11 @@ Uwagi:
   konfiguracji Domu 1 rób na razie w obu miejscach albo wróć do `yaml`,
   zmień `config.yaml` i zaimportuj ponownie (`dom-importuj 1 --zapisz`
   nadpisuje dzieci, urządzenia i integracje domu).
-- Token MDM Domu 1 to w E2 kopia `MDM_ADMIN_TOKEN`. Zmiana tokenu serwera
-  MDM = wpis w panelu (pkt 10), ponowny import albo powrót do `yaml`.
+- Token MDM Domu 1 to w E2 kopia `MDM_ADMIN_TOKEN`. W trybie `baza` z tokenu
+  w bazie korzysta i czujka MDM, i pośrednik MDM w panelu (zakładka MDM,
+  komendy) — `MDM_ADMIN_TOKEN` z Sekretu dotyczy wtedy tylko serwera MDM
+  i Domu 1 w trybie `yaml`. Zmiana tokenu serwera MDM = wpis w panelu
+  (pkt 10) **i** w Sekrecie serwera, ponowny import albo powrót do `yaml`.
 - **Ponowny `dom-importuj --zapisz` nadpisuje integracje** wartościami
   z `config.yaml` i Sekretów — także te zmienione w panelu (pkt 10). Po
   zmianach w panelu nie importuj ponownie bez przeniesienia ich do
@@ -354,6 +357,8 @@ zewnętrzne (klucz NextDNS itd.) zmienia się w ich usługach i w panelu.
 | `ROZNICE config.yaml <-> baza` | import niezgodny pole w pole — nic nie zapisano | zgłoś listę ścieżek; nie przełączaj |
 | `po tej zmianie dom nie wystartuje — …` (panel) | zapis integracji wyłączyłby jedyne źródło DNS, usunął wymagany klucz itp. — nic nie zapisano | najpierw włącz/uzupełnij to, czego brakuje |
 | `Nowa konfiguracja (wersja N) nie wystartowała` (panel) albo `dom N: nowa konfiguracja (wersja N) nie wystartuje` (log) | nadzorca nie przebudował domu; dom działa dalej na poprzedniej wersji | popraw integrację w panelu (kolejny zapis = kolejna próba) |
+| `Dom N: start na ostatniej dobrej konfiguracji` (alarm) | bieżąca wersja nie wstała przy starcie poda; dom działa na kopii | popraw integrację w panelu (Ustawienia → Integracje); przeładowanie zrobi resztę |
+| `Konfiguracja domu zmieniła się od wczytania ekranu` (panel, 409) | ktoś zapisał dom w międzyczasie | odśwież ekran i wpisz zmianę ponownie |
 | `Ten dom ma konfigurację z config.yaml` (panel, 409) | ekran integracji dla domu w trybie `yaml` | zmiany w `config.yaml` albo najpierw pkt 3 |
 
 ## 10. Integracje w panelu (administrator instalacji)
@@ -376,6 +381,10 @@ albo hasło z TOTP); `wlasciciel-domu` dostaje 403, cudzy dom — 404.
   się wyłącznie z CLI.
 - Zapis, po którym działający dom by nie wystartował (wyłączone jedyne
   źródło DNS, usunięty klucz NextDNS…), jest odrzucany w całości.
+- Przełączenie źródła DNS: włączenie AdGuarda wyłącza NextDNS (i odwrotnie)
+  w tym samym zapisie — dom ma dokładnie jedno źródło.
+- Ekran wysyła wersję konfiguracji, którą wczytał; jeśli ktoś w międzyczasie
+  zmienił dom (drugi zapis, CLI), zapis dostaje 409 „odśwież”.
 - **Przełączenie bez restartu** (architektura §5.1): zapis podbija
   `domy.wersja`, nadzorca co 10 s porównuje wersje i przebudowuje tylko ten
   dom (kursory, sesje i dedup są w bazie domu — jak przy restarcie poda).
@@ -384,4 +393,22 @@ albo hasło z TOTP); `wlasciciel-domu` dostaje 403, cudzy dom — 404.
   Dom bez przeładowania (dziś: każdy dom poza Domem 1 — uruchamianie
   kolejnych domów to E3b) — ekran mówi wprost „zmiana zadziała po restarcie
   Kidwatcha”.
+- **Nieudane przełączenie nie jest ciche**: wpis `dom.przeladowanie.blad`
+  w dzienniku domu (raz na wersję, zostaje po restarcie), stan na ekranie
+  i alarm instancji przez bramkę — od razu, potem po 1 h, 2 h, 4 h… (najwyżej
+  raz na dobę), aż dom wstanie (wtedy jeden alarm „konfiguracja znów
+  działa”). Błąd konfiguracji (model, brak sekretu, odmowa strażnika, sejf)
+  czeka na następną zmianę; błąd przejściowy (baza zajęta, DNS, sieć)
+  nadzorca ponawia sam po 1, 5 i 30 min (potem co 30 min).
+- **Kopia ostatniej dobrej konfiguracji** (`domy_kopia`, sekrety nadal
+  zaszyfrowane kluczem domu; `dom-klucz-rotuj` przeszyfrowuje też ją):
+  zapisywana po każdym udanym starcie i przeładowaniu. Gdy przy starcie
+  poda bieżąca wersja nie wstaje, Dom 1 startuje na kopii (wpis, alarm,
+  stan na ekranie), a panel działa — zamiast CrashLoop, który zabrałby też
+  ekran do poprawki. Bez kopii (pierwszy start po wdrożeniu, kopia nie
+  wstaje) — jak dotąd: log, alarm, kod 2 i pkt 4. To samo w trakcie pracy:
+  nowa i poprzednia konfiguracja nie wstają → kopia → dopiero potem koniec
+  procesu.
+- Pliki z sekretów (klucz ADB, token TV) nadzorca zapisuje dopiero po
+  zatrzymaniu starego środowiska — nieudana próba ich nie podmienia.
 - Powrót do `yaml` (`dom-zrodlo 1 yaml`) dalej wymaga restartu poda.

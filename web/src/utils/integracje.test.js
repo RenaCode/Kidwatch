@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  canEditIntegrations, formFromIntegration, fromInput, isDirty, reloadNotice, savePayload,
+  applySaved, applyState, canEditIntegrations, formFromIntegration, fromInput, isDirty, reloadNotice, savePayload,
   secretPlaceholder, toInput, waitingForReload,
 } from './integracje.js';
 
@@ -128,4 +128,23 @@ test('ekran tylko dla aktywnego administratora z dom.integracje', () => {
   assert.equal(canEditIntegrations({ admin_instancji: false, uprawnienia: ['dom.integracje'] }), false);
   assert.equal(canEditIntegrations({ admin_instancji: true, uprawnienia: [] }), false);
   assert.equal(canEditIntegrations(null), false);
+});
+
+test('zapis przelaczajacy zrodlo DNS podmienia obie karty i wersje domu', () => {
+  const data = {
+    dom: { id: 2, wersja: 5 }, start: null, przeladowanie: { automatyczne: true },
+    integracje: [{ typ: 'nextdns', wlaczona: true }, { typ: 'adguard', wlaczona: false }, UNIFI],
+  };
+  const r = {
+    ok: true, dom: { id: 2, wersja: 7 }, start: null, przeladowanie: { automatyczne: true, wersja: 7 },
+    zmienione: [{ typ: 'adguard', wlaczona: true }, { typ: 'nextdns', wlaczona: false }],
+  };
+  const d = applySaved(data, r);
+  assert.equal(d.dom.wersja, 7);
+  assert.deepEqual(d.integracje.map((i) => [i.typ, i.wlaczona]),
+    [['nextdns', false], ['adguard', true], ['unifi', true]]);
+  // Sondowanie stanu nie rusza kart.
+  const s = applyState(d, { dom: { id: 2, wersja: 7 }, start: 'x', przeladowanie: { aktualna: true } });
+  assert.equal(s.integracje, d.integracje);
+  assert.equal(s.start, 'x');
 });

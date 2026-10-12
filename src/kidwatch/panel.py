@@ -58,7 +58,7 @@ from .bramka_admin import (
 )
 from .config import Config, HomeConfig, MissingSecretError, WatchedDevice
 from .gametime import ACTIONS, GameRequests, TooManyRequests
-from .mdm import MdmApi, MdmError, build_api
+from .mdm import MdmApi, MdmError, build_api, config_domu
 from .odbiorcy import ProfilePowiadomien
 from .panel_auth import (
     CSRF_COOKIE,
@@ -165,6 +165,11 @@ class PanelQueries:
         self.requests = requests
         #: Kolejka zadan pauzy TV (panel-auth.db) — None, gdy czujnik TV wylaczony.
         self.tv_requests = tv_requests
+        #: Dom z konfiguracja w bazie: posrednik MDM z tokenem z sejfu domu
+        #: (`mdm` — None, gdy integracja wylaczona albo bez tokenu). Dla domu
+        #: z config.yaml `mdm_z_bazy` jest False i panel bierze MDM instancji.
+        self.mdm_z_bazy = False
+        self.mdm: MdmApi | None = None
 
     def connect(self) -> sqlite3.Connection:
         if self.db_path == ":memory:":
@@ -1036,6 +1041,8 @@ GET_TRASY: dict[str, tuple[str, str]] = {
     f"{_D}/dziennik": (KONTA, DOM),
     # Integracje domu: ustawienia i maski sekretow — tylko administrator.
     f"{_D}/integracje": (DOM_INTEGRACJE, DOM),
+    # Odswiezanie ekranu po zapisie: tylko wersja i stan przeladowania.
+    f"{_D}/integracje/stan": (DOM_INTEGRACJE, DOM),
 }
 
 _SCIEZKA_DOMU = re.compile(r"/api/domy/([1-9][0-9]{0,8})(/.+)")
@@ -1603,12 +1610,21 @@ def make_handler(
         # ---------------------------------------------------------------- MDM
         # Panel jest posrednikiem: token API serwera MDM zostaje w backendzie,
         # a przegladarka widzi tylko zalogowana sesje panelu (+ CSRF przy akcjach).
-        def _mdm_api(self, ctx: KontekstDomu) -> MdmApi:
-            # Token MDM jest dzis jeden, Domu 1 (instancja); tokeny domow i
+        def _mdm_domu(self, ctx: KontekstDomu) -> MdmApi | None:
+            # Token MDM jest dzis jeden, Domu 1; tokeny innych domow i
             # sprawdzenie `udid ∈ dom` to etap E3b. Inny dom nie ma MDM.
-            if mdm is None or ctx.dom_id != dm.DOM_1:
-                raise MdmError(404, "integracja MDM wylaczona (mdm.enabled albo MDM_ADMIN_TOKEN)")
-            return mdm
+            # Dom 1 w trybie `baza`: token z sejfu domu (ekran integracji),
+            # nie z MDM_ADMIN_TOKEN — zmiana tokenu w panelu dziala tez tutaj.
+            if ctx.dom_id != dm.DOM_1:
+                return None
+            q = ctx.queries
+            return q.mdm if getattr(q, "mdm_z_bazy", False) else mdm
+
+        def _mdm_api(self, ctx: KontekstDomu) -> MdmApi:
+            api = self._mdm_domu(ctx)
+            if api is None:
+                raise MdmError(404, "integracja MDM wylaczona (mdm.enabled albo token MDM)")
+            return api
 
         def _mdm_get(self, path: str, ctx: KontekstDomu) -> None:
             try:
@@ -1626,7 +1642,7 @@ def make_handler(
                 else:
                     self._json(404, {"error": "nie ma takiego endpointu"})
             except MdmError as exc:
-                if mdm is None or ctx.dom_id != dm.DOM_1:
+                if self._mdm_domu(ctx) is None:
                     self._json(200, {"available": False, "error": str(exc)})
                 else:
                     self._json(_mdm_status(exc.status), {"error": str(exc)})
@@ -1798,9 +1814,11 @@ def make_handler(
             if rest == "/export.csv":
                 self._export(queries, params)
                 return
-            if rest == "/integracje":
+            if rest in ("/integracje", "/integracje/stan"):
                 try:
-                    self._json(200, self._integracje().lista(session, ctx))
+                    p = self._integracje()
+                    akcja = p.lista if rest == "/integracje" else p.stan
+                    self._json(200, akcja(session, ctx))
                 except AuthError as exc:
                     self._json(exc.status, {"error": exc.message})
                 return
@@ -1954,8 +1972,12 @@ def queries_domow(cfg: Config, konfiguracja_domu: KonfiguracjaDomu | None = None
                     if home.game_time.enabled else None)
         tv_requests = (TvPauseRequests(cfg.panel_auth_path, dom_id=dom.id)
                        if home.tv.enabled else None)
-        return PanelQueries(home, str(dm.sciezka_bazy_domu(dom.id, cfg.store.path)),
-                            requests, tv_requests)
+        q = PanelQueries(home, str(dm.sciezka_bazy_domu(dom.id, cfg.store.path)),
+                         requests, tv_requests)
+        if getattr(home, "sekrety", None) is not None and hasattr(home, "mdm"):
+            q.mdm_z_bazy = True
+            q.mdm = build_api(config_domu(home.mdm, cfg.mdm.url))
+        return q
 
     return zbuduj
 
