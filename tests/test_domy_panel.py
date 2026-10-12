@@ -947,3 +947,44 @@ def test_sesja_z_hasla_konta_tylko_sso_jest_odrzucana(domy):
     domy.rejestr.ustaw_admin_instancji(uid, True, tylko_sso=False)
     h_admin = {"Cookie": panel_login(port, "admin", HASLO)}
     assert call(domy, "GET", "/api/auth/me", headers=h_admin)[0] == 200
+
+
+def test_bilet_2FA_konta_tylko_sso_nie_konczy_logowania(tmp_path):
+    """Przeglad #56, N-1: bilet 2FA wydany, zanim konto przeszlo w tryb
+    tylko-SSO (np. w starym obrazie), nie konczy logowania — 403 jak przy
+    hasle, kod zapasowy NIE zostaje zuzyty, bilet przepada. Zwykle konto
+    z 2FA konczy logowanie jak dotad."""
+    from kidwatch.panel_auth import AuthError  # noqa: PLC0415
+
+    path = tmp_path / "panel-auth.db"
+    auth = PanelAuth(path, box=box_from_env())
+    rejestr = dm.RejestrDomow(path)
+    kody = {}
+    for login in ("konto-admin", "konto-zwykle"):
+        auth.add_user(login, HASLO, dom_id=None)
+        s = auth.login(login, HASLO).session
+        sekret = auth.totp_setup(s)["secret"]
+        kody[login] = auth.totp_confirm(s, pyotp.TOTP(sekret).now())
+    bilet_admin = auth.login("konto-admin", HASLO).challenge
+    bilet_zwykly = auth.login("konto-zwykle", HASLO).challenge
+    uid = auth.user_id("konto-admin")
+    rejestr.ustaw_admin_instancji(uid, True, tylko_sso=True)
+
+    def wolne(login: str) -> int:
+        with sqlite3.connect(path) as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM backup_codes b JOIN users u ON u.id = b.user_id "
+                "WHERE u.login = ? AND b.used_at IS NULL", (login,)).fetchone()[0]
+
+    przed = wolne("konto-admin")
+    with pytest.raises(AuthError) as e:
+        auth.mfa(bilet_admin, kody["konto-admin"][0])
+    assert e.value.status == 403 and "Authelię" in e.value.message
+    assert wolne("konto-admin") == przed  # kod zapasowy nietkniety
+    with pytest.raises(AuthError) as e:  # bilet przepadl
+        auth.mfa(bilet_admin, kody["konto-admin"][1])
+    assert e.value.status == 401
+    assert wolne("konto-admin") == przed
+    # Kontrola: zwykle konto konczy logowanie kodem zapasowym.
+    _, sesja = auth.mfa(bilet_zwykly, kody["konto-zwykle"][0])
+    assert sesja.login == "konto-zwykle"
