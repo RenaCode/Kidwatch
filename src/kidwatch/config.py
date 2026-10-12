@@ -490,6 +490,69 @@ class BramkaConfig(_Base):
         return _require_env("BRAMKA_KLUCZ", "klucz administracyjny bramki"), True
 
 
+class LlmKomendConfig(_Base):
+    """Rozpoznawanie wolnego tekstu komend (komendy_llm.py). Klucze tylko ze
+    zmiennych KIDWATCH_LLM_GEMINI_KEY i KIDWATCH_LLM_ANTHROPIC_KEY (Sekret
+    kidwatch-secrets), oba opcjonalne. Bez kluczy — same komendy dokladne."""
+
+    #: Kolejnosc prob; nastepny dostawca dostaje wiadomosc, gdy poprzedni
+    #: padl (limit 429, brak srodkow, timeout) albo nie ma klucza.
+    #: Domyslnie sam Gemini (decyzja 2026-10-12). Anthropic mozna dopisac
+    #: jako drugiego; bez klucza i tak jest pomijany.
+    dostawcy: list[Literal["gemini", "anthropic"]] = Field(
+        default_factory=lambda: ["gemini"])
+    model_gemini: str = "gemini-2.5-flash-lite"
+    model_anthropic: str = "claude-haiku-4-5"
+    #: Krotko: rodzic czeka na odpowiedz, a wiszace wywolanie nic nie da.
+    timeout_seconds: float = Field(default=6.0, ge=1.0, le=60.0)
+    #: Limit kosztu i udzialu we WSPOLNYM limicie klucza Gemini (Trader,
+    #: Dietetyk): tyle wywolan (wszystkich dostawcow razem) na dobe UTC.
+    wywolan_na_dobe: int = Field(default=100, ge=0, le=10000)
+    #: Po 429 dostawca nie jest wolany przez tyle sekund.
+    przerwa_po_429_seconds: float = Field(default=900.0, ge=0, le=24 * 3600)
+    #: Ciagle 429 (bez udanego wywolania) dluzej niz tyle = alarm instancji
+    #: z rosnacym odstepem — inaczej tygodnie 429 bylyby calkiem ciche.
+    alarm_429_po_godzinach: float = Field(default=6.0, ge=0.5, le=24 * 7)
+
+    def klucz(self, dostawca: str) -> str | None:
+        env = {"gemini": "KIDWATCH_LLM_GEMINI_KEY",
+               "anthropic": "KIDWATCH_LLM_ANTHROPIC_KEY"}[dostawca]
+        return os.environ.get(env, "").strip() or None
+
+
+class WhatsappKomendyConfig(_Base):
+    """Komendy rodzicow z WhatsAppa (komendy_bot.py). Wylaczone domyslnie:
+    po wdrozeniu nic sie nie zmienia, dopoki wlasciciel nie wlaczy.
+
+    Wymaga bramki z W1 (skrzynka `GET /v1/whatsapp/skrzynka`) i jawnego
+    odbiorcy (`funkcje: ["odbiorca"]`) — bot odpowiada tylko nadawcy."""
+
+    enabled: bool = False
+    #: Co ile sekund pobieramy skrzynke bramki.
+    poll_seconds: float = Field(default=5.0, ge=1.0, le=300.0)
+    #: Waznosc kodu potwierdzenia ("TAK 1234").
+    kod_sekundy: int = Field(default=120, ge=30, le=900)
+    #: Limit wiadomosci z jednego numeru na godzine (takze potwierdzen).
+    na_godzine: int = Field(default=10, ge=1, le=200)
+    #: Tyle zlych kodow z rzedu (w oknie blokady) = blokada numeru.
+    zle_kody: int = Field(default=5, ge=1, le=50)
+    blokada_minut: int = Field(default=15, ge=1, le=24 * 60)
+    #: Dzienny limit LUZOWANIA z WhatsAppa na dziecko: dodany czas gry
+    #: (minuty) i liczba odblokowan. 0 = luzowanie z WhatsAppa wylaczone.
+    luzowanie_minut: int = Field(default=30, ge=0, le=24 * 60)
+    odblokowania: int = Field(default=1, ge=0, le=20)
+    #: Najdluzsza "cisza Nh" (wyciszenie wlasnego konta).
+    cisza_max_godzin: int = Field(default=12, ge=1, le=72)
+    #: Wiadomosc starsza niz to (bramka oddala ja po przerwie) nie jest
+    #: wykonywana: "koniec" sprzed kwadransa to juz inna sytuacja.
+    max_wiek_sekund: int = Field(default=600, ge=60, le=3600)
+    #: Blokada do odwolania (EnableLostMode) zamiast DeviceLock na iPadach
+    #: POD NADZOREM. Wylaczone: iPady sa bez nadzoru, a serwer MDM nie ma
+    #: jeszcze tej komendy w API (etap W5).
+    lost_mode: bool = False
+    llm: LlmKomendConfig = Field(default_factory=LlmKomendConfig)
+
+
 class HomeNotifiersConfig(_Base):
     """Kanaly domu (wlasny temat ntfy, wlasny Home Assistant)."""
 
@@ -871,6 +934,7 @@ class InstanceConfig(_Base):
     panel: PanelConfig = Field(default_factory=PanelConfig)
     mdm: InstanceMdmConfig = Field(default_factory=InstanceMdmConfig)
     app_map_path: str = "app_map.yaml"
+    whatsapp_komendy: WhatsappKomendyConfig = Field(default_factory=WhatsappKomendyConfig)
 
     @property
     def panel_auth_path(self) -> str:
@@ -1047,6 +1111,7 @@ _TYLKO_INSTANCJA: dict = {
     "notifiers": {"bramka"},
     "device_read": {"pair_record_dir"},
     "mdm": {"url"},
+    "whatsapp_komendy": True,
 }
 
 
@@ -1060,6 +1125,7 @@ class Config(HomeConfig):
     panel: PanelConfig = Field(default_factory=PanelConfig)
     mdm: MdmConfig = Field(default_factory=MdmConfig)
     app_map_path: str = "app_map.yaml"
+    whatsapp_komendy: WhatsappKomendyConfig = Field(default_factory=WhatsappKomendyConfig)
 
     @property
     def panel_auth_path(self) -> str:
@@ -1080,6 +1146,7 @@ class Config(HomeConfig):
             "panel": self.panel.model_dump(),
             "mdm": {"url": self.mdm.url},
             "app_map_path": self.app_map_path,
+            "whatsapp_komendy": self.whatsapp_komendy.model_dump(),
         })
         return instance, home
 

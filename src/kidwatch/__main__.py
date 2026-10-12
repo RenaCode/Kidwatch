@@ -41,8 +41,10 @@ def _transport(cfg: HomeConfig):
     return transport(cfg.straznik)
 
 
-def build_notifiers(cfg: HomeConfig, bramka: BramkaConfig | None) -> list[Notifier]:
-    """Kanaly domu (ntfy, Home Assistant) i wspolna bramka instancji."""
+def build_notifiers(cfg: HomeConfig, bramka: BramkaConfig | None, *,
+                    po_wysylce=None) -> list[Notifier]:
+    """Kanaly domu (ntfy, Home Assistant) i wspolna bramka instancji.
+    `po_wysylce`: zapis id wyslanych wiadomosci (komendy z WhatsAppa)."""
     notifiers: list[Notifier] = []
     ntfy = cfg.notifiers.ntfy
     if ntfy and ntfy.enabled:
@@ -52,20 +54,23 @@ def build_notifiers(cfg: HomeConfig, bramka: BramkaConfig | None) -> list[Notifi
         notifiers.append(HomeAssistantNotifier(ha, webhook_id=ha.webhook_id(),
                                                transport=_transport(cfg)))
     if bramka and bramka.enabled:
-        notifiers.append(BramkaNotifier(bramka, key=bramka.key()))
+        notifiers.append(BramkaNotifier(bramka, key=bramka.key(), po_wysylce=po_wysylce))
     return notifiers
 
 
 def build_outbox(
     cfg: HomeConfig, store: Store, *, bramka: BramkaConfig | None, auth_path: str,
-    dom_id: int | None = None,
+    dom_id: int | None = None, po_wysylce=None,
 ) -> Outbox:
     """Kolejka z routingiem per konto (odbiorcy.py), gdy bramka na to
     pozwala w konfiguracji. Tryb (trasy/konta) Outbox ustala przy kazdym
     rozdziale — wlasciciel przelacza go bez restartu."""
     from zoneinfo import ZoneInfo  # noqa: PLC0415
 
-    dispatcher = Dispatcher(build_notifiers(cfg, bramka), store=store)
+    # Bez komend z WhatsAppa wywolanie jak dotad (testy podmieniaja build_notifiers).
+    kanaly = (build_notifiers(cfg, bramka) if po_wysylce is None
+              else build_notifiers(cfg, bramka, po_wysylce=po_wysylce))
+    dispatcher = Dispatcher(kanaly, store=store)
     konta = None
     if bramka is not None and bramka.enabled and bramka.per_konto:
         from .odbiorcy import ProfilePowiadomien  # noqa: PLC0415
@@ -184,8 +189,14 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
         engine.tv_pause.requests = TvPauseRequests(auth_path, dom_id=dom_id)
     # Petle oddaja powiadomienia do kolejki w bazie; wysyla je osobne zadanie
     # "outbox". Wiszacy kanal nie trzyma tiku (tetno, liveness) ani strumienia.
+    po_wysylce = None
+    if inst.whatsapp_komendy.enabled:
+        from .komendy_bot import zapis_wyslanych  # noqa: PLC0415
+
+        # Id powiadomien z bramki: odpowiedz-cytat rodzica wskazuje dziecko i dom.
+        po_wysylce = zapis_wyslanych(auth_path, dom_id, home)
     dispatcher = build_outbox(home, store, bramka=inst.notifiers.bramka, auth_path=auth_path,
-                              dom_id=dom_id)
+                              dom_id=dom_id, po_wysylce=po_wysylce)
     source = build_source(home, store)
     rt = HomeRuntime(dom_id, home, store, engine, dispatcher, source)
     rt.dodaj_petle("source", lambda: source_loop(source, engine, dispatcher, store))
@@ -493,6 +504,23 @@ async def start_domu_z_yaml(rejestr, inst: InstanceConfig, home: HomeConfig, ala
     return runtime
 
 
+def start_komend(cfg: Config, rejestr, konfiguracje: dict, alarm):
+    """Komendy rodzicow z WhatsAppa: petla INSTANCJI (bot jest jeden),
+    siega do domow dzialajacych w tym procesie (`konfiguracje`). Zwraca
+    (zadanie, bot) albo None. Z wylaczona flaga — nic: zadnego pobierania
+    skrzynki, klienta LLM ani tabel w panel-auth.db."""
+    wk = cfg.whatsapp_komendy
+    if not wk.enabled:
+        return None
+    from .komendy_bot import petla_komend, zbuduj_bota  # noqa: PLC0415
+
+    bot = zbuduj_bota(cfg, rejestr, konfiguracje, alarm)
+    if bot is None:
+        return None
+    log.info("komendy z WhatsAppa wlaczone, skrzynka co %.0f s", wk.poll_seconds)
+    return asyncio.create_task(petla_komend(bot, wk.poll_seconds), name="komendy"), bot
+
+
 async def cmd_run(args) -> int:
     from .domy import (  # noqa: PLC0415
         DOM_1,
@@ -587,7 +615,14 @@ async def cmd_run(args) -> int:
             panel.domy_panelu if panel is not None else None, alarm=alarm)
     nadzorca = Nadzorca([runtime], przeladowanie=przeladowanie,
                         flush_seconds=OUTBOX_FLUSH_ON_STOP_SECONDS)
+    komendy = start_komend(cfg, rejestr, konfiguracje, alarm)
     rc = await nadzorca.run(stop)
+    if komendy is not None:
+        zadanie, bot = komendy
+        zadanie.cancel()
+        await asyncio.gather(zadanie, return_exceptions=True)
+        await bot.kanal.aclose()
+        await bot.llm.aclose()
     if panel is not None:
         panel.shutdown()
     await nadzorca.zamknij(OUTBOX_FLUSH_ON_STOP_SECONDS)

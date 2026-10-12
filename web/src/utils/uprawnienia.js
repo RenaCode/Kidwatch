@@ -13,7 +13,7 @@ export const ALL = [
   'konto.wlasne', 'podglad.historia', 'mdm.podglad', 'mdm.komendy',
   'czas_gry.zmiana', 'tv.pauza', 'tv.aplikacja', 'whatsapp.konfiguracja',
   'konta.zarzadzanie', 'powiadomienia.techniczne', 'dom.urzadzenia', 'dom.integracje',
-  'dom.zaproszenia',
+  'dom.zaproszenia', 'whatsapp.komendy',
 ];
 
 export function isViewer(user) {

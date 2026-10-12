@@ -79,6 +79,7 @@ from .panel_domy import (
     uprawnienia_sesji,
 )
 from .panel_integracje import PanelIntegracje
+from .panel_komendy import KomendyPanelu
 from .panel_konta import PanelKonta, WDomu
 from .panel_sso import SsoConfig
 from .panel_sso import config_from_env as sso_from_env
@@ -990,6 +991,8 @@ POST_TRASY: dict[str, tuple[str, str, str]] = {
     "/api/profile/whatsapp/recipient": (WHATSAPP, "_profile_post", INSTANCJA),
     "/api/profile/whatsapp/recipients": (WHATSAPP, "_profile_post", INSTANCJA),
     "/api/profile/test": (WHATSAPP, "_profile_post", INSTANCJA),
+    # Awaryjny wylacznik komend z WhatsAppa (bot jest jeden na instalacje).
+    "/api/whatsapp/komendy/wylacznik": (WHATSAPP, "_komendy_post", INSTANCJA),
     f"{_D}/game": (CZAS_GRY, "_game_request", DOM),
     f"{_D}/tv/pause": (TV_PAUZA, "_tv_pause_request", DOM),
     f"{_D}/tv/resume": (TV_PAUZA, "_tv_pause_request", DOM),
@@ -1023,6 +1026,9 @@ GET_TRASY: dict[str, tuple[str, str]] = {
     "/api/auth/me": (KONTO_WLASNE, KONTO),
     "/api/profile/notify": (WHATSAPP, INSTANCJA),
     "/api/profile/whatsapp/qr": (WHATSAPP, INSTANCJA),
+    # Dziennik komend z WhatsAppa: wszystkie (administrator) i domu.
+    "/api/whatsapp/komendy": (WHATSAPP, INSTANCJA),
+    f"{_D}/komendy": (KONTA, DOM),
     f"{_D}/meta": (PODGLAD, DOM),
     f"{_D}/screens": (PODGLAD, DOM),
     f"{_D}/trends": (PODGLAD, DOM),
@@ -1123,6 +1129,7 @@ def make_handler(
     sso: SsoConfig | None = None,
     konta: PanelKonta | None = None,
     integracje: PanelIntegracje | None = None,
+    komendy: KomendyPanelu | None = None,
 ):
     """`sso` = None: naglowki `Remote-*` ignorowane w calosci (panel_sso.py).
     `domy`: domy panelu z `PanelQueries` kazdego domu (panel_domy.py).
@@ -1395,7 +1402,8 @@ def make_handler(
             child, action = data.get("child"), data.get("action")
             if not isinstance(child, str) or child not in queries.children():
                 raise AuthError(400, "Nieznane dziecko")
-            if action not in ACTIONS:
+            # "shorten" zleca tylko bot komend (-15 z WhatsAppa), nie panel.
+            if action not in ACTIONS or action == "shorten":
                 raise AuthError(400, "Nieznana akcja")
             minutes = None
             if action == "bonus":
@@ -1690,6 +1698,20 @@ def make_handler(
             log.info("panel: %s -> %s %s", session.login, path, udid or "")
             self._json(200, result)
 
+        def _komendy_post(self, _path: str, session: Session, _ctx=None) -> None:
+            wylaczone = self._read_json().get("wylaczone")
+            if not isinstance(wylaczone, bool):
+                raise AuthError(400, "Pole „wylaczone”: true albo false")
+            if komendy is None:
+                raise AuthError(409, "Komendy z WhatsAppa są wyłączone w konfiguracji")
+            try:
+                wynik = komendy.ustaw_wylacznik(wylaczone, session.login)
+            except LookupError as exc:
+                raise AuthError(409, str(exc)) from None
+            log.warning("panel: %s %s komendy z WhatsAppa dla wszystkich", session.login,
+                        "WYLACZA" if wylaczone else "wlacza")
+            self._json(200, wynik)
+
         def _logout(self) -> None:
             # Sama sesja z ciasteczka: wylogowanie nie zaklada sesji SSO tylko
             # po to, zeby ja zaraz skasowac.
@@ -1759,6 +1781,10 @@ def make_handler(
             if klucz == "/api/auth/me":
                 self._json(200, self._me(session))
                 return
+            if klucz == "/api/whatsapp/komendy":
+                self._json(200, komendy.stan() if komendy is not None
+                           else {"wlaczone": False, "wpisy": []})
+                return
             try:
                 self._profile_get(klucz, session)
             except AuthError as exc:
@@ -1824,6 +1850,10 @@ def make_handler(
                 return
             if rest == "/tv/aplikacja":
                 self._json(200, stan_aplikacji(ctx.dom_id))
+                return
+            if rest == "/komendy":
+                self._json(200, komendy.dziennik_domu(ctx.dom_id) if komendy is not None
+                           else {"wlaczone": False, "wpisy": []})
                 return
             if rest == "/mdm" or rest.startswith("/mdm/"):
                 # Prefiks (UDID w sciezce): reszta sciezki zadania, nie klucz.
@@ -2016,6 +2046,7 @@ def start_panel(cfg: Config, *, konfiguracja_domu: KonfiguracjaDomu | None = Non
             bramka=_bramka_admin(cfg), mdm=build_api(cfg.mdm), sso=sso,
             konta=PanelKonta(auth, ProfilePowiadomien(cfg.panel_auth_path)),
             integracje=PanelIntegracje(auth, _sejf_procesu, stany=stany),
+            komendy=KomendyPanelu(cfg.panel_auth_path, cfg.whatsapp_komendy),
         ),
     )
     server.domy_panelu = domy_panelu

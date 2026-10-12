@@ -448,6 +448,20 @@ Without SSO the administrator account logs in with its panel password and
 must enable panel 2FA first (the "no household" screen offers it); this
 needs `PANEL_TOTP_KEY` in the `kidwatch-secrets` Secret.
 
+**WhatsApp commands** (`docs/whatsapp-komendy.md`, off by default:
+`whatsapp_komendy.enabled`). A household guardian (permission
+`whatsapp.komendy` — `wlasciciel-domu`; `zarzadca` only by explicit grant)
+writes to the bot: `stan`, `koniec`, `zablokuj ipad`, `+15`, `-15`,
+`odblokuj`, `cisza 2h`, or free text recognised by an LLM (Gemini,
+`KIDWATCH_LLM_GEMINI_KEY` — for now shared with other apps, so a 429 is
+treated as temporary unavailability; Anthropic optional) strictly into that
+closed list. Every change
+needs a one-time 4-digit code (`TAK 1234`, 2 min); relaxing actions have a
+daily per-child limit and need another household member with a
+notification channel; every executed command is copied to all other members
+with a channel (viewers too), unknown numbers get no reply. Log and an emergency switch for the
+installation administrator: Settings → "Komendy z WhatsAppa".
+
 Members can also be managed in the panel (Settings → **Konta**, permission
 `konta.zarzadzanie` in that household): add (random password shown once),
 remove from the household (the account is deleted once it has no household

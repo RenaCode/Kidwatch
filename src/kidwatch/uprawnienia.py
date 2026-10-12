@@ -30,6 +30,9 @@ CZAS_GRY = "czas_gry.zmiana"
 TV_PAUZA = "tv.pauza"
 TV_APLIKACJA = "tv.aplikacja"
 WHATSAPP = "whatsapp.konfiguracja"
+#: Komendy rodzica z WhatsAppa w domu (komendy.py). Samo nie wystarcza:
+#: kazda akcja wymaga jeszcze swojego uprawnienia (czas gry, MDM, podglad).
+WHATSAPP_KOMENDY = "whatsapp.komendy"
 #: Konta panelu: dodaj, usun, rola, uprawnienia i kanaly powiadomien INNYCH.
 KONTA = "konta.zarzadzanie"
 #: Powiadomienia techniczne (czujka, awarie, inne) per konto (odbiorcy.py).
@@ -51,6 +54,7 @@ OPISY: dict[str, str] = {
     TV_PAUZA: "wstrzymanie i wznowienie monitoringu TV",
     TV_APLIKACJA: "aplikacja Kidwatch TV (instalacja, parowanie)",
     WHATSAPP: "konfiguracja WhatsAppa i powiadomień",
+    WHATSAPP_KOMENDY: "komendy z WhatsAppa (blokada, czas gry, stan)",
     KONTA: "zarządzanie kontami (dodaj, usuń, rola, uprawnienia, kanały innych)",
     POWIADOMIENIA_TECHNICZNE: "powiadomienia techniczne (czujka, awarie, inne)",
     DOM_URZADZENIA: "dzieci i urządzenia domu",
@@ -91,7 +95,10 @@ ROLE_UPRAWNIENIA: dict[str, frozenset[str]] = {
 #: Osobno od ROLE_UPRAWNIENIA: tamta idzie do panelu jako lista rol konta.
 ROLE_DOMU_UPRAWNIENIA: dict[str, frozenset[str]] = {
     ROLA_WLASCICIEL_DOMU: ROLE_UPRAWNIENIA[ROLE_OWNER],
-    ROLA_ZARZADCA: frozenset(UPRAWNIENIA) - {KONTA, WHATSAPP, DOM_INTEGRACJE, DOM_ZAPROSZENIA},
+    # Komendy z WhatsAppa wydaja opiekunowie domu (decyzja 2026-10-11):
+    # zarzadca dostaje je tylko pojedynczym nadaniem.
+    ROLA_ZARZADCA: frozenset(UPRAWNIENIA) - {KONTA, WHATSAPP, WHATSAPP_KOMENDY, DOM_INTEGRACJE,
+                                              DOM_ZAPROSZENIA},
     ROLA_PODGLAD: ROLE_UPRAWNIENIA[ROLE_VIEWER],
 }
 
