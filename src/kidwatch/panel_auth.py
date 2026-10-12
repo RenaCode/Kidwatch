@@ -1255,6 +1255,12 @@ class PanelAuth:
             upr = self._uprawnienia(conn, row["id"], row["rola"])
             admin = domy.admin_instancji(conn, row["id"])
             tylko_sso = domy.tryb_admina(conn, row["id"]) == domy.ADMIN_TYLKO_SSO
+            if tylko_sso and (row["kind"] or "haslo") != "sso":
+                # Konto „tylko przez Authelie” nie ma sesji z hasla — takze
+                # zalozonej starym obrazem w czasie wycofania, ktory trybu
+                # nie zna (przeglad E3a, U-4). Odrzucona jak wygasla (401).
+                log.warning("panel: sesja z hasla konta tylko-SSO %r odrzucona", row["login"])
+                return None
         return Session(
             login=row["login"],
             user_id=row["id"],
