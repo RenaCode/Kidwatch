@@ -486,8 +486,9 @@ renacode-infra) in front of the panel **and** the same switch sets
   as locked, `user-reset`; (4) running the same command again is safe and
   finishes anything left after an interrupted run (the old account no
   longer exists, the new one does AND the audit log has the `konto.login`
-  "old -> new" entry newer than the new account → only the text traces are
-  rewritten; `--dokoncz` forces this). Without that proof — e.g. the old
+  "old -> new" entry newer than the new account, at most 24 h old, and the
+  old login has left no audit/request traces after it → only the text
+  traces are rewritten; `--dokoncz` forces this). Without that proof — e.g. the old
   account was deleted and the new login belongs to someone else — it
   refuses, even with `--dokoncz`, so a deleted person's traces never land
   on another account. With SSO the Authelia login is the target —

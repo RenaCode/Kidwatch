@@ -285,8 +285,8 @@ def test_kanarek_bez_dokonczenia_slady_zostaja(inst, monkeypatch):
     zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy={}, zapisz=True)
     stary_waliduj = zl._waliduj
 
-    def bez_dokonczenia(conn, stary, nowy, dokoncz=False):
-        uid, dok = stary_waliduj(conn, stary, nowy, dokoncz)
+    def bez_dokonczenia(conn, stary, nowy, *reszta):
+        uid, dok = stary_waliduj(conn, stary, nowy, *reszta)
         if dok:
             raise zl.BladZmiany(f"nie ma konta {stary!r}")
         return uid, dok
@@ -335,9 +335,66 @@ def test_login_uzyty_ponownie_po_zmianie_nie_jest_dowodem(inst):
 def test_kanarek_bez_dowodu_dokonczenie_przepisuje_cudze(inst, monkeypatch):
     """Bez sprawdzenia dowodu (stare zachowanie) slady usunietego konta
     laduja na cudzym — test wyzej musi to wylapac."""
-    monkeypatch.setattr(zl, "_przemianowane", lambda *a, **k: True)
+    monkeypatch.setattr(zl, "_przemianowane", lambda *a, **k: None)
     inst["auth"].delete_user(STARY)
     przed = _migawka(inst)
     plan = zl.zmien_login(inst["cfg"].panel_auth_path, STARY, "konto-inne-b",
                           bazy=_bazy(inst), zapisz=True)
     assert plan.dokonczenie and _migawka(inst) != przed
+
+
+# ========================== okno dokonczenia i ponowne uzycie STAREGO loginu
+def test_stary_login_uzyty_ponownie_przez_inna_osobe_odmowa(inst):
+    """Przypadek z przegladu: A -> B, potem user-add A dla innej osoby, jej
+    slady, usuniecie, `user-login A B` — jej slady nie moga trafic do B."""
+    zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy={}, zapisz=True)
+    inst["auth"].add_user(STARY, HASLO, "podglad")
+    inst["rejestr"].zapisz_audyt(dm.DOM_1, STARY, "test.druga-osoba", "opis")
+    inst["auth"].delete_user(STARY)
+    przed = _migawka(inst)
+    with pytest.raises(zl.BladZmiany, match="uzywany po zmianie"):
+        zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy=_bazy(inst), zapisz=True)
+    assert _migawka(inst) == przed
+
+
+def test_slad_w_zleceniach_po_zmianie_tez_blokuje(inst):
+    zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy={}, zapisz=True)
+    import time  # noqa: PLC0415
+
+    inst["clock"].t = time.time() + 5  # zlecenie z zegara PanelAuth/GameRequests
+    GameRequests(inst["cfg"].panel_auth_path, dom_id=dm.DOM_1,
+                 clock=lambda: inst["clock"].t).submit("Dziecko A", "block", None, STARY)
+    with pytest.raises(zl.BladZmiany, match="game_requests"):
+        zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy=_bazy(inst), zapisz=True,
+                       teraz=inst["clock"].t + 10)
+
+
+def test_dokonczenie_tylko_w_oknie_24_h(inst):
+    import time  # noqa: PLC0415
+
+    t = time.time()
+    zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy={}, zapisz=True, teraz=t)
+    przed = _migawka(inst)
+    with pytest.raises(zl.BladZmiany, match="24 h"):
+        zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy=_bazy(inst),
+                       zapisz=True, teraz=t + 25 * 3600)
+    assert _migawka(inst) == przed
+    plan = zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy=_bazy(inst),
+                          zapisz=True, teraz=t + 23 * 3600)
+    assert plan.dokonczenie and _slady_starego(inst) == []
+
+
+def test_kanarek_bez_okna_i_bez_sladow_po_zmianie(inst, monkeypatch):
+    """Bez obu warunkow (stan sprzed poprawki) slady drugiej osoby trafiaja do B."""
+    monkeypatch.setattr(zl, "_SLADY_PO_ZMIANIE", ())
+    monkeypatch.setattr(zl, "OKNO_DOKONCZENIA", float("inf"))
+    zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy={}, zapisz=True)
+    inst["auth"].add_user(STARY, HASLO, "podglad")
+    inst["rejestr"].zapisz_audyt(dm.DOM_1, STARY, "test.druga-osoba", "opis")
+    inst["auth"].delete_user(STARY)
+    plan = zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy=_bazy(inst),
+                          zapisz=True)
+    assert plan.dokonczenie
+    with sqlite3.connect(inst["cfg"].panel_auth_path) as conn:
+        assert conn.execute("SELECT login FROM audyt WHERE akcja = 'test.druga-osoba'"
+                            ).fetchone()[0] == NOWY
