@@ -384,7 +384,7 @@ async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id:
     proces zyje, panel dziala, a nadzorca przeladuje dom po poprawce. Bez
     kopii (albo gdy i ona nie wstaje) — jak przed E3a: log, alarm, kod 2
     (droga powrotu do config.yaml: docs/sejf-domow.md pkt 4)."""
-    from .domy import StanDomu, blad_przejsciowy  # noqa: PLC0415
+    from .domy import StanDomu, blad_przejsciowy, opis_bledu  # noqa: PLC0415
     from .konfiguracja_domu import zbuduj_dom_z_kopii  # noqa: PLC0415
     from .sejf import Sejf  # noqa: PLC0415
 
@@ -396,6 +396,7 @@ async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id:
         runtime = build_home_runtime(dom_id, inst, home, Classifier(inst.app_map_path))
     except Exception as exc:  # noqa: BLE001 — kazdy blad startu domu: kopia albo kod 2
         blad_startu, blad = exc, str(exc) or type(exc).__name__
+        do_alarmu = opis_bledu(exc)
         log.error("Dom %d: konfiguracja z bazy (wersja %s) nie wystartowala — %s", dom_id,
                   wersja, blad)
     else:
@@ -408,7 +409,34 @@ async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id:
                 rejestr.zapamietaj_dobra(dom_id, wersja)
             except Exception:
                 log.exception("Dom %d: nie zapisano kopii dzialajacej konfiguracji", dom_id)
+        # Udany start konczy awarie startu: pierwszy alarm nastepnej idzie od razu.
+        try:
+            rejestr.zapisz_start_ok(dom_id, wersja)
+        except Exception:
+            log.exception("Dom %d: nie zapisano udanego startu w dzienniku", dom_id)
         return runtime
+
+    async def alarmuj(tytul: str, tresc: str) -> None:
+        """Alarm startu przez bramke odstepu z dziennika (CrashLoop = restart co
+        kilka minut). Wpis dopiero po udanej wysylce; blad bramki nie moze
+        zamienic kodu 2 w traceback."""
+        if alarm is None:
+            return
+        try:
+            odstep = rejestr.alarm_startu(dom_id)
+        except Exception:
+            odstep = None
+            log.exception("Dom %d: bramka alarmu startu niedostepna", dom_id)
+        if odstep is None:
+            log.warning("Dom %d: alarm startu pominiety (odstep) — %s", dom_id, tytul)
+            return
+        try:
+            await alarm(tytul, tresc)
+        except Exception:
+            log.exception("Dom %d: alarm startu nie wyszedl — %s", dom_id, tytul)
+            return
+        with contextlib.suppress(Exception):
+            rejestr.zapisz_alarm_startu(dom_id, odstep, tytul)
 
     kopia_blad = None
     try:
@@ -422,24 +450,23 @@ async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id:
                   "exec: klucz %s=yaml w kidwatch-secrets + restart; z dzialajacym podem: "
                   "kidwatch dom-zrodlo %d yaml (docs/sejf-domow.md)", dom_id,
                   f" ({kopia_blad})" if kopia_blad else "", WYMUSZENIE_DOMU_1_ENV, dom_id)
-        if alarm is not None:
-            await alarm(f"Dom {dom_id}: Kidwatch nie wystartowal",
-                        f"Konfiguracja z bazy (wersja {wersja}) nie wstaje: {blad}. Brak "
-                        "dzialajacej kopii — proces konczy sie (docs/sejf-domow.md pkt 4).")
+        # CrashLoop: alarm z rosnacym odstepem (dziennik), nie przy kazdym restarcie.
+        await alarmuj(f"Dom {dom_id}: Kidwatch nie wystartowal",
+                      f"Konfiguracja z bazy (wersja {wersja}) nie wstaje: {do_alarmu}. "
+                      "Brak dzialajacej kopii — proces konczy sie (docs/sejf-domow.md pkt 4).")
         return None
     runtime.wersja = kopia[0]
     przejsciowy = blad_przejsciowy(blad_startu)
-    stany.ustaw(dom_id, StanDomu(kopia[0], wersja, blad, time.time(), przejsciowy))
+    stany.ustaw(dom_id, StanDomu(kopia[0], wersja, blad, time.time(), przejsciowy,
+                                 do_alarmu))
     log.warning("Dom %d: dziala na ostatniej dobrej konfiguracji (wersja %d) zamiast %s",
                 dom_id, kopia[0], wersja)
     if wersja is not None and rejestr.blad_przeladowania(dom_id, wersja) is None:
         with contextlib.suppress(Exception):
             rejestr.zapisz_blad_przeladowania(dom_id, wersja, blad)
-    if alarm is not None:
-        with contextlib.suppress(Exception):
-            await alarm(f"Dom {dom_id}: start na ostatniej dobrej konfiguracji",
-                        f"Wersja {wersja} nie wstaje: {blad}. Dom dziala na wersji {kopia[0]}. "
-                        "Popraw integracje w panelu (Ustawienia -> Integracje).")
+    await alarmuj(f"Dom {dom_id}: start na ostatniej dobrej konfiguracji",
+                  f"Wersja {wersja} nie wstaje: {do_alarmu}. Dom dziala na wersji {kopia[0]}. "
+                  "Popraw integracje w panelu (Ustawienia -> Integracje).")
     return runtime
 
 
@@ -1599,7 +1626,8 @@ async def cmd_domy(args) -> int:
         for dom_id, typ, blad in bledy:
             print(f"BLAD: Dom {dom_id} {typ or 'DEK'}: {blad}")
         print(f"sprawdzono kluczem {sejf.kek_id}: kluczy domow: {raport.klucze_domow}, "
-              f"integracji: {raport.integracje}")
+              f"integracji: {raport.integracje}, z kopii ostatniej dobrej konfiguracji: "
+              f"{raport.kopie}")
         if bledy:
             print(f"WYNIK: {len(bledy)} bledow")
             return 1
@@ -1635,9 +1663,22 @@ def _rejestr(cfg: Config):
     return rejestr
 
 
+def kiedy_zadziala(dom_id: int, baza_przed: bool, baza_po: bool) -> str:
+    """Kiedy zmiana konfiguracji domu z CLI zacznie dzialac (§5.1). Nadzorca
+    przeladowuje bez restartu tylko Dom 1, ktory JUZ chodzi w trybie `baza`
+    (i nie jest wymuszony na config.yaml): przelaczenie zrodla w ktoras
+    strone i kazdy inny dom (E3b) dalej wymagaja restartu poda."""
+    from .domy import DOM_1  # noqa: PLC0415
+
+    wymuszony_yaml = os.environ.get(WYMUSZENIE_DOMU_1_ENV, "").strip().lower() == "yaml"
+    if dom_id == DOM_1 and baza_przed and baza_po and not wymuszony_yaml:
+        return "Zadziala w ciagu ok. 10 s, bez restartu poda (przeladowanie domu)."
+    return "Dziala po restarcie poda."
+
+
 async def cmd_dom_importuj(args) -> int:
     """Dom 1: config.yaml + sekrety z env/plikow -> baza (§6 p. 4)."""
-    from .domy import DOM_1, katalog_domu  # noqa: PLC0415
+    from .domy import DOM_1, ZRODLO_BAZA, katalog_domu  # noqa: PLC0415
     from .konfiguracja_domu import importuj, sekrety_z_yaml  # noqa: PLC0415
 
     if args.dom != DOM_1:
@@ -1646,6 +1687,8 @@ async def cmd_dom_importuj(args) -> int:
     cfg = Config.load(args.config)
     inst, home = cfg.split()
     rejestr = _rejestr(cfg)
+    przed = rejestr.dom(DOM_1)
+    baza_przed = przed is not None and przed.zrodlo_konfiguracji == ZRODLO_BAZA
     sekrety = sekrety_z_yaml(home, katalog_domu(DOM_1, inst.store.path))
     raport = importuj(rejestr, DOM_1, home, sekrety, sejf=_sejf(), zapisz=args.zapisz,
                       kto="cli",
@@ -1667,7 +1710,8 @@ async def cmd_dom_importuj(args) -> int:
         return 1
     print("Porownanie: konfiguracja z bazy identyczna z config.yaml, sekrety identyczne.")
     if raport.zapisano:
-        print("ZAPISANO. Dom 1 ma teraz konfiguracje z bazy — dziala po restarcie poda.\n"
+        print(f"ZAPISANO. Dom 1 ma teraz konfiguracje z bazy. "
+              f"{kiedy_zadziala(DOM_1, baza_przed, True)}\n"
               "Powrot: kidwatch dom-zrodlo 1 yaml (+ restart).")
     else:
         print("Podglad — nic nie zapisano. Zapis: dom-importuj 1 --zapisz")
@@ -1681,6 +1725,8 @@ async def cmd_dom_zrodlo(args) -> int:
 
     cfg = Config.load(args.config)
     rejestr = _rejestr(cfg)
+    przed = rejestr.dom(args.dom)
+    baza_przed = przed is not None and przed.zrodlo_konfiguracji == ZRODLO_BAZA
     try:
         if args.zrodlo == ZRODLO_BAZA:
             # Przelaczenie tylko na konfiguracje, ktora sie buduje i odszyfrowuje.
@@ -1689,12 +1735,15 @@ async def cmd_dom_zrodlo(args) -> int:
     except (ValueError, LookupError, OdmowaSieci) as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    print(f"Dom {args.dom}: konfiguracja z {args.zrodlo}. Dziala po restarcie poda.")
+    print(f"Dom {args.dom}: konfiguracja z {args.zrodlo}. "
+          f"{kiedy_zadziala(args.dom, baza_przed, args.zrodlo == ZRODLO_BAZA)}")
     return 0
 
 
 async def cmd_dom_sieci(args) -> int:
     """Sieci i hosty domu (§3.6) — wylacznie administrator instancji (CLI)."""
+    from .domy import ZRODLO_BAZA  # noqa: PLC0415
+
     cfg = Config.load(args.config)
     rejestr = _rejestr(cfg)
     dom = rejestr.dom(args.dom)
@@ -1718,7 +1767,8 @@ async def cmd_dom_sieci(args) -> int:
     print(f"Dom {dom.id}: dozwolone_sieci: {', '.join(dom.dozwolone_sieci) or '-'}")
     print(f"        dozwolone_hosty: {', '.join(dom.dozwolone_hosty) or '-'}")
     if zmiana:
-        print("Dziala po restarcie poda (albo przeladowaniu domu w E3b).")
+        baza = dom.zrodlo_konfiguracji == ZRODLO_BAZA
+        print(kiedy_zadziala(dom.id, baza, baza))
     return 0
 
 
@@ -1750,7 +1800,8 @@ async def cmd_klucze_potwierdz(args) -> int:
     raport = rejestr.sprawdz_raport(klucz)
     problemy = []
     bledy_dek = [b for b in raport.bledy if b[1] is None]
-    bledy_integracji = [b for b in raport.bledy if b[1] is not None]
+    bledy_kopii = [b for b in raport.bledy if b[1] is not None and b[1].startswith("kopia:")]
+    bledy_integracji = [b for b in raport.bledy if b[1] is not None and b not in bledy_kopii]
     if bledy_dek:
         problemy.append(f"{len(bledy_dek)} kluczy domow nie otwiera sie tym kluczem "
                         f"(domy {', '.join(str(b[0]) for b in bledy_dek)}; DEK-i na innym "
@@ -1759,6 +1810,11 @@ async def cmd_klucze_potwierdz(args) -> int:
         problemy.append(f"{len(bledy_integracji)} integracji nie odszyfrowuje sie mimo "
                         f"otwartego klucza domu (uszkodzony wiersz — wpisz integracje od nowa): "
                         f"{', '.join(f'Dom {d} {t}' for d, t, _ in bledy_integracji)}")
+    if bledy_kopii:
+        problemy.append(f"kopia ostatniej dobrej konfiguracji nie odszyfrowuje sie "
+                        f"({', '.join(f'Dom {d} {t}' for d, t, _ in bledy_kopii)}) — integracje "
+                        f"sa w porzadku; kopie odnowi nastepny udany start albo przeladowanie "
+                        f"domu, a dom-klucz-rotuj usuwa zepsuta kopie")
     if raport.klucze_domow == 0 and not raport.bledy:
         problemy.append("w bazie nie ma zadnego klucza domu — nic nie potwierdzono")
     if not args.baza:

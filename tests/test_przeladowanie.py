@@ -191,6 +191,10 @@ async def test_blad_przejsciowy_ponawiany_po_1_5_30_min():
     await asyncio.sleep(0.1)
     assert u.stan().ponowienie and u.wolania.count(2) == 1
     for odstep, proba in ((60, 2), (300, 3), (1800, 4)):
+        # Termin ponowienia liczy sie po bledzie, nie przy wywolaniu — zegar
+        # przesuwamy dopiero, gdy nadzorca go zapisal (pod obciazeniem watek
+        # konczy sie pozniej niz licznik wywolan).
+        await _czekaj(lambda proba=proba: u.nadzorca._ponow.get(DOM, (0, 0, 0))[1] == proba - 1)
         u.zegar.t += odstep - 1
         await asyncio.sleep(0.05)
         assert u.wolania.count(2) == proba - 1, odstep

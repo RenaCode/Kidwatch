@@ -151,7 +151,15 @@ class DomyPanelu:
         """Po przeladowaniu domu (domy.Nadzorca): nastepne zadanie zbuduje
         PanelQueries z konfiguracji nowego srodowiska."""
         with self._lock:
-            self._queries.pop(dom_id, None)
+            stare = self._queries.pop(dom_id, None)
+        # Posrednik MDM domu z bazy ma wlasnego klienta HTTP — bez zamkniecia
+        # kazde przeladowanie zostawialoby otwarte polaczenie.
+        api = getattr(stare, "mdm", None)
+        if api is not None:
+            try:
+                api.close()
+            except Exception:
+                log.exception("panel: nie zamknieto klienta MDM domu %d", dom_id)
 
     def widoczne(self, session: Session, admin: bool) -> list[WidokDomu]:
         """Domy sesji: jej czlonkostwa, a aktywnemu administratorowi takze

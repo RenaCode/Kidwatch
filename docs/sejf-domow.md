@@ -261,7 +261,10 @@ k dom-sieci 1 --usun 192.0.2.0/24
 k dom-sieci 2 --host api.example.invalid
 ```
 
-Działa po restarcie poda. Strażnik nie zastępuje NetworkPolicy (`wDomu`) —
+Dom 1 w trybie `baza`: zmiana działa w ciągu ok. 10 s, bez restartu poda
+(przeładowanie domu, pkt 10). Dom w trybie `yaml`, wymuszony
+`KIDWATCH_DOM_1_ZRODLO=yaml` i kolejne domy (E3b) — po restarcie poda. To samo
+wypisują `dom-sieci`, `dom-zrodlo` i `dom-importuj`. Strażnik nie zastępuje NetworkPolicy (`wDomu`) —
 to druga, niezależna bariera.
 
 ## 7. Rotacja KEK
@@ -401,11 +404,24 @@ albo hasło z TOTP); `wlasciciel-domu` dostaje 403, cudzy dom — 404.
   czeka na następną zmianę; błąd przejściowy (baza zajęta, DNS, sieć)
   nadzorca ponawia sam po 1, 5 i 30 min (potem co 30 min).
 - **Kopia ostatniej dobrej konfiguracji** (`domy_kopia`, sekrety nadal
-  zaszyfrowane kluczem domu; `dom-klucz-rotuj` przeszyfrowuje też ją):
+  zaszyfrowane kluczem domu; `dom-klucz-rotuj` przeszyfrowuje też ją, a kopię,
+  której nie da się odszyfrować, usuwa z wpisem `dom.kopia.usunieta`;
+  `domy --sprawdz` sprawdza też jej odszyfrowanie):
   zapisywana po każdym udanym starcie i przeładowaniu. Gdy przy starcie
   poda bieżąca wersja nie wstaje, Dom 1 startuje na kopii (wpis, alarm,
   stan na ekranie), a panel działa — zamiast CrashLoop, który zabrałby też
-  ekran do poprawki. Bez kopii (pierwszy start po wdrożeniu, kopia nie
+  ekran do poprawki. **Kopia to stan z chwili ostatniego udanego startu**:
+  sekret usunięty albo zmieniony w panelu PO nim (np. unieważniony klucz)
+  zostaje w kopii do następnego udanego startu lub przeładowania — start na
+  kopii użyje starej wartości. Klucz, który trzeba unieważnić natychmiast,
+  unieważnij u dostawcy (NextDNS, UniFi…), nie tylko w panelu.
+  Alarmy startu („Kidwatch nie wystartował”, „start na ostatniej dobrej
+  konfiguracji”) przy CrashLoop idą z tym samym rosnącym odstępem, liczonym
+  z dziennika (`dom.start.alarm`, wpis dopiero po udanej wysyłce), nie przy
+  każdym restarcie poda. Udany start na bieżącej konfiguracji kończy awarię
+  (`dom.start.ok`) — pierwszy alarm następnej idzie od razu. Treść alarmu
+  (WhatsApp/e-mail) ma pełny opis tylko dla znanych błędów; resztę widać
+  w panelu i w logu. Bez kopii (pierwszy start po wdrożeniu, kopia nie
   wstaje) — jak dotąd: log, alarm, kod 2 i pkt 4. To samo w trakcie pracy:
   nowa i poprzednia konfiguracja nie wstają → kopia → dopiero potem koniec
   procesu.
