@@ -145,10 +145,11 @@ class DeviceConfig(_Base):
     display_name: str
     child: str
     source_ids: list[str] = Field(min_length=1)
-    #: "ipad" albo "phone" (telefon z Androidem, zwykle pod Family Link).
-    #: Oba ida przez DNS; telefon nie ma odczytu wprost (udid/host/known_apps
-    #: to uslugi lockdown iOS). Zmienia teksty pushy i podpowiedzi czujek —
-    #: patrz devicekind.py i docs/telefon-android.md.
+    #: "ipad", "iphone" albo "phone" (telefon z Androidem, zwykle pod Family
+    #: Link). Wszystkie ida przez DNS; telefon z Androidem nie ma odczytu wprost
+    #: (udid/host/known_apps to uslugi lockdown iOS), iPhone ma — jak iPad.
+    #: Zmienia teksty pushy i podpowiedzi czujek — patrz devicekind.py,
+    #: docs/telefon-android.md i docs/iphone.md.
     kind: DeviceKindName = "ipad"
 
     # --- odczyt wprost z iPada (opcjonalny; bez tego dziala sama warstwa DNS)
@@ -847,7 +848,7 @@ class WatchedDevice:
 
     name: str
     child: str | None
-    kind: str  # "ipad" | "phone" | "tv"
+    kind: str  # "ipad" | "iphone" | "phone" | "tv"
     reads_device: bool
 
 

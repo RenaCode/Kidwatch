@@ -92,10 +92,30 @@ def build_api(cfg: MdmConfig) -> MdmApi | None:
 
 
 # ================================================================= czujka
+#: Co iPhone bez nadzoru daje przez MDM — powtarzane w tekstach, zeby alarm
+#: nie obiecywal blokad, ktorych iOS nie wykona (docs/iphone.md). Bez restartu:
+#: RestartDevice wymaga nadzoru (mdm/commands/device.restart.yaml).
+_IPHONE_MOZE = "lista aplikacji, blokada ekranu i aktualizacje"
+
+
+def _kind(device: dict | None) -> str:
+    """"iphone" | "ipad" z /api/devices. Serwer sprzed iPhone'ow nie podaje
+    `kind` — wtedy rozstrzyga ProductName, jak w kidwatch_mdm.policy."""
+    if not device:
+        return "ipad"
+    if device.get("kind"):
+        return str(device["kind"])
+    return "iphone" if str(device.get("product") or "").startswith("iPhone") else "ipad"
+
+
 #: Zdarzenie serwera -> (rodzaj, priorytet, tytul). None = nie powiadamiamy.
 #: Klucze to `kind` z tabeli events w kidwatch_mdm/store.py.
-def _describe(event: dict, name: str) -> tuple[NotifyKind, int, str, str] | None:
+def _describe(
+    event: dict, name: str, device_kind: str = "ipad"
+) -> tuple[NotifyKind, int, str, str] | None:
     kind = event["kind"]
+    iphone = device_kind == "iphone"
+    noun = "iPhone" if iphone else "iPad"
     detail: Any = event.get("detail")
     if isinstance(detail, str):
         with contextlib.suppress(ValueError):
@@ -105,7 +125,11 @@ def _describe(event: dict, name: str) -> tuple[NotifyKind, int, str, str] | None
             NotifyKind.MDM,
             5,
             f"{name}: profil MDM zdjety",
-            "iPad wypisal sie z zarzadzania. Blokady VPN i DNS juz nie dzialaja. "
+            "iPhone wypisal sie z zarzadzania — bez nadzoru wystarczy usunac profil "
+            f"w Ustawieniach. Przestaly dzialac: {_IPHONE_MOZE}. DNS idzie osobnym "
+            "profilem NextDNS; jego zdjecie pokaze czujka ciszy."
+            if iphone
+            else "iPad wypisal sie z zarzadzania. Blokady VPN i DNS juz nie dzialaja. "
             "Na nadzorowanym iPadzie to mozliwe tylko po resecie z komputera.",
         )
     if kind == "profile_missing":
@@ -121,7 +145,12 @@ def _describe(event: dict, name: str) -> tuple[NotifyKind, int, str, str] | None
             NotifyKind.MDM,
             3,
             f"{name}: zapisany do MDM",
-            "iPad polaczyl sie z serwerem MDM. Ograniczenia i DNS zostana wgrane automatycznie.",
+            f"iPhone polaczyl sie z serwerem MDM. Bez nadzoru dzialaja: {_IPHONE_MOZE}. "
+            "Restartu, blokad VPN, DNS ani usuwania profilu nie bedzie — DNS idzie "
+            "recznym profilem NextDNS."
+            if iphone
+            else "iPad polaczyl sie z serwerem MDM. Ograniczenia i DNS zostana wgrane "
+            "automatycznie.",
         )
     if kind == "supervision_changed":
         supervised = isinstance(detail, dict) and detail.get("supervised")
@@ -131,7 +160,12 @@ def _describe(event: dict, name: str) -> tuple[NotifyKind, int, str, str] | None
             f"{name}: {'wlaczony' if supervised else 'UTRACONY'} nadzor",
             "Bez nadzoru iOS ignoruje blokady VPN, DNS i usuwania profilu."
             if not supervised
-            else "iPad jest nadzorowany — blokady dzialaja.",
+            else (
+                "iPhone jest nadzorowany, ale polityka iPhone'a nie wysyla blokad "
+                "nadzoru — to osobna decyzja (docs/iphone.md)."
+                if iphone
+                else "iPad jest nadzorowany — blokady dzialaja."
+            ),
         )
     if kind in ("apps_installed", "apps_removed"):
         apps = detail.get("apps", []) if isinstance(detail, dict) else []
@@ -147,7 +181,7 @@ def _describe(event: dict, name: str) -> tuple[NotifyKind, int, str, str] | None
         return (
             NotifyKind.MDM,
             4,
-            f"{name}: iPad nie przyjmuje pushy",
+            f"{name}: {noun} nie przyjmuje pushy",
             "APNs odrzucil token urzadzenia. Pomoze ponowny zapis do MDM.",
         )
     if kind == "os_update_failed":
@@ -173,7 +207,7 @@ def _describe(event: dict, name: str) -> tuple[NotifyKind, int, str, str] | None
         return (
             NotifyKind.MDM,
             3,
-            f"{name}: iPad odrzucil komende {rtype}",
+            f"{name}: {noun} odrzucil komende {rtype}",
             json.dumps(detail.get("chain"), ensure_ascii=False)[:500]
             if isinstance(detail, dict)
             else "",
@@ -194,6 +228,11 @@ _STUCK_HINT = {
     "queued": "iPad laczy sie z MDM, ale jej nie pobral — sprawdz pushe.",
     "sent": "iPad ja pobral, ale nie odpowiedzial.",
 }
+
+
+def _stuck_hint(status: str, device_kind: str) -> str:
+    hint = _STUCK_HINT.get(status, "")
+    return hint.replace("iPad", "iPhone", 1) if device_kind == "iphone" else hint
 
 
 class MdmWatcher:
@@ -310,9 +349,8 @@ class MdmWatcher:
         last = since
         for event in events:
             last = max(last, int(event["id"]))
-            described = _describe(
-                event, self._name(by_udid.get(event.get("udid")), event.get("udid"))
-            )
+            device = by_udid.get(event.get("udid"))
+            described = _describe(event, self._name(device, event.get("udid")), _kind(device))
             if described is None:
                 continue
             kind, priority, title, text = described
@@ -350,7 +388,8 @@ class MdmWatcher:
                     kind=NotifyKind.MDM,
                     title=f"{name}: brak kontaktu z MDM od {hours} h",
                     text=(
-                        "iPad nie laczy sie z serwerem MDM. Mozliwe: wylaczony, bez sieci, "
+                        f"{'iPhone' if _kind(d) == 'iphone' else 'iPad'} nie laczy sie "
+                        "z serwerem MDM. Mozliwe: wylaczony, bez sieci, "
                         "reset w trybie odzyskiwania albo blad pushy"
                         + (f" ({d['push_error']})" if d.get("push_error") else "")
                         + "."
@@ -477,7 +516,7 @@ class MdmWatcher:
                     text=(
                         f"Czeka komend: {d.get('pending_commands') or 1}, najstarsza w stanie "
                         f"{oldest['status']}. "
-                        + _STUCK_HINT.get(oldest["status"], "")
+                        + _stuck_hint(oldest["status"], _kind(d))
                     ),
                     dedup_key=f"mdm-stuck:{d['udid']}:{now.date().isoformat()}",
                     ts=now,

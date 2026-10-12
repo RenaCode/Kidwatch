@@ -22,9 +22,10 @@ export const kindOf = (k) => KINDS[k] || { label: k, icon: '•', badge: '' };
 /* Rodzaj urzadzenia z /api/meta i /api/devices: ikona i dopelniacz do
    "Odczyt z ...". Nieznany rodzaj = iPad, jak w devicekind.py na serwerze. */
 const DEVICE_KINDS = {
-  ipad:  { icon: 'tablet', genitive: 'iPada' },
-  phone: { icon: 'phone',  genitive: 'telefonu' },
-  tv:    { icon: 'tv',     genitive: 'TV' },
+  ipad:   { icon: 'tablet', genitive: 'iPada' },
+  iphone: { icon: 'phone',  genitive: 'iPhone’a' },
+  phone:  { icon: 'phone',  genitive: 'telefonu' },
+  tv:     { icon: 'tv',     genitive: 'TV' },
 };
 export const deviceKind = (k) => DEVICE_KINDS[k] || DEVICE_KINDS.ipad;
 

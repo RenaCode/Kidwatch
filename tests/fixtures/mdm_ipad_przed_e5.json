@@ -1,0 +1,1410 @@
+{
+ "mdm": {
+  "dziecko1": {
+   "declarations": {
+    "supervised=False,os_update=False": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate"
+        ]
+       },
+       "ServerToken": "9a6f4b436b16ed78e90b5e0d74f224449df3a6c7",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "Notifications": true
+       },
+       "ServerToken": "a730a850f8f4c1f01f16a88beb7260ad2dc9aa09",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      }
+     ],
+     "token": "1a86ba9909497a06310654e463205be232cfe287"
+    },
+    "supervised=False,os_update=True": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate",
+         "com.renacode.kidwatch.mdm.osupdate"
+        ]
+       },
+       "ServerToken": "c8adecb14618be363087d1d9306881e5a83c4540",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "Notifications": true
+       },
+       "ServerToken": "a730a850f8f4c1f01f16a88beb7260ad2dc9aa09",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.osupdate",
+       "Payload": {
+        "DetailsURL": "https://example.invalid/aktualizacja",
+        "TargetBuildVersion": "23B1",
+        "TargetLocalDateTime": "2026-10-20T20:00:00",
+        "TargetOSVersion": "27.1"
+       },
+       "ServerToken": "129c9b1e10bce0ba36b6c425a1059afdadcb052d",
+       "Type": "com.apple.configuration.softwareupdate.enforcement.specific"
+      }
+     ],
+     "token": "9f019fa232b63c60992b85ca0c1acaf112c00648"
+    },
+    "supervised=True,os_update=False": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate",
+         "com.renacode.kidwatch.mdm.dns"
+        ]
+       },
+       "ServerToken": "6c7c7417e15e4703c4573b6023189b9844f2f467",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "AutomaticActions": {
+         "Download": "AlwaysOn",
+         "InstallOSUpdates": "AlwaysOn",
+         "InstallSecurityUpdate": "AlwaysOn"
+        },
+        "Beta": {
+         "ProgramEnrollment": "AlwaysOff"
+        },
+        "Notifications": true
+       },
+       "ServerToken": "5981d5fd00bce5a2045477f1d5e6a3473b394690",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.dns",
+       "Payload": {
+        "DNSSettings": {
+         "AllowFailover": false,
+         "DNSProtocol": "HTTPS",
+         "ServerURL": "https://dns.nextdns.io/abc123/iPad-Dziecka-1"
+        },
+        "ProhibitDisablement": true,
+        "VisibleName": "Kidwatch DNS — iPad Dziecka 1"
+       },
+       "ServerToken": "17963b138c983054cfa446e3acb840729718bbf9",
+       "Type": "com.apple.configuration.network.dns-settings"
+      }
+     ],
+     "token": "20bd799d8d1a40f209889f7624871d8b8175c46d"
+    },
+    "supervised=True,os_update=True": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate",
+         "com.renacode.kidwatch.mdm.osupdate",
+         "com.renacode.kidwatch.mdm.dns"
+        ]
+       },
+       "ServerToken": "bcd6b84a75e8b0385ff42595ba88cc9b66d62e10",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "AutomaticActions": {
+         "Download": "AlwaysOn",
+         "InstallOSUpdates": "AlwaysOn",
+         "InstallSecurityUpdate": "AlwaysOn"
+        },
+        "Beta": {
+         "ProgramEnrollment": "AlwaysOff"
+        },
+        "Notifications": true
+       },
+       "ServerToken": "5981d5fd00bce5a2045477f1d5e6a3473b394690",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.osupdate",
+       "Payload": {
+        "DetailsURL": "https://example.invalid/aktualizacja",
+        "TargetBuildVersion": "23B1",
+        "TargetLocalDateTime": "2026-10-20T20:00:00",
+        "TargetOSVersion": "27.1"
+       },
+       "ServerToken": "129c9b1e10bce0ba36b6c425a1059afdadcb052d",
+       "Type": "com.apple.configuration.softwareupdate.enforcement.specific"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.dns",
+       "Payload": {
+        "DNSSettings": {
+         "AllowFailover": false,
+         "DNSProtocol": "HTTPS",
+         "ServerURL": "https://dns.nextdns.io/abc123/iPad-Dziecka-1"
+        },
+        "ProhibitDisablement": true,
+        "VisibleName": "Kidwatch DNS — iPad Dziecka 1"
+       },
+       "ServerToken": "17963b138c983054cfa446e3acb840729718bbf9",
+       "Type": "com.apple.configuration.network.dns-settings"
+      }
+     ],
+     "token": "0fab710651ac52620ea58fcac5aecc4949c69617"
+    }
+   },
+   "enrollment": {
+    "PayloadContent": [
+     {
+      "Password": "<losowe>",
+      "PayloadCertificateFileName": "kidwatch-mdm.p12",
+      "PayloadContent": "<losowe>",
+      "PayloadDisplayName": "Tozsamosc urzadzenia",
+      "PayloadIdentifier": "com.renacode.kidwatch.mdm.identity",
+      "PayloadType": "com.apple.security.pkcs12",
+      "PayloadUUID": "<losowe>",
+      "PayloadVersion": 1
+     },
+     {
+      "AccessRights": 8191,
+      "CheckInURL": "https://mdm.example.invalid/mdm/checkin",
+      "CheckOutWhenRemoved": true,
+      "IdentityCertificateUUID": "<losowe>",
+      "PayloadDisplayName": "Zarzadzanie urzadzeniem",
+      "PayloadIdentifier": "com.renacode.kidwatch.mdm.mdm",
+      "PayloadType": "com.apple.mdm",
+      "PayloadUUID": "C418994A-91FC-5186-8D40-182AD165B605",
+      "PayloadVersion": 1,
+      "ServerURL": "https://mdm.example.invalid/mdm/connect",
+      "SignMessage": true,
+      "Topic": "com.apple.mgmt.External.11111111-2222-4333-8444-555555555555",
+      "UseDevelopmentAPNS": false
+     }
+    ],
+    "PayloadDescription": "Nadzor rodzicielski Kidwatch: ograniczenia, DNS i aktualizacje.",
+    "PayloadDisplayName": "RenaCode — zarzadzanie (iPad Dziecka 1)",
+    "PayloadIdentifier": "com.renacode.kidwatch.mdm",
+    "PayloadOrganization": "RenaCode",
+    "PayloadRemovalDisallowed": true,
+    "PayloadType": "Configuration",
+    "PayloadUUID": "E147F085-0653-5BE3-9313-A5323413DF55",
+    "PayloadVersion": 1
+   },
+   "restrictions_hash": "633f7c914de3ec569f1d12231f9eec7da293e4df36311cc04f8b84a897d25ea6",
+   "restrictions_plist": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n\t<key>PayloadContent</key>\n\t<array>\n\t\t<dict>\n\t\t\t<key>PayloadDisplayName</key>\n\t\t\t<string>Ograniczenia</string>\n\t\t\t<key>PayloadIdentifier</key>\n\t\t\t<string>com.renacode.kidwatch.mdm.restrictions.payload</string>\n\t\t\t<key>PayloadType</key>\n\t\t\t<string>com.apple.applicationaccess</string>\n\t\t\t<key>PayloadUUID</key>\n\t\t\t<string>8C5DDDA8-BD6C-59B6-A429-9786D3F0400A</string>\n\t\t\t<key>PayloadVersion</key>\n\t\t\t<integer>1</integer>\n\t\t\t<key>allowCloudPrivateRelay</key>\n\t\t\t<false/>\n\t\t\t<key>allowDeviceNameModification</key>\n\t\t\t<false/>\n\t\t\t<key>allowEraseContentAndSettings</key>\n\t\t\t<false/>\n\t\t\t<key>allowHostPairing</key>\n\t\t\t<true/>\n\t\t\t<key>allowUIConfigurationProfileInstallation</key>\n\t\t\t<false/>\n\t\t\t<key>allowVPNCreation</key>\n\t\t\t<false/>\n\t\t\t<key>blockedAppBundleIDs</key>\n\t\t\t<array>\n\t\t\t\t<string>com.example.przegladarka</string>\n\t\t\t</array>\n\t\t\t<key>forceAutomaticDateAndTime</key>\n\t\t\t<true/>\n\t\t</dict>\n\t</array>\n\t<key>PayloadDescription</key>\n\t<string>Blokada VPN, Private Relay, wymazania i instalacji profili.</string>\n\t<key>PayloadDisplayName</key>\n\t<string>RenaCode — ograniczenia</string>\n\t<key>PayloadIdentifier</key>\n\t<string>com.renacode.kidwatch.mdm.restrictions</string>\n\t<key>PayloadOrganization</key>\n\t<string>RenaCode</string>\n\t<key>PayloadType</key>\n\t<string>Configuration</string>\n\t<key>PayloadUUID</key>\n\t<string>500AD688-7C39-5182-90B7-DC4E05F47AB5</string>\n\t<key>PayloadVersion</key>\n\t<integer>1</integer>\n</dict>\n</plist>\n"
+  },
+  "dziecko2": {
+   "declarations": {
+    "supervised=False,os_update=False": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate"
+        ]
+       },
+       "ServerToken": "9a6f4b436b16ed78e90b5e0d74f224449df3a6c7",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "Notifications": true
+       },
+       "ServerToken": "a730a850f8f4c1f01f16a88beb7260ad2dc9aa09",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      }
+     ],
+     "token": "1a86ba9909497a06310654e463205be232cfe287"
+    },
+    "supervised=False,os_update=True": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate",
+         "com.renacode.kidwatch.mdm.osupdate"
+        ]
+       },
+       "ServerToken": "c8adecb14618be363087d1d9306881e5a83c4540",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "Notifications": true
+       },
+       "ServerToken": "a730a850f8f4c1f01f16a88beb7260ad2dc9aa09",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.osupdate",
+       "Payload": {
+        "DetailsURL": "https://example.invalid/aktualizacja",
+        "TargetBuildVersion": "23B1",
+        "TargetLocalDateTime": "2026-10-20T20:00:00",
+        "TargetOSVersion": "27.1"
+       },
+       "ServerToken": "129c9b1e10bce0ba36b6c425a1059afdadcb052d",
+       "Type": "com.apple.configuration.softwareupdate.enforcement.specific"
+      }
+     ],
+     "token": "9f019fa232b63c60992b85ca0c1acaf112c00648"
+    },
+    "supervised=True,os_update=False": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate",
+         "com.renacode.kidwatch.mdm.dns"
+        ]
+       },
+       "ServerToken": "6c7c7417e15e4703c4573b6023189b9844f2f467",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "AutomaticActions": {
+         "Download": "AlwaysOn",
+         "InstallOSUpdates": "AlwaysOn",
+         "InstallSecurityUpdate": "AlwaysOn"
+        },
+        "Beta": {
+         "ProgramEnrollment": "AlwaysOff"
+        },
+        "Notifications": true
+       },
+       "ServerToken": "5981d5fd00bce5a2045477f1d5e6a3473b394690",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.dns",
+       "Payload": {
+        "DNSSettings": {
+         "AllowFailover": false,
+         "DNSProtocol": "HTTPS",
+         "ServerURL": "https://dns.nextdns.io/abc123/iPad-Dziecka-2"
+        },
+        "ProhibitDisablement": true,
+        "VisibleName": "Kidwatch DNS — iPad Dziecka 2"
+       },
+       "ServerToken": "76d119ca08cfd4431033f3831f22382996f763d1",
+       "Type": "com.apple.configuration.network.dns-settings"
+      }
+     ],
+     "token": "3ec09eff7047a54efc0ccf76312186d2a525514b"
+    },
+    "supervised=True,os_update=True": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate",
+         "com.renacode.kidwatch.mdm.osupdate",
+         "com.renacode.kidwatch.mdm.dns"
+        ]
+       },
+       "ServerToken": "bcd6b84a75e8b0385ff42595ba88cc9b66d62e10",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "AutomaticActions": {
+         "Download": "AlwaysOn",
+         "InstallOSUpdates": "AlwaysOn",
+         "InstallSecurityUpdate": "AlwaysOn"
+        },
+        "Beta": {
+         "ProgramEnrollment": "AlwaysOff"
+        },
+        "Notifications": true
+       },
+       "ServerToken": "5981d5fd00bce5a2045477f1d5e6a3473b394690",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.osupdate",
+       "Payload": {
+        "DetailsURL": "https://example.invalid/aktualizacja",
+        "TargetBuildVersion": "23B1",
+        "TargetLocalDateTime": "2026-10-20T20:00:00",
+        "TargetOSVersion": "27.1"
+       },
+       "ServerToken": "129c9b1e10bce0ba36b6c425a1059afdadcb052d",
+       "Type": "com.apple.configuration.softwareupdate.enforcement.specific"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.dns",
+       "Payload": {
+        "DNSSettings": {
+         "AllowFailover": false,
+         "DNSProtocol": "HTTPS",
+         "ServerURL": "https://dns.nextdns.io/abc123/iPad-Dziecka-2"
+        },
+        "ProhibitDisablement": true,
+        "VisibleName": "Kidwatch DNS — iPad Dziecka 2"
+       },
+       "ServerToken": "76d119ca08cfd4431033f3831f22382996f763d1",
+       "Type": "com.apple.configuration.network.dns-settings"
+      }
+     ],
+     "token": "9feddbe26ca53fd7a8d1f5f140d07d3d9e56c5da"
+    }
+   },
+   "enrollment": {
+    "PayloadContent": [
+     {
+      "Password": "<losowe>",
+      "PayloadCertificateFileName": "kidwatch-mdm.p12",
+      "PayloadContent": "<losowe>",
+      "PayloadDisplayName": "Tozsamosc urzadzenia",
+      "PayloadIdentifier": "com.renacode.kidwatch.mdm.identity",
+      "PayloadType": "com.apple.security.pkcs12",
+      "PayloadUUID": "<losowe>",
+      "PayloadVersion": 1
+     },
+     {
+      "AccessRights": 8191,
+      "CheckInURL": "https://mdm.example.invalid/mdm/checkin",
+      "CheckOutWhenRemoved": true,
+      "IdentityCertificateUUID": "<losowe>",
+      "PayloadDisplayName": "Zarzadzanie urzadzeniem",
+      "PayloadIdentifier": "com.renacode.kidwatch.mdm.mdm",
+      "PayloadType": "com.apple.mdm",
+      "PayloadUUID": "63B232E5-7ABA-5F97-B431-39DA00E73266",
+      "PayloadVersion": 1,
+      "ServerURL": "https://mdm.example.invalid/mdm/connect",
+      "SignMessage": true,
+      "Topic": "com.apple.mgmt.External.11111111-2222-4333-8444-555555555555",
+      "UseDevelopmentAPNS": false
+     }
+    ],
+    "PayloadDescription": "Nadzor rodzicielski Kidwatch: ograniczenia, DNS i aktualizacje.",
+    "PayloadDisplayName": "RenaCode — zarzadzanie (iPad Dziecka 2)",
+    "PayloadIdentifier": "com.renacode.kidwatch.mdm",
+    "PayloadOrganization": "RenaCode",
+    "PayloadRemovalDisallowed": true,
+    "PayloadType": "Configuration",
+    "PayloadUUID": "6700955C-0EEC-565C-8BC8-2AAD6B7B8804",
+    "PayloadVersion": 1
+   },
+   "restrictions_hash": "7236adec42e202fc76d0df6006342666dd21eb4fb87536453007d08ea29d7eb4",
+   "restrictions_plist": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n\t<key>PayloadContent</key>\n\t<array>\n\t\t<dict>\n\t\t\t<key>PayloadDisplayName</key>\n\t\t\t<string>Ograniczenia</string>\n\t\t\t<key>PayloadIdentifier</key>\n\t\t\t<string>com.renacode.kidwatch.mdm.restrictions.payload</string>\n\t\t\t<key>PayloadType</key>\n\t\t\t<string>com.apple.applicationaccess</string>\n\t\t\t<key>PayloadUUID</key>\n\t\t\t<string>2BB500F5-0D6C-59B4-98A6-11EE8547B352</string>\n\t\t\t<key>PayloadVersion</key>\n\t\t\t<integer>1</integer>\n\t\t\t<key>allowCamera</key>\n\t\t\t<true/>\n\t\t\t<key>allowCloudPrivateRelay</key>\n\t\t\t<false/>\n\t\t\t<key>allowDeviceNameModification</key>\n\t\t\t<false/>\n\t\t\t<key>allowEraseContentAndSettings</key>\n\t\t\t<false/>\n\t\t\t<key>allowHostPairing</key>\n\t\t\t<true/>\n\t\t\t<key>allowUIConfigurationProfileInstallation</key>\n\t\t\t<false/>\n\t\t\t<key>allowVPNCreation</key>\n\t\t\t<false/>\n\t\t\t<key>forceAutomaticDateAndTime</key>\n\t\t\t<true/>\n\t\t</dict>\n\t</array>\n\t<key>PayloadDescription</key>\n\t<string>Blokada VPN, Private Relay, wymazania i instalacji profili.</string>\n\t<key>PayloadDisplayName</key>\n\t<string>RenaCode — ograniczenia</string>\n\t<key>PayloadIdentifier</key>\n\t<string>com.renacode.kidwatch.mdm.restrictions</string>\n\t<key>PayloadOrganization</key>\n\t<string>RenaCode</string>\n\t<key>PayloadType</key>\n\t<string>Configuration</string>\n\t<key>PayloadUUID</key>\n\t<string>9E7DBBF9-5386-5337-947C-FE1A71F491CC</string>\n\t<key>PayloadVersion</key>\n\t<integer>1</integer>\n</dict>\n</plist>\n"
+  },
+  "spoza-polityki": {
+   "declarations": {
+    "supervised=False,os_update=False": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate"
+        ]
+       },
+       "ServerToken": "9a6f4b436b16ed78e90b5e0d74f224449df3a6c7",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "Notifications": true
+       },
+       "ServerToken": "a730a850f8f4c1f01f16a88beb7260ad2dc9aa09",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      }
+     ],
+     "token": "1a86ba9909497a06310654e463205be232cfe287"
+    },
+    "supervised=False,os_update=True": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate",
+         "com.renacode.kidwatch.mdm.osupdate"
+        ]
+       },
+       "ServerToken": "c8adecb14618be363087d1d9306881e5a83c4540",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "Notifications": true
+       },
+       "ServerToken": "a730a850f8f4c1f01f16a88beb7260ad2dc9aa09",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.osupdate",
+       "Payload": {
+        "DetailsURL": "https://example.invalid/aktualizacja",
+        "TargetBuildVersion": "23B1",
+        "TargetLocalDateTime": "2026-10-20T20:00:00",
+        "TargetOSVersion": "27.1"
+       },
+       "ServerToken": "129c9b1e10bce0ba36b6c425a1059afdadcb052d",
+       "Type": "com.apple.configuration.softwareupdate.enforcement.specific"
+      }
+     ],
+     "token": "9f019fa232b63c60992b85ca0c1acaf112c00648"
+    },
+    "supervised=True,os_update=False": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate"
+        ]
+       },
+       "ServerToken": "9a6f4b436b16ed78e90b5e0d74f224449df3a6c7",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "AutomaticActions": {
+         "Download": "AlwaysOn",
+         "InstallOSUpdates": "AlwaysOn",
+         "InstallSecurityUpdate": "AlwaysOn"
+        },
+        "Beta": {
+         "ProgramEnrollment": "AlwaysOff"
+        },
+        "Notifications": true
+       },
+       "ServerToken": "5981d5fd00bce5a2045477f1d5e6a3473b394690",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      }
+     ],
+     "token": "e3d3583f8f81c216cf027e85046ff9869a3d1406"
+    },
+    "supervised=True,os_update=True": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate",
+         "com.renacode.kidwatch.mdm.osupdate"
+        ]
+       },
+       "ServerToken": "c8adecb14618be363087d1d9306881e5a83c4540",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "AutomaticActions": {
+         "Download": "AlwaysOn",
+         "InstallOSUpdates": "AlwaysOn",
+         "InstallSecurityUpdate": "AlwaysOn"
+        },
+        "Beta": {
+         "ProgramEnrollment": "AlwaysOff"
+        },
+        "Notifications": true
+       },
+       "ServerToken": "5981d5fd00bce5a2045477f1d5e6a3473b394690",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.osupdate",
+       "Payload": {
+        "DetailsURL": "https://example.invalid/aktualizacja",
+        "TargetBuildVersion": "23B1",
+        "TargetLocalDateTime": "2026-10-20T20:00:00",
+        "TargetOSVersion": "27.1"
+       },
+       "ServerToken": "129c9b1e10bce0ba36b6c425a1059afdadcb052d",
+       "Type": "com.apple.configuration.softwareupdate.enforcement.specific"
+      }
+     ],
+     "token": "123bc61eb4caaaea993b0dad0af8eaae90c75718"
+    }
+   },
+   "enrollment": {
+    "PayloadContent": [
+     {
+      "Password": "<losowe>",
+      "PayloadCertificateFileName": "kidwatch-mdm.p12",
+      "PayloadContent": "<losowe>",
+      "PayloadDisplayName": "Tozsamosc urzadzenia",
+      "PayloadIdentifier": "com.renacode.kidwatch.mdm.identity",
+      "PayloadType": "com.apple.security.pkcs12",
+      "PayloadUUID": "<losowe>",
+      "PayloadVersion": 1
+     },
+     {
+      "AccessRights": 8191,
+      "CheckInURL": "https://mdm.example.invalid/mdm/checkin",
+      "CheckOutWhenRemoved": true,
+      "IdentityCertificateUUID": "<losowe>",
+      "PayloadDisplayName": "Zarzadzanie urzadzeniem",
+      "PayloadIdentifier": "com.renacode.kidwatch.mdm.mdm",
+      "PayloadType": "com.apple.mdm",
+      "PayloadUUID": "94437FDB-51B1-556F-A651-83E55D957B44",
+      "PayloadVersion": 1,
+      "ServerURL": "https://mdm.example.invalid/mdm/connect",
+      "SignMessage": true,
+      "Topic": "com.apple.mgmt.External.11111111-2222-4333-8444-555555555555",
+      "UseDevelopmentAPNS": false
+     }
+    ],
+    "PayloadDescription": "Nadzor rodzicielski Kidwatch: ograniczenia, DNS i aktualizacje.",
+    "PayloadDisplayName": "RenaCode — zarzadzanie (spoza-polityki)",
+    "PayloadIdentifier": "com.renacode.kidwatch.mdm",
+    "PayloadOrganization": "RenaCode",
+    "PayloadRemovalDisallowed": true,
+    "PayloadType": "Configuration",
+    "PayloadUUID": "22A6C3F2-6192-5F7B-A087-550BEE885109",
+    "PayloadVersion": 1
+   },
+   "restrictions_hash": "e495146b15f70397809722889325c21572ae8675ae52993eec6b337ce3882c70",
+   "restrictions_plist": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n\t<key>PayloadContent</key>\n\t<array>\n\t\t<dict>\n\t\t\t<key>PayloadDisplayName</key>\n\t\t\t<string>Ograniczenia</string>\n\t\t\t<key>PayloadIdentifier</key>\n\t\t\t<string>com.renacode.kidwatch.mdm.restrictions.payload</string>\n\t\t\t<key>PayloadType</key>\n\t\t\t<string>com.apple.applicationaccess</string>\n\t\t\t<key>PayloadUUID</key>\n\t\t\t<string>CD822E6C-F8F2-5F59-8451-A09ED464CE8A</string>\n\t\t\t<key>PayloadVersion</key>\n\t\t\t<integer>1</integer>\n\t\t\t<key>allowCloudPrivateRelay</key>\n\t\t\t<false/>\n\t\t\t<key>allowDeviceNameModification</key>\n\t\t\t<false/>\n\t\t\t<key>allowEraseContentAndSettings</key>\n\t\t\t<false/>\n\t\t\t<key>allowHostPairing</key>\n\t\t\t<true/>\n\t\t\t<key>allowUIConfigurationProfileInstallation</key>\n\t\t\t<false/>\n\t\t\t<key>allowVPNCreation</key>\n\t\t\t<false/>\n\t\t\t<key>blockedAppBundleIDs</key>\n\t\t\t<array>\n\t\t\t\t<string>com.example.przegladarka</string>\n\t\t\t</array>\n\t\t\t<key>forceAutomaticDateAndTime</key>\n\t\t\t<true/>\n\t\t</dict>\n\t</array>\n\t<key>PayloadDescription</key>\n\t<string>Blokada VPN, Private Relay, wymazania i instalacji profili.</string>\n\t<key>PayloadDisplayName</key>\n\t<string>RenaCode — ograniczenia</string>\n\t<key>PayloadIdentifier</key>\n\t<string>com.renacode.kidwatch.mdm.restrictions</string>\n\t<key>PayloadOrganization</key>\n\t<string>RenaCode</string>\n\t<key>PayloadType</key>\n\t<string>Configuration</string>\n\t<key>PayloadUUID</key>\n\t<string>7C88E4DE-2501-587A-907D-897357986204</string>\n\t<key>PayloadVersion</key>\n\t<integer>1</integer>\n</dict>\n</plist>\n"
+  },
+  "test": {
+   "declarations": {
+    "supervised=False,os_update=False": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate"
+        ]
+       },
+       "ServerToken": "9a6f4b436b16ed78e90b5e0d74f224449df3a6c7",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "Notifications": true
+       },
+       "ServerToken": "a730a850f8f4c1f01f16a88beb7260ad2dc9aa09",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      }
+     ],
+     "token": "1a86ba9909497a06310654e463205be232cfe287"
+    },
+    "supervised=False,os_update=True": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate",
+         "com.renacode.kidwatch.mdm.osupdate"
+        ]
+       },
+       "ServerToken": "c8adecb14618be363087d1d9306881e5a83c4540",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "Notifications": true
+       },
+       "ServerToken": "a730a850f8f4c1f01f16a88beb7260ad2dc9aa09",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.osupdate",
+       "Payload": {
+        "DetailsURL": "https://example.invalid/aktualizacja",
+        "TargetBuildVersion": "23B1",
+        "TargetLocalDateTime": "2026-10-20T20:00:00",
+        "TargetOSVersion": "27.1"
+       },
+       "ServerToken": "129c9b1e10bce0ba36b6c425a1059afdadcb052d",
+       "Type": "com.apple.configuration.softwareupdate.enforcement.specific"
+      }
+     ],
+     "token": "9f019fa232b63c60992b85ca0c1acaf112c00648"
+    },
+    "supervised=True,os_update=False": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate"
+        ]
+       },
+       "ServerToken": "9a6f4b436b16ed78e90b5e0d74f224449df3a6c7",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "AutomaticActions": {
+         "Download": "AlwaysOn",
+         "InstallOSUpdates": "AlwaysOn",
+         "InstallSecurityUpdate": "AlwaysOn"
+        },
+        "Beta": {
+         "ProgramEnrollment": "AlwaysOff"
+        },
+        "Notifications": true
+       },
+       "ServerToken": "5981d5fd00bce5a2045477f1d5e6a3473b394690",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      }
+     ],
+     "token": "e3d3583f8f81c216cf027e85046ff9869a3d1406"
+    },
+    "supervised=True,os_update=True": {
+     "decls": [
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.activation",
+       "Payload": {
+        "StandardConfigurations": [
+         "com.renacode.kidwatch.mdm.status",
+         "com.renacode.kidwatch.mdm.softwareupdate",
+         "com.renacode.kidwatch.mdm.osupdate"
+        ]
+       },
+       "ServerToken": "c8adecb14618be363087d1d9306881e5a83c4540",
+       "Type": "com.apple.activation.simple"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.status",
+       "Payload": {
+        "StatusItems": [
+         {
+          "Name": "device.operating-system.version"
+         },
+         {
+          "Name": "device.operating-system.build-version"
+         },
+         {
+          "Name": "device.model.identifier"
+         },
+         {
+          "Name": "softwareupdate.pending-version"
+         },
+         {
+          "Name": "softwareupdate.install-state"
+         },
+         {
+          "Name": "softwareupdate.failure-reason"
+         },
+         {
+          "Name": "mdm.enrollment-type"
+         },
+         {
+          "Name": "passcode.is-present"
+         }
+        ]
+       },
+       "ServerToken": "540bba58045999df69098b7e5a20ee53e961d462",
+       "Type": "com.apple.configuration.management.status-subscriptions"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.softwareupdate",
+       "Payload": {
+        "AutomaticActions": {
+         "Download": "AlwaysOn",
+         "InstallOSUpdates": "AlwaysOn",
+         "InstallSecurityUpdate": "AlwaysOn"
+        },
+        "Beta": {
+         "ProgramEnrollment": "AlwaysOff"
+        },
+        "Notifications": true
+       },
+       "ServerToken": "5981d5fd00bce5a2045477f1d5e6a3473b394690",
+       "Type": "com.apple.configuration.softwareupdate.settings"
+      },
+      {
+       "Identifier": "com.renacode.kidwatch.mdm.osupdate",
+       "Payload": {
+        "DetailsURL": "https://example.invalid/aktualizacja",
+        "TargetBuildVersion": "23B1",
+        "TargetLocalDateTime": "2026-10-20T20:00:00",
+        "TargetOSVersion": "27.1"
+       },
+       "ServerToken": "129c9b1e10bce0ba36b6c425a1059afdadcb052d",
+       "Type": "com.apple.configuration.softwareupdate.enforcement.specific"
+      }
+     ],
+     "token": "123bc61eb4caaaea993b0dad0af8eaae90c75718"
+    }
+   },
+   "enrollment": {
+    "PayloadContent": [
+     {
+      "Password": "<losowe>",
+      "PayloadCertificateFileName": "kidwatch-mdm.p12",
+      "PayloadContent": "<losowe>",
+      "PayloadDisplayName": "Tozsamosc urzadzenia",
+      "PayloadIdentifier": "com.renacode.kidwatch.mdm.identity",
+      "PayloadType": "com.apple.security.pkcs12",
+      "PayloadUUID": "<losowe>",
+      "PayloadVersion": 1
+     },
+     {
+      "AccessRights": 8191,
+      "CheckInURL": "https://mdm.example.invalid/mdm/checkin",
+      "CheckOutWhenRemoved": true,
+      "IdentityCertificateUUID": "<losowe>",
+      "PayloadDisplayName": "Zarzadzanie urzadzeniem",
+      "PayloadIdentifier": "com.renacode.kidwatch.mdm.mdm",
+      "PayloadType": "com.apple.mdm",
+      "PayloadUUID": "868C1C25-9D9A-57DD-B2D8-EF233217CA3C",
+      "PayloadVersion": 1,
+      "ServerURL": "https://mdm.example.invalid/mdm/connect",
+      "SignMessage": true,
+      "Topic": "com.apple.mgmt.External.11111111-2222-4333-8444-555555555555",
+      "UseDevelopmentAPNS": false
+     }
+    ],
+    "PayloadDescription": "Nadzor rodzicielski Kidwatch: ograniczenia, DNS i aktualizacje.",
+    "PayloadDisplayName": "RenaCode — zarzadzanie (iPad testowy)",
+    "PayloadIdentifier": "com.renacode.kidwatch.mdm",
+    "PayloadOrganization": "RenaCode",
+    "PayloadRemovalDisallowed": true,
+    "PayloadType": "Configuration",
+    "PayloadUUID": "44A0CAE0-E80C-50BC-A4B7-BDCBEA683FBB",
+    "PayloadVersion": 1
+   },
+   "restrictions_hash": "7399a4403c497fa5fe1f280fc761f96f91dac17f0f647db85c74358c0e04e8fd",
+   "restrictions_plist": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n\t<key>PayloadContent</key>\n\t<array>\n\t\t<dict>\n\t\t\t<key>PayloadDisplayName</key>\n\t\t\t<string>Ograniczenia</string>\n\t\t\t<key>PayloadIdentifier</key>\n\t\t\t<string>com.renacode.kidwatch.mdm.restrictions.payload</string>\n\t\t\t<key>PayloadType</key>\n\t\t\t<string>com.apple.applicationaccess</string>\n\t\t\t<key>PayloadUUID</key>\n\t\t\t<string>80F5B4B1-A870-58FE-964C-4D6DDBC81B5B</string>\n\t\t\t<key>PayloadVersion</key>\n\t\t\t<integer>1</integer>\n\t\t\t<key>allowCloudPrivateRelay</key>\n\t\t\t<false/>\n\t\t\t<key>allowDeviceNameModification</key>\n\t\t\t<false/>\n\t\t\t<key>allowEraseContentAndSettings</key>\n\t\t\t<false/>\n\t\t\t<key>allowHostPairing</key>\n\t\t\t<true/>\n\t\t\t<key>allowUIConfigurationProfileInstallation</key>\n\t\t\t<false/>\n\t\t\t<key>allowVPNCreation</key>\n\t\t\t<false/>\n\t\t\t<key>blockedAppBundleIDs</key>\n\t\t\t<array>\n\t\t\t\t<string>com.example.przegladarka</string>\n\t\t\t</array>\n\t\t\t<key>forceAutomaticDateAndTime</key>\n\t\t\t<true/>\n\t\t</dict>\n\t</array>\n\t<key>PayloadDescription</key>\n\t<string>Blokada VPN, Private Relay, wymazania i instalacji profili.</string>\n\t<key>PayloadDisplayName</key>\n\t<string>RenaCode — ograniczenia</string>\n\t<key>PayloadIdentifier</key>\n\t<string>com.renacode.kidwatch.mdm.restrictions</string>\n\t<key>PayloadOrganization</key>\n\t<string>RenaCode</string>\n\t<key>PayloadType</key>\n\t<string>Configuration</string>\n\t<key>PayloadUUID</key>\n\t<string>D598ED34-3148-5F99-952D-B645682C701B</string>\n\t<key>PayloadVersion</key>\n\t<integer>1</integer>\n</dict>\n</plist>\n"
+  }
+ },
+ "teksty": {
+  "cisza": [
+   [
+    "iPad Dziecka 1: brak kontaktu z MDM od 52 h",
+    "iPad nie laczy sie z serwerem MDM. Mozliwe: wylaczony, bez sieci, reset w trybie odzyskiwania albo blad pushy (410 x)."
+   ]
+  ],
+  "wiszace": {
+   "inny": [
+    [
+     "iPad Dziecka 1: komenda DeviceLock czeka od 52 h",
+     "Czeka komend: 2, najstarsza w stanie inny. "
+    ]
+   ],
+   "not_now": [
+    [
+     "iPad Dziecka 1: komenda DeviceLock czeka od 52 h",
+     "Czeka komend: 2, najstarsza w stanie not_now. iPad odpowiada „nie teraz” (np. zablokowany ekran) — wykona ja po odblokowaniu."
+    ]
+   ],
+   "queued": [
+    [
+     "iPad Dziecka 1: komenda DeviceLock czeka od 52 h",
+     "Czeka komend: 2, najstarsza w stanie queued. iPad laczy sie z MDM, ale jej nie pobral — sprawdz pushe."
+    ]
+   ],
+   "sent": [
+    [
+     "iPad Dziecka 1: komenda DeviceLock czeka od 52 h",
+     "Czeka komend: 2, najstarsza w stanie sent. iPad ja pobral, ale nie odpowiedzial."
+    ]
+   ]
+  },
+  "zdarzenia": [
+   [
+    "mdm",
+    5,
+    "iPad Dziecka 1: profil MDM zdjety",
+    "iPad wypisal sie z zarzadzania. Blokady VPN i DNS juz nie dzialaja. Na nadzorowanym iPadzie to mozliwe tylko po resecie z komputera."
+   ],
+   [
+    "mdm",
+    4,
+    "iPad Dziecka 1: zniknal profil ograniczen",
+    "Brak profilu com.example.profil. Serwer MDM wgra go ponownie przy najblizszym polaczeniu."
+   ],
+   [
+    "mdm",
+    3,
+    "iPad Dziecka 1: zapisany do MDM",
+    "iPad polaczyl sie z serwerem MDM. Ograniczenia i DNS zostana wgrane automatycznie."
+   ],
+   [
+    "mdm",
+    5,
+    "iPad Dziecka 1: UTRACONY nadzor",
+    "Bez nadzoru iOS ignoruje blokady VPN, DNS i usuwania profilu."
+   ],
+   [
+    "mdm",
+    3,
+    "iPad Dziecka 1: wlaczony nadzor",
+    "iPad jest nadzorowany — blokady dzialaja."
+   ],
+   [
+    "device_inventory",
+    3,
+    "iPad Dziecka 1: nowa aplikacja",
+    "Gra"
+   ],
+   [
+    "device_inventory",
+    2,
+    "iPad Dziecka 1: usunieta aplikacja",
+    "com.example.gra"
+   ],
+   [
+    "mdm",
+    4,
+    "iPad Dziecka 1: iPad nie przyjmuje pushy",
+    "APNs odrzucil token urzadzenia. Pomoze ponowny zapis do MDM."
+   ],
+   [
+    "mdm",
+    3,
+    "iPad Dziecka 1: aktualizacja systemu nieudana",
+    "{\"count\": 1, \"reason\": \"x\"}"
+   ],
+   [
+    "mdm",
+    3,
+    "iPad Dziecka 1: iPad odrzucil komende DeviceLock",
+    "[{\"c\": 1}]"
+   ],
+   [
+    "mdm",
+    4,
+    "MDM: odrzucona proba podszycia",
+    "Zdarzenie cert_mismatch: wiadomosc z poprawnym podpisem, ale nie od tego urzadzenia."
+   ]
+  ]
+ }
+}

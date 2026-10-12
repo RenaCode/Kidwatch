@@ -69,6 +69,13 @@ devices:
   #   kind: phone
   #   source_ids: ["Telefon Dziecka 2"]
   #   unifi_mac: "02:00:00:00:00:03"   # MAC z Wi-Fi telefonu (losowy per siec)
+  # iPhone dziecka (zwykle bez nadzoru): profil NextDNS zainstalowany RECZNIE
+  # (tools/gen_profile.py --kind iphone) — tylko tak obejmuje tez siec
+  # komorkowa. Odczyt wprost (udid/host) jak u iPada. Instrukcja: docs/iphone.md
+  # - display_name: "iPhone Dziecka 1"
+  #   child: "Dziecko 1"
+  #   kind: iphone
+  #   source_ids: ["iPhone-Dziecka-1"]
 
 # ----------------------------------------------------------- telewizor (opcja)
 # Google TV po ADB/TCP. Klucz `adbkey` (+ .pub) w adb_key_dir, zaakceptowany

@@ -40,5 +40,6 @@ test('rodzaj urzadzenia: telefon ma wlasna ikone, nieznany rodzaj to iPad', () =
   assert.deepEqual(deviceKind('phone'), { icon: 'phone', genitive: 'telefonu' });
   assert.equal(deviceKind('tv').icon, 'tv');
   assert.equal(deviceKind('ipad').genitive, 'iPada');
+  assert.deepEqual(deviceKind('iphone'), { icon: 'phone', genitive: 'iPhone’a' });
   assert.equal(deviceKind(undefined).icon, 'tablet');
 });

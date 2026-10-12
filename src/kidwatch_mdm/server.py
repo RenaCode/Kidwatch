@@ -41,6 +41,10 @@ API_COMMANDS: dict[str, Callable[[dict], dict]] = {
     "RestartDevice": lambda b: {},
 }
 
+#: Komendy, ktore iOS wykonuje tylko na nadzorowanym urzadzeniu
+#: (mdm/commands/device.restart.yaml: supervised: true).
+SUPERVISED_COMMANDS = frozenset({"RestartDevice"})
+
 UDID_RE = r"(?P<udid>[0-9A-Fa-f-]{8,64})"
 
 
@@ -122,6 +126,9 @@ def make_admin_handler(service: MDMService, token: str):
             "device_name": row["device_name"],
             "serial": row["serial"],
             "product": row["product"],
+            # "ipad" | "iphone": iPhone dostaje polityke bez kluczy nadzoru,
+            # a Kidwatch pisze o nim inne teksty alarmow.
+            "kind": service.kind_of(row),
             "os_version": row["os_version"],
             "build_version": row["build_version"],
             "supervised": None if row["supervised"] is None else bool(row["supervised"]),
@@ -240,6 +247,18 @@ def make_admin_handler(service: MDMService, token: str):
                 if rtype not in API_COMMANDS:
                     return _json_response(
                         400, {"error": f"dozwolone komendy: {', '.join(API_COMMANDS)}"}
+                    )
+                row = store.device(m["udid"])
+                if (
+                    rtype in SUPERVISED_COMMANDS
+                    and row is not None
+                    and service.kind_of(row) == "iphone"
+                    and not row["supervised"]
+                ):
+                    # iPhone bez nadzoru odrzuci ja bledem — mowimy to od razu,
+                    # zamiast kolejkowac komende i dawac alarm „odrzucil komende".
+                    return _json_response(
+                        409, {"error": f"{rtype} wymaga nadzoru — ten iPhone go nie ma"}
                     )
                 cmd = service.enqueue_api(m["udid"], rtype, API_COMMANDS[rtype](data))
                 return _json_response(202, {"command_uuid": cmd})

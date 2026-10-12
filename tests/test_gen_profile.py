@@ -206,3 +206,24 @@ def test_flaga_also_declaration_zapisuje_plik_json(tmp_path):
     assert decl.is_file()
     loaded = json.loads(decl.read_text(encoding="utf-8"))
     assert loaded["Type"] == "com.apple.configuration.network.dns-settings"
+
+
+# ================================================================ iPhone (E5)
+def test_cli_iphone_daje_ten_sam_plik_co_ipad_i_mowi_o_recznej_instalacji(tmp_path, capsys):
+    ipad, iphone = tmp_path / "a.mobileconfig", tmp_path / "b.mobileconfig"
+    assert main(["--name", "Urzadzenie", "--doh-url", DOH, "--out", str(ipad)]) == 0
+    capsys.readouterr()
+    assert main(["--name", "Urzadzenie", "--doh-url", DOH, "--out", str(iphone),
+                 "--kind", "iphone"]) == 0
+    out = capsys.readouterr().out
+    assert ipad.read_bytes() == iphone.read_bytes()
+    assert "RECZNIE" in out and "komorkowa" in out
+    assert not set(SUPERVISED_ONLY) & set(flatten(plistlib.loads(iphone.read_bytes())))
+
+
+def test_cli_iphone_z_nadzorem_odrzucone(tmp_path, capsys):
+    with pytest.raises(SystemExit):
+        main(["--name", "iPhone", "--doh-url", DOH, "--out", str(tmp_path / "x"),
+              "--kind", "iphone", "--supervised"])
+    assert "--supervised nie dla iPhone'a" in capsys.readouterr().err
+    assert not (tmp_path / "x").exists()

@@ -14,6 +14,8 @@ Osobny kontener obok Kidwatch. Pilnuje na iPadach dzieci:
 
 Nadzór (supervision) to warunek wszystkich blokad. Bez niego iOS przyjmie profil i zignoruje ograniczenia — dlatego serwer dokłada klucze „tylko pod nadzorem” dopiero, gdy iPad sam zgłosi `IsSupervised = true`.
 
+**iPhone dziecka** (`kind: iphone` w polityce) jest zwykle bez nadzoru i dostaje politykę **bez żadnego klucza „tylko pod nadzorem”**: bez domyślnych blokad iPada, bez `PayloadRemovalDisallowed` w profilu zapisu, bez deklaracji DNS (DNS idzie ręcznym profilem NextDNS, który jako jedyny obejmuje sieć komórkową). Działają: lista aplikacji, stan, blokada ekranu, wymuszenie wersji iOS. Restartu nie ma (`RestartDevice` wymaga nadzoru — serwer odpowiada 409). Szczegóły i kroki: [`docs/iphone.md`](iphone.md).
+
 ## Architektura
 
 ```
@@ -119,7 +121,7 @@ mdm:
 
 Token przychodzi sam z Sekretu `kidwatch-mdm-admin` (chart kidwatch, `mdmAdminSecret`). Po restarcie:
 
-- **zakładka MDM w panelu**: iPady (nadzór, system, kontakt, błędy push), odśwież / zablokuj ekran / restart, wymuszona aktualizacja, link do zapisu nowego iPada, dziennik zdarzeń;
+- **zakładka MDM w panelu**: iPady i iPhone'y (nadzór, system, kontakt, błędy push), odśwież / zablokuj ekran / restart (iPhone bez nadzoru: bez restartu), wymuszona aktualizacja, link do zapisu nowego urządzenia, dziennik zdarzeń;
 - **alarmy** (trasa bramki `kidwatch:czujka`, nie do rodziny): profil zdjęty, utrata nadzoru, zniknięty profil, iPad bez kontaktu > 24 h, odrzucone pushe, certyfikat APNs < 30 dni; nowa/usunięta aplikacja idzie jak dotąd jako `kidwatch:alarm`.
 
 ## API dla Kidwatch (port 8081, `Authorization: Bearer <token>`)
@@ -127,10 +129,10 @@ Token przychodzi sam z Sekretu `kidwatch-mdm-admin` (chart kidwatch, `mdmAdminSe
 | Metoda | Ścieżka | Co |
 |---|---|---|
 | GET | `/api/health` | bez tokenu; stan certyfikatu APNs, liczba iPadów |
-| GET | `/api/devices` | lista iPadów (nadzór, system, ostatni kontakt, błąd push, synchronizacja DDM) |
+| GET | `/api/devices` | lista urządzeń (`kind`: `ipad`/`iphone`, nadzór, system, ostatni kontakt, błąd push, synchronizacja DDM) |
 | GET | `/api/devices/<udid>` | szczegóły: informacje, aplikacje, profile, status DDM, historia komend |
 | POST | `/api/devices/<udid>/refresh` | odśwież stan teraz |
-| POST | `/api/devices/<udid>/commands` | `{"request_type": "DeviceLock", "Message": "..."}` albo `RestartDevice` |
+| POST | `/api/devices/<udid>/commands` | `{"request_type": "DeviceLock", "Message": "..."}` albo `RestartDevice` (iPhone bez nadzoru: 409) |
 | POST | `/api/enrollments` | `{"label": "dziecko1"}` → link do profilu zapisu (24 h, jednorazowy) |
 | GET/PUT | `/api/os-update` | `{"target_version": "27.1", "deadline": "2026-10-20T20:00:00"}`, `{"clear": true}`, `{"disabled": true}` |
 | GET | `/api/events?since=<id>` | dziennik: `checkout`, `profile_missing`, `apps_installed`, `command_error`, `push_token_dead`, `os_update_failed`, `signature_rejected`… |

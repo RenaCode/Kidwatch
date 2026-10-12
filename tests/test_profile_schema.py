@@ -213,3 +213,42 @@ def test_plist_sie_serializuje_po_zmianie_poziomu_klucza():
     data = plistlib.dumps(build_profile(name="iPad Kuby", doh_url=DOH, supervised=True))
     reloaded = plistlib.loads(data)
     assert reloaded["PayloadContent"][0]["ProhibitDisablement"] is True
+
+
+# ================================================================ iPhone (E5)
+def test_profil_iphone_a_zgadza_sie_ze_schematem_i_nie_ma_kluczy_nadzoru():
+    """iPhone dziecka jest zwykle bez nadzoru: profil DNS jak zwyklego iPada,
+    ani jednego klucza z `supervised_ios: true` (liczone ze schematu)."""
+    profile = build_profile(name="iPhone Dziecka 1", doh_url=DOH, kind="iphone")
+    top = {k: v for k, v in profile.items() if k != "PayloadContent"}
+    problems = check_against(TOPLEVEL["keys"], top, "profil")
+    assert [p["PayloadType"] for p in profile["PayloadContent"]] == [
+        "com.apple.dnsSettings.managed"
+    ]
+    problems += check_against(DNS_PROFILE["keys"], profile["PayloadContent"][0], "dnsSettings")
+    assert problems == [], "\n".join(problems)
+
+    def nadzor(keys: dict, payload: dict) -> list[str]:
+        out = []
+        for name, value in payload.items():
+            spec = keys.get(name) or {}
+            if spec.get("supervised_ios") is True:
+                out.append(name)
+            if isinstance(value, dict) and spec.get("subkeys"):
+                out += nadzor(spec["subkeys"], value)
+        return out
+
+    assert nadzor(TOPLEVEL["keys"], top) == []
+    assert nadzor(DNS_PROFILE["keys"], profile["PayloadContent"][0]) == []
+
+
+def test_profil_iphone_a_to_ten_sam_profil_co_zwyklego_ipada():
+    """Rodzaj zmienia tylko podpowiedzi CLI — tresc profilu iPada zostaje."""
+    assert build_profile(name="X", doh_url=DOH, kind="iphone") == build_profile(
+        name="X", doh_url=DOH
+    )
+
+
+def test_iphone_z_nadzorem_odrzucony():
+    with pytest.raises(ValueError, match="iPhone"):
+        build_profile(name="iPhone Dziecka 1", doh_url=DOH, kind="iphone", supervised=True)

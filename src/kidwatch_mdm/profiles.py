@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .pki import CA, fingerprint, identity_pkcs12
-from .policy import Policy
+from .policy import MdmKind, Policy
 
 BASE_ID = "com.renacode.kidwatch.mdm"
 NAMESPACE = uuid.UUID("2f1c7a1e-4b8e-4c1e-9d3a-6b6d0c8f5e21")
@@ -50,11 +50,15 @@ def enrollment_profile(
     org: str,
     label: str,
     device_name: str,
+    kind: MdmKind = "ipad",
 ) -> EnrollmentProfile:
     """Profil zapisu: tozsamosc urzadzenia (PKCS#12) + payload com.apple.mdm.
 
     Kazde wywolanie wystawia NOWY certyfikat. Nie trzymamy kluczy prywatnych
     urzadzen na serwerze — zyja tylko w profilu i na iPadzie.
+
+    iPhone (bez nadzoru) dostaje profil bez `PayloadRemovalDisallowed` — klucz
+    dziala tylko pod nadzorem, wiec obiecywalby nieusuwalnosc, ktorej nie ma.
     """
     key, cert = ca.issue_identity(f"kidwatch-mdm {label}")
     p12, password = identity_pkcs12(key, cert, f"kidwatch-mdm {label}")
@@ -101,6 +105,12 @@ def enrollment_profile(
         # Na zwyklym iPadzie profil da sie zdjac mimo tego klucza.
         "PayloadRemovalDisallowed": True,
     }
+    if kind == "iphone":
+        profile["PayloadDescription"] = (
+            "Kidwatch: lista aplikacji, blokada ekranu i aktualizacje. "
+            "Bez nadzoru — profil mozna usunac w Ustawieniach."
+        )
+        del profile["PayloadRemovalDisallowed"]
     return EnrollmentProfile(
         data=plistlib.dumps(profile, fmt=plistlib.FMT_XML, sort_keys=True),
         cert_fingerprint=fingerprint(cert),
@@ -111,9 +121,16 @@ def enrollment_profile(
 RESTRICTIONS_ID = f"{BASE_ID}.restrictions"
 
 
-def restrictions_profile(policy: Policy, label: str) -> tuple[dict, str]:
-    """Profil ograniczen i skrot jego tresci (bez UUID-ow, ktore sa stale)."""
-    restrictions = policy.restrictions_for(label)
+def restrictions_profile(
+    policy: Policy, label: str, kind: MdmKind | None = None
+) -> tuple[dict, str]:
+    """Profil ograniczen i skrot jego tresci (bez UUID-ow, ktore sa stale).
+
+    iPhone dostaje tylko wlasne klucze dzialajace bez nadzoru — czesto zadne
+    (pusty payload niczego nie ogranicza, ale zmiana polityki dalej dochodzi
+    ta sama droga)."""
+    kind = "iphone" if "iphone" in (kind, policy.device(label).kind) else "ipad"
+    restrictions = policy.restrictions_for(label, kind)
     payload = {
         "PayloadType": "com.apple.applicationaccess",
         "PayloadVersion": 1,
@@ -132,6 +149,8 @@ def restrictions_profile(policy: Policy, label: str) -> tuple[dict, str]:
         "PayloadOrganization": policy.org,
         "PayloadContent": [payload],
     }
+    if kind == "iphone":
+        profile["PayloadDescription"] = "Ograniczenia dzialajace bez nadzoru (lista bywa pusta)."
     return profile, content_hash(profile)
 
 
@@ -148,15 +167,26 @@ def _declaration(dtype: str, ident: str, payload: dict) -> dict:
 
 
 def declarations(
-    policy: Policy, label: str, *, supervised: bool, os_update: dict | None
+    policy: Policy,
+    label: str,
+    *,
+    supervised: bool,
+    os_update: dict | None,
+    kind: MdmKind | None = None,
 ) -> list[dict]:
-    """Deklaracje dla jednego iPada.
+    """Deklaracje dla jednego iPada albo iPhone'a.
 
     Klucze dozwolone tylko pod nadzorem dokladamy dopiero, gdy iPad zglosi
     IsSupervised = true. Nienadzorowany iPad (np. testowy) dostaje wersje bez
     nich — inaczej moglby odrzucic cala deklaracje przez jeden klucz.
+
+    iPhone ZAWSZE dostaje wersje bez nadzoru (takze bez deklaracji DNS: DNS
+    iPhone'a idzie recznym profilem NextDNS, docs/iphone.md). Nadzorowany
+    iPhone to osobna decyzja, nie skutek uboczny jednego pola z DeviceInformation.
     """
     dev = policy.device(label)
+    if "iphone" in (kind, dev.kind):
+        supervised = False
     configs: list[dict] = [
         _declaration(
             "com.apple.configuration.management.status-subscriptions",

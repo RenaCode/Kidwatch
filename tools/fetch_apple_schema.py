@@ -79,6 +79,11 @@ def _distill_key(entry: dict) -> dict:
         "supervised_macos": macos.get("supervised"),
         "introduced_ios": ios.get("introduced"),
     }
+    # Deklaracje DDM nie maja `supervised` przy kluczach — wymog nadzoru
+    # zapisuja jako `allowed-enrollments: [supervised]`. Dopisywane tylko,
+    # gdy jest, zeby indeks profili zostal bajt w bajt taki sam.
+    if ios.get("allowed-enrollments") is not None:
+        out["allowed_enrollments_ios"] = list(ios["allowed-enrollments"])
     if entry.get("rangelist"):
         out["allowed"] = list(entry["rangelist"])
     subkeys = entry.get("subkeys") or []

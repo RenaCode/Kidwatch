@@ -1,6 +1,6 @@
-"""Rodzaje urzadzen dziecka: iPad i telefon z Androidem.
+"""Rodzaje urzadzen dziecka: iPad, iPhone i telefon z Androidem.
 
-Oba ida ta sama droga — zapytania DNS przez profil NextDNS z nazwa
+Wszystkie ida ta sama droga — zapytania DNS przez profil NextDNS z nazwa
 urzadzenia — wiec silnik, sesje, noc i czujka ciszy sa wspolne. Rozni sie
 tylko to, co czyta czlowiek: odmiana nazwy ("uzywa telefonu w nocy") i gdzie
 na urzadzeniu szukac wylaczonego DNS.
@@ -9,7 +9,13 @@ Telefon z Androidem (zwykle pod Google Family Link) wysyla DNS przez
 Prywatny DNS (DNS-over-TLS) na host `<nazwa>-<profil>.dns.nextdns.io`.
 NextDNS zamienia `--` w nazwie na spacje, wiec `Telefon--Dziecka-1-abc123`
 pokazuje sie w logach jako "Telefon Dziecka 1" (docs/telefon-android.md).
-Telewizor ma osobna sciezke (sources/tv*.py) i nie jest tu rodzajem.
+Telewizor ma osobna sciezke (sources/tv*.py) i nie jest tu rodzajem; w bazie
+panelu dostaje `rodzaj = 'tv'` (RODZAJ_W_BAZIE), zeby byl przypisany do domu.
+
+iPhone idzie droga iPada (profil NextDNS z nazwa urzadzenia, odczyt wprost
+przez lockdown z LAN domu), ale zwykle jest BEZ nadzoru: ograniczenia MDM sa
+ignorowane, profil DNS da sie zdjac, a telefon czesto chodzi po sieci
+komorkowej. Teksty mowia to wprost (docs/iphone.md).
 
 Model domow (docs/architektura-domy.md §2.4) nazywa telefon `phone-android`.
 W konfiguracji obie nazwy znacza to samo; wewnatrz i w API panelu zostaje
@@ -22,7 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-DeviceKindName = Literal["ipad", "phone"]
+DeviceKindName = Literal["ipad", "iphone", "phone"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +53,20 @@ KINDS: dict[str, DeviceKind] = {
         dns_where="Sprawdź na iPadzie: Ustawienia → Ogólne → VPN i urządzenia → profil NextDNS.",
         tag="ipad",
     ),
+    "iphone": DeviceKind(
+        noun="iPhone",
+        genitive="iPhone'a",
+        dns_off=(
+            "zdjety profil DNS (iPhone bez nadzoru pozwala go usunac), wylaczony "
+            "szyfrowany DNS w Ustawieniach tego iPhone'a, wlaczony tryb samolotowy "
+            "albo rozladowany telefon"
+        ),
+        dns_where=(
+            "Sprawdź na iPhonie: Ustawienia → Ogólne → VPN i urządzenia → profil NextDNS. "
+            "Bez nadzoru dziecko może ten profil usunąć, a MDM tego nie zablokuje."
+        ),
+        tag="ios",
+    ),
     "phone": DeviceKind(
         noun="telefon",
         genitive="telefonu",
@@ -68,7 +88,13 @@ KINDS: dict[str, DeviceKind] = {
 #: Nazwa z modelu domow -> nazwa uzywana w konfiguracji, silniku i API.
 ALIASY: dict[str, str] = {"phone-android": "phone"}
 #: Rodzaj z konfiguracji -> `urzadzenia.rodzaj` w bazie panelu (domy.py).
-RODZAJ_W_BAZIE: dict[str, str] = {"ipad": "ipad", "phone": "phone-android"}
+#: Telewizor nie jest rodzajem z `devices`, ale ma wiersz w `urzadzenia`.
+RODZAJ_W_BAZIE: dict[str, str] = {
+    "ipad": "ipad",
+    "iphone": "iphone",
+    "phone": "phone-android",
+    "tv": "tv",
+}
 
 
 def kind_of(kind: str | None) -> DeviceKind:
