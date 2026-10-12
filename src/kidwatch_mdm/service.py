@@ -130,6 +130,11 @@ class MDMService:
         #: TokenUpdate, nie powinien dostac pusha w trakcie tej samej wymiany.
         self._kick_lock = threading.Lock()
         self._kicks: set[str] = set()
+        for label, errors in policy.rejected.items():
+            # Kwarantanna wpisu iPhone'a (policy.load): serwer wstaje, ale
+            # wlasciciel ma sie o tym dowiedziec — zdarzenie = alarm Kidwatcha.
+            log.error("polityka: wpis %s odrzucony: %s", label, "; ".join(errors))
+            self.store.event("policy_entry_rejected", detail={"label": label, "errors": errors})
         #: Stan petli uzgadniania (ustawia __main__.loop_step) do /api/health.
         self.started_at = now_utc()
         self.next_reconcile = 0.0
@@ -533,6 +538,8 @@ class MDMService:
                     (udid,),
                 )
             )
+            if self.policy.kind_mismatch(device["label"], device["product"]):
+                self._kind_mismatch(device)
             info_at = from_iso(device["info_at"])
             if info_at is None or now - info_at >= refresh_after:
                 for request_type in REFRESH_COMMANDS:
@@ -581,6 +588,21 @@ class MDMService:
         # ze uzgadnianie nie przeszlo od godziny, takze po restarcie.
         self.store.set_setting("last_reconcile_ok_at", iso(now))
         return stats
+
+    def _kind_mismatch(self, device) -> None:
+        """`kind: iphone` pod etykieta iPada: iPad zostaje iPadem (Policy.kind),
+        ale to pomylka w polityce — jedno zdarzenie na urzadzenie i etykiete."""
+        key = f"kind_mismatch:{device['udid']}:{device['label']}"
+        if self.store.setting(key):
+            return
+        log.warning("polityka: %s ma kind: iphone, a zglasza sie jako %s",
+                    device["label"], device["product"])
+        self.store.event(
+            "kind_mismatch",
+            device["udid"],
+            {"label": device["label"], "product": device["product"]},
+        )
+        self.store.set_setting(key, True)
 
     def _push_due(self, device, now: datetime) -> bool:
         last = from_iso(device["last_push_at"])

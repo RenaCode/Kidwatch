@@ -5,7 +5,7 @@
 import React, { useState } from 'react';
 import { post, useApi } from '../utils/api';
 import { ago } from '../utils/format';
-import { eventTone, isMeaningfulEvent, pendingBadge, serverBadges } from '../utils/mdm';
+import { eventTone, isMeaningfulEvent, mdmDevice, pendingBadge, serverBadges } from '../utils/mdm';
 import Icon from './Icons';
 
 const EVENT_LABELS = {
@@ -25,7 +25,7 @@ const EVENT_LABELS = {
   cert_mismatch: 'próba podszycia',
 };
 
-function Action({ label, onRun, disabled }) {
+function Action({ label, onRun, disabled, title }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const run = async () => {
@@ -35,7 +35,7 @@ function Action({ label, onRun, disabled }) {
   };
   return (
     <>
-      <button className="btn-ghost" disabled={busy || disabled} onClick={run}>
+      <button className="btn-ghost" disabled={busy || disabled} onClick={run} title={title || undefined}>
         {busy ? '…' : label}
       </button>
       {error && <span className="badge warn" title={error}>błąd: {error}</span>}
@@ -61,13 +61,14 @@ function DeviceCard({ d, onChanged, canCommand }) {
   const apps = detail.data?.apps || [];
   const queue = pendingBadge(d);
   const detailsId = `mdm-details-${d.udid}`;
+  const kind = mdmDevice(d);
   return (
     <article className="glass-card mdm-device">
       <div className="dev-head">
-        <span className="dev-icon"><Icon name="tablet" size={26} /></span>
+        <span className="dev-icon"><Icon name={kind.icon} size={26} /></span>
         <div className="dev-id">
           <h3 className="dev-name">{d.name}</h3>
-          <span className="dim">{d.product || '?'} · iPadOS {d.os_version || '?'}</span>
+          <span className="dim">{d.product || '?'} · {kind.os} {d.os_version || '?'}</span>
         </div>
       </div>
       <div className="mdm-row">
@@ -90,7 +91,7 @@ function DeviceCard({ d, onChanged, canCommand }) {
             <>
               <Action label="Odśwież" onRun={async () => { await post('/api/mdm/refresh', { udid: d.udid }); later(); }} />
               <Action label="Zablokuj ekran" onRun={lock} />
-              <Action label="Restart" onRun={restart} disabled={d.supervised !== true} />
+              <Action label="Restart" onRun={restart} disabled={!kind.canRestart} title={kind.restartHint} />
             </>
           )}
           <button className="btn-ghost" aria-expanded={open} aria-controls={detailsId}

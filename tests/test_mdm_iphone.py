@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from kidwatch_mdm import profiles
-from kidwatch_mdm.policy import DEFAULT_RESTRICTIONS, Policy, PolicyError, load, validate
+from kidwatch_mdm.policy import DEFAULT_RESTRICTIONS, Policy, load, validate
 from kidwatch_mdm.service import MDMService
 from kidwatch_mdm.store import Store
 from mdm_migawka_ipada import IPAD, OS_UPDATE, POLITYKA, migawka, migawka_tekstow, nowe_ca
@@ -197,8 +197,10 @@ def test_walidacja_odrzuca_klucze_nadzoru_dla_iphone_a(tmp_path, dev, blad):
     assert any("iphone1" in e and blad in e for e in errors), errors
     path = tmp_path / "policy.yaml"
     path.write_text(json.dumps(policy.model_dump()), encoding="utf-8")
-    with pytest.raises(PolicyError):
-        load(path, SCHEMA)
+    # Po przegladzie E5 (U2): wpis iPhone'a w kwarantannie, start nie pada.
+    loaded = load(path, SCHEMA)
+    assert any(blad in e for e in loaded.rejected["iphone1"])
+    assert loaded.device("iphone1").restrictions == {}
 
 
 def test_walidacja_bez_schematu_zna_domyslne_klucze_nadzoru():

@@ -212,6 +212,28 @@ def _describe(
             if isinstance(detail, dict)
             else "",
         )
+    if kind == "policy_entry_rejected":
+        label = detail.get("label") if isinstance(detail, dict) else "?"
+        errors = detail.get("errors") if isinstance(detail, dict) else None
+        return (
+            NotifyKind.MDM,
+            4,
+            f"MDM: wpis {label} w polityce odrzucony",
+            "Serwer MDM wystartowal, ale ten wpis iPhone'a dostal kwarantanne (bez "
+            "wlasnych ograniczen): " + "; ".join(errors or [])[:400]
+            + ". Popraw polityke (kidwatch-mdm check-policy) i zrestartuj serwer.",
+        )
+    if kind == "kind_mismatch":
+        product = detail.get("product") if isinstance(detail, dict) else "?"
+        label = detail.get("label") if isinstance(detail, dict) else "?"
+        return (
+            NotifyKind.MDM,
+            4,
+            f"{name}: pomylka rodzaju w polityce MDM",
+            f"Etykieta {label} ma kind: iphone, a urzadzenie to iPad ({product}). "
+            "Serwer traktuje je jako iPada i zostawia blokady, ale popraw polityke; "
+            "profil zapisu mogl powstac bez blokady usuniecia — zapisz iPada ponownie.",
+        )
     if kind in ("cert_mismatch", "enrollment_reuse", "unknown_identity"):
         return (
             NotifyKind.MDM,

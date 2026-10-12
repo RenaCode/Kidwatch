@@ -1,7 +1,16 @@
 /* Zakladka MDM i dzwonek - audyt 2026-10-09 (N4, N5). */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { eventTone, isCriticalNote, isMeaningfulEvent } from './mdm.js';
+import { eventTone, isCriticalNote, isMeaningfulEvent, mdmDevice } from './mdm.js';
+
+test('karta MDM: iPhone ma ikone telefonu, iOS i restart tylko pod nadzorem', () => {
+  assert.deepEqual(mdmDevice({ kind: 'iphone', supervised: false }),
+    { icon: 'phone', os: 'iOS', canRestart: false, restartHint: 'Restart wymaga nadzoru urządzenia' });
+  assert.equal(mdmDevice({ product: 'iPhone16,2' }).os, 'iOS');
+  const ipad = mdmDevice({ kind: 'ipad', product: 'iPad13,18', supervised: true });
+  assert.deepEqual(ipad, { icon: 'tablet', os: 'iPadOS', canRestart: true, restartHint: '' });
+  assert.equal(mdmDevice({ product: 'iPad13,18' }).icon, 'tablet');
+});
 
 test('stare os_update_failed z count 0 nie jest alarmem ani wpisem', () => {
   const stale = { kind: 'os_update_failed', detail: '{"count": 0}' };

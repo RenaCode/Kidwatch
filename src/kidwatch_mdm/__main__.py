@@ -149,6 +149,29 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_check_policy(args) -> int:
+    """Walidacja polityki na sucho — PRZED podmiana Sekretu i restartem."""
+    from . import policy as policy_mod
+
+    schema = policy_mod.load_schema(args.schema)
+    if schema is None:
+        print("UWAGA: bez --schema klucze nie sa sprawdzane ze schematem Apple")
+    try:
+        policy = policy_mod.load(args.file, schema)
+    except (policy_mod.PolicyError, ValueError, OSError) as exc:
+        print(f"BLAD — serwer NIE wystartuje z ta polityka:\n{exc}")
+        return 1
+    for label, errors in policy.rejected.items():
+        print(f"BLAD — wpis {label} pojdzie do kwarantanny (bez wlasnych ograniczen):")
+        for error in errors:
+            print(f"  {error}")
+    if policy.rejected:
+        return 1
+    kinds = ", ".join(f"{label}={d.kind}" for label, d in policy.devices.items())
+    print(f"polityka poprawna: {kinds or 'brak urzadzen'}")
+    return 0
+
+
 def cmd_init_ca(args) -> int:
     from .pki import CA
 
@@ -214,6 +237,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("run", help="serwer MDM (konfiguracja ze zmiennych srodowiska)")
     sp.set_defaults(func=cmd_run)
+
+    sp = sub.add_parser("check-policy", help="sprawdz polityke na sucho, przed restartem")
+    sp.add_argument("file", help="plik polityki YAML")
+    sp.add_argument("--schema", default=_env("KIDWATCH_MDM_SCHEMA"),
+                    help="indeks schematu Apple (domyslnie $KIDWATCH_MDM_SCHEMA)")
+    sp.set_defaults(func=cmd_check_policy)
 
     sp = sub.add_parser("init-ca", help="nowe CA tozsamosci urzadzen (raz na zawsze)")
     sp.add_argument("--dir", required=True)

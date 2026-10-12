@@ -32,6 +32,19 @@ export function isCriticalNote(note) {
   return note.kind === 'mdm' && (note.priority ?? 0) >= 4;
 }
 
+/* Karta urzadzenia MDM: ikona, nazwa systemu i czy restart ma sens.
+   `kind` podaje serwer od E5; starszy serwer - rozstrzyga ProductName.
+   RestartDevice wymaga nadzoru (schemat Apple) - bez niego iOS go odrzuca. */
+export function mdmDevice(d) {
+  const iphone = d.kind === 'iphone' || (!d.kind && String(d.product || '').startsWith('iPhone'));
+  return {
+    icon: iphone ? 'phone' : 'tablet',
+    os: iphone ? 'iOS' : 'iPadOS',
+    canRestart: d.supervised === true,
+    restartHint: d.supervised === true ? '' : 'Restart wymaga nadzoru urządzenia',
+  };
+}
+
 /* "40 min" / "3 h" / "2 d" - jak dlugo od chwili `iso`. */
 export function duration(iso, now = Date.now()) {
   const min = Math.max(0, Math.round((now - new Date(iso).getTime()) / 60000));
