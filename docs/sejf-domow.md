@@ -20,11 +20,22 @@ w całej dokumentacji to **zsh** (`read -rs 'ZMIENNA?pytanie'`); w bashu
 `read -rsp 'pytanie' ZMIENNA` — inaczej zmienna zostaje pusta, a `kp`
 kończy się błędem (kod 2), nie fałszywym potwierdzeniem.
 
+**Bloki wklejaj w całości do zsh.** Bloki nie mają komentarzy: w zsh bez
+`interactivecomments` (domyślnie) `#` w wklejonym tekście nie jest
+komentarzem, a polecenie w odwrotnych apostrofach w takim „komentarzu”
+zostałoby wykonane. Pierwszy blok i tak włącza tę opcję. Każdy blok jest
+w testach wklejany do interaktywnego zsh z atrapami `kubectl`/`pbcopy`
+(`tests/test_runbook_sejf.py`).
+
+Pierwszy blok definiuje `k` (polecenie w podzie) i `kp` (`klucze-potwierdz`
+z kluczem wklejonym z menedżera haseł na stdin — bez zapisu w historii
+powłoki). Kod wyjścia `kp` to kod `klucze-potwierdz` — od tego zależy
+`kp && …` niżej. `local K` sprawia, że klucz nie zostaje w powłoce po Ctrl-C
+i nie trafia do środowiska `kubectl`.
+
 ```sh
+setopt interactivecomments
 k() { kubectl -n default exec deploy/kidwatch -c kidwatch -- python -m kidwatch "$@"; }
-# klucz z menedżera haseł na stdin (bez zapisu w historii powłoki):
-# Kod wyjścia kp = kod klucze-potwierdz (od tego zależy `kp && …` w §7).
-# `local K`: klucz nie zostaje w powłoce po Ctrl-C i nie trafia do env kubectl.
 kp() { local K rc; read -rs 'K?KIDWATCH_KEK z menedżera haseł: '; echo
        printf '%s\n' "$K" | kubectl -n default exec -i deploy/kidwatch -c kidwatch -- \
          python -m kidwatch klucze-potwierdz; rc=$?; return $rc; }
@@ -54,11 +65,16 @@ i wolumen w pamięci `/run/kidwatch` na pliki z sekretami.
 
 ## 2. Klucz KEK (właściciel)
 
+Blok wrzuca nowy klucz do schowka (`pbcopy`; na Linuksie `xclip -sel clip`)
+i **czeka**: zapisz klucz w menedżerze haseł (wpis „Kidwatch KIDWATCH_KEK”),
+dopiero potem Enter. Wtedy schowek jest czyszczony — inaczej `kp` w pkt 3
+wkleiłby klucz ze schowka i „potwierdził” wpis, którego w menedżerze nie ma.
+Klucz trafia do Sekretu dopiero po zapisaniu w menedżerze.
+
 ```sh
 KEK=$(openssl rand -base64 32)
-printf '%s' "$KEK" | pbcopy     # do schowka -> menedżer haseł (macOS; Linux: xclip -sel clip)
-# ZAPISZ wpis w menedżerze haseł, potem WYCZYŚĆ schowek (niżej). Bez tego `kp`
-# wkleiłby klucz ze schowka i „potwierdził” wpis, którego w menedżerze nie ma.
+printf '%s' "$KEK" | pbcopy
+read -rs '?Zapisz klucz w menedżerze haseł, potem Enter: '; echo
 pbcopy </dev/null
 kubectl -n default patch secret kidwatch-secrets --type merge --patch-file /dev/stdin <<EOF
 {"stringData": {"KIDWATCH_KEK": "$KEK"}}
@@ -94,13 +110,20 @@ kubectl -n default exec deploy/kidwatch -c kidwatch -- \
    - na końcu „Porównanie: … identyczna”. Każda różnica (lista ścieżek pól,
      bez wartości) = **nic nie zapisano**, kod wyjścia 1.
 
-2. **Zapis** (to samo + przełączenie Domu 1 na `baza`):
+2. **Zapis** (to samo + przełączenie Domu 1 na `baza`). `domy --sprawdz`
+   ma pokazać „kluczy domow: 1, integracji: N” i „WYNIK: wszystko sie
+   odszyfrowuje”. `kp` (klucz wklejony z MENEDŻERA HASEŁ) musi dać
+   „POTWIERDZONO” — restart poda jest sklejony z nim przez `&&`:
 
    ```sh
    k dom-importuj 1 --zapisz
-   k domy --sprawdz          # „kluczy domow: 1, integracji: N” i „WYNIK: wszystko sie odszyfrowuje”
-   kp                        # klucz z MENEDŻERA HASEŁ otwiera bazę: „POTWIERDZONO”
-   kubectl -n default rollout restart deploy/kidwatch
+   k domy --sprawdz
+   kp && kubectl -n default rollout restart deploy/kidwatch
+   ```
+
+   Po restarcie:
+
+   ```sh
    kubectl -n default logs deploy/kidwatch -c kidwatch | grep "Dom 1: konfiguracja z bazy"
    ```
 
@@ -170,16 +193,19 @@ Uwagi:
 ## 5. Kopia i test odtworzenia
 
 Kopia `panel-auth.db` zawiera tylko szyfrogramy. Test odtworzenia (raz po
-imporcie i po każdej rotacji):
+imporcie i po każdej rotacji). Kopia z poda:
 
 ```sh
 kubectl -n default exec deploy/kidwatch -c kidwatch -- python -c \
   "import sqlite3; s=sqlite3.connect('/data/panel-auth.db'); d=sqlite3.connect('/tmp/kopia.db'); s.backup(d); d.close()"
 kubectl -n default cp -c kidwatch "$(kubectl -n default get pod -l app.kubernetes.io/name=kidwatch -o name | head -1 | cut -d/ -f2)":/tmp/kopia.db ./kopia-panel-auth.db
 kubectl -n default exec deploy/kidwatch -c kidwatch -- rm -f /tmp/kopia.db
+```
 
-# na swoim komputerze, w repozytorium:
-read -rs KIDWATCH_KEK && export KIDWATCH_KEK     # wklej z menedżera haseł
+Na swoim komputerze, w repozytorium — klucz wklejasz z menedżera haseł:
+
+```sh
+read -rs 'KIDWATCH_KEK?KIDWATCH_KEK z menedżera haseł: ' && export KIDWATCH_KEK; echo
 uv run kidwatch domy --baza ./kopia-panel-auth.db --sprawdz
 unset KIDWATCH_KEK; rm ./kopia-panel-auth.db
 ```
@@ -204,11 +230,14 @@ gdy poprzedni nie odpowiada). Klienci nie śledzą przekierowań; gdyby kiedyś
 tylko `api.nextdns.io`, `ntfy.sh` i `dozwolone_hosty`. Zmienia je wyłącznie
 administrator instancji:
 
+Stan, dodanie sieci (ściśle: adres sieci, nie hosta), usunięcie i własny
+host API (rzadko):
+
 ```sh
-k dom-sieci 1                                 # stan
-k dom-sieci 1 --dodaj 192.0.2.0/24            # ściśle: adres sieci, nie hosta
+k dom-sieci 1
+k dom-sieci 1 --dodaj 192.0.2.0/24
 k dom-sieci 1 --usun 192.0.2.0/24
-k dom-sieci 2 --host api.example.invalid      # własny host API (rzadko)
+k dom-sieci 2 --host api.example.invalid
 ```
 
 Działa po restarcie poda. Strażnik nie zastępuje NetworkPolicy (`wDomu`) —
@@ -224,13 +253,15 @@ Usunięcie klucza poprzedniego jest dlatego sklejone z `kp` w jednym
 poleceniu (krok 3). Krok 5 (stary wpis w menedżerze haseł) dzieje się poza
 Kidwatchem — tam warunek pilnujesz sam.
 
-1. Nowy klucz obok starego:
+1. Nowy klucz obok starego. Blok wrzuca NOWY klucz do schowka i **czeka**:
+   zapisz go w menedżerze haseł jako NOWY wpis (stary zostaje), potem Enter.
+   Wtedy schowek jest czyszczony — `kp` w kroku 3 ma dowieść, że klucz JEST
+   w menedżerze, a nie w schowku. Potem blok pyta o obecny klucz (z menedżera):
 
    ```sh
    NOWY=$(openssl rand -base64 32)
-   printf '%s' "$NOWY" | pbcopy                  # NOWY wpis w menedżerze haseł; stary zostaje
-   # Po zapisaniu wpisu: czyszczenie schowka, zanim cokolwiek wkleisz do `kp`
-   # (krok 3) — `kp` ma dowieść, że klucz JEST w menedżerze, a nie w schowku.
+   printf '%s' "$NOWY" | pbcopy
+   read -rs '?Zapisz NOWY klucz w menedżerze haseł, potem Enter: '; echo
    pbcopy </dev/null
    read -rs 'STARY?obecny KIDWATCH_KEK z menedżera haseł: '; echo
    kubectl -n default patch secret kidwatch-secrets --type merge --patch-file /dev/stdin <<EOF
@@ -242,8 +273,10 @@ Kidwatchem — tam warunek pilnujesz sam.
 
 2. Przepakowanie i sprawdzenie:
 
+   `klucze-rotuj` przepakowuje tylko klucze domów:
+
    ```sh
-   k klucze-rotuj                                # przepakowuje tylko klucze domów
+   k klucze-rotuj
    k domy --sprawdz
    ```
 
