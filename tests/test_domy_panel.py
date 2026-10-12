@@ -917,3 +917,33 @@ def test_dom_czlonek_ostrzega_przy_koncie_administracyjnym(tmp_path, capsys):
     assert main([*base, "dom-czlonek", "1", "konto-admin", "podglad"]) == 0
     err = capsys.readouterr().err
     assert "UWAGA" in err and "konto administracyjne" in err
+
+
+def test_sesja_z_hasla_konta_tylko_sso_jest_odrzucana(domy):
+    """Przeglad E3a (trzeci), U-4: sesja `haslo` konta w trybie tylko-SSO
+    (np. zalozona starym obrazem w czasie wycofania, ktory trybu nie zna)
+    nie moze dalej dzialac — 401, a nie tylko brak roli. Sesja z Authelii
+    z grupa `admins` dziala; zwykle konto bez zmian."""
+    from conftest import panel_login  # noqa: PLC0415
+
+    port = domy.server_address[1]
+    uid = domy.auth.user_id("admin")
+    # Sesje z hasla zalozone, zanim konto przeszlo w tryb tylko-SSO (tak
+    # jak w starym obrazie): ustawienie flagi bez wylogowania (bez CLI).
+    h_admin = {"Cookie": panel_login(port, "admin", HASLO)}
+    h_zwykle = {"Cookie": panel_login(port, "czlonek-a", HASLO)}
+    token = dict(x.split("=", 1) for x in h_admin["Cookie"].split("; "))["kidwatch_session"]
+    assert domy.auth.session(token) is not None
+    domy.rejestr.ustaw_admin_instancji(uid, True, tylko_sso=True)
+
+    assert domy.auth.session(token) is None
+    assert call(domy, "GET", "/api/auth/me", headers=h_admin)[0] == 401
+    # Zwykle konto: sesja z hasla dziala jak dotad.
+    assert call(domy, "GET", "/api/auth/me", headers=h_zwykle)[0] == 200
+    # Przez Authelie z grupa admins: rola administratora.
+    me = call(domy, "GET", "/api/auth/me", headers=sso(domy, "admin", "admins"))[2]
+    assert me["admin_instancji"] is True
+    # Konto w trybie zwyklym (1): sesja z hasla znowu wazna.
+    domy.rejestr.ustaw_admin_instancji(uid, True, tylko_sso=False)
+    h_admin = {"Cookie": panel_login(port, "admin", HASLO)}
+    assert call(domy, "GET", "/api/auth/me", headers=h_admin)[0] == 200
