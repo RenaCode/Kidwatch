@@ -401,6 +401,7 @@ python -m kidwatch user-uprawnienia <login> [+perm] [-perm] [=perm]  # per-accou
 python -m kidwatch user-reset <login> [--password-stdin]  # new password, unlock, log out everywhere
 python -m kidwatch user-reset <login> --totp              # remove 2FA (lost phone)
 python -m kidwatch user-del <login>
+python -m kidwatch user-login <login> <new> [--zapisz]  # rename in place (same id); dry run without --zapisz
 python -m kidwatch user-list
 python -m kidwatch konta-migruj [--przypisz N=login …] [--zapisz [--wlacz]]  # gateway recipients -> accounts
 python -m kidwatch konta-tryb [trasy|konta]               # show / switch notification mode
@@ -468,6 +469,29 @@ renacode-infra) in front of the panel **and** the same switch sets
   `[a-z0-9._-]`. No accounts are created on the fly — an unknown login gets
   403 with a readable message and an "SSO log out" button. A new person needs
   two steps: an Authelia account and `user-add` with the same login.
+  An existing account whose login differs from Authelia (e.g. before SSO is
+  switched on): `user-login <old> <new>` renames it in place — password,
+  2FA, household memberships, roles, admin flag, notification channels and
+  history stay (same account id); every place that stores the login as text
+  (audit, request queues, outbox, per-account dedup, notification history)
+  is rewritten in the same run, sessions are closed. Dry run by default.
+  Procedure: (1) run without `--zapisz` and check the line
+  `dom N: outbox.odbiorca` — notifications waiting for this account; best
+  done when it is 0 (they are not lost either way: the running process
+  reloads accounts before dropping a queue it no longer recognises);
+  (2) run with `--zapisz` — **no pod restart needed**, the panel and the
+  notification queue read accounts from the database on every request;
+  (3) `user-list`: failed password attempts already recorded for the NEW
+  login are merged into the account (the stricter lock wins) — if it shows
+  as locked, `user-reset`; (4) running the same command again is safe and
+  finishes anything left after an interrupted run (the old account no
+  longer exists, the new one does AND the audit log has the `konto.login`
+  "old -> new" entry newer than the new account → only the text traces are
+  rewritten; `--dokoncz` forces this). Without that proof — e.g. the old
+  account was deleted and the new login belongs to someone else — it
+  refuses, even with `--dokoncz`, so a deleted person's traces never land
+  on another account. With SSO the Authelia login is the target —
+  change only Kidwatch, never the Authelia account, to match.
 - `Remote-Groups` must contain `wlasciciel`, `rodzina` or `admins` (chart
   `sso.grupy` → `SSO_GRUPY`; must match the Authelia rule for this host).
   Groups only gate entry; what an account may do comes from its household
@@ -900,7 +924,7 @@ restart needed. It is the only reliable way to get good game coverage.
 | `tv-pauza` | TV monitoring pause (see above) |
 | `unifi [--fingerprint]` | who is on home Wi-Fi per UniFi; `--fingerprint` prints the controller's SHA-256 certificate fingerprint for `unifi.cert_sha256` |
 | `device`, `device-watch` | one-off / looping read of iPad state over lockdown (`device_read`, requires pairing and the same LAN) |
-| `user-add`, `user-reset`, `user-del`, `user-list`, `user-rola`, `user-uprawnienia` | panel accounts, roles and permissions |
+| `user-add`, `user-reset`, `user-del`, `user-login`, `user-list`, `user-rola`, `user-uprawnienia` | panel accounts, roles and permissions |
 | `domy [--sprawdz] [--baza <copy>]` | households in `panel-auth.db` and their members (runs the idempotent migration to "Dom 1"; see `docs/architektura-domy.md`); `--sprawdz` decrypts every integration with `KIDWATCH_KEK` and prints how many keys/integrations it verified — zero is a failure (backup restore test) |
 | `dom-importuj 1 --podglad\|--zapisz` | move Dom 1 from `config.yaml` + env secrets into the encrypted database, after a field-by-field comparison (`docs/sejf-domow.md`) |
 | `dom-zrodlo <dom> yaml\|baza` | where a household takes its configuration from (rollback: `dom-zrodlo 1 yaml`) |

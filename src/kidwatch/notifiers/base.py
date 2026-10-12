@@ -269,6 +269,8 @@ class Outbox:
         #: bazy domu na wypadek wspolnego kodu, ktory zgubi kontekst.
         self.dom_id = dom_id
         self._tryb_log: str | None = None
+        #: Profile odswiezone w biezacym flushu (_odswiez_profile, raz na flush).
+        self._profile_odswiezone = False
 
     @property
     def notifiers(self) -> list[Notifier]:
@@ -375,6 +377,7 @@ class Outbox:
         W kazdej kolejce konczy na pierwszym wpisie, ktory nie wyszedl albo
         czeka na swoja kolej (`next_at`) — kolejne tego odbiorcy stoja za nim.
         """
+        self._profile_odswiezone = False
         profile = await self._rozdziel()
         if profile is None:
             # Dom bez trybu tras i bez wysylki per konto: nic nie wychodzi,
@@ -396,13 +399,34 @@ class Outbox:
                 log.error("kolejka: TRYB TRAS - %d wpisow kont zwinietych do tras", n)
         done = 0
         lost: list[OutboxItem] = []
+        profile = dict(profile)
         for queue in self.store.outbox_queues():
             done += await self._flush_queue(queue, profile, lost)
         self._alarm_lost(lost)
         return done
 
+    async def _odswiez_profile(self, profile: dict[str, Profil]) -> bool:
+        """Profile kont od nowa, najwyzej raz na flush. Kolejka konta, ktorego
+        nie ma w slowniku z poczatku flusha, nie musi znaczyc usunietego
+        konta: `kidwatch user-login` mogl w miedzyczasie zmienic jego login
+        (w bazie kont i w `outbox.odbiorca`). Bez odswiezenia wpis zostalby
+        po cichu porzucony. Zwraca, czy slownik odswiezono."""
+        if self._profile_odswiezone or self.konta is None:
+            return False
+        self._profile_odswiezone = True
+        try:
+            nowe = await self.profile_kont()
+        except Exception:
+            log.exception("kolejka: nie odswiezylem kont")
+            return False
+        if not isinstance(nowe, list):
+            return False
+        profile.clear()
+        profile.update({p.login: p for p in nowe})
+        return True
+
     async def _flush_queue(
-        self, queue: str, profile: Mapping[str, Profil], lost: list[OutboxItem]
+        self, queue: str, profile: dict[str, Profil], lost: list[OutboxItem]
     ) -> int:
         done = 0
         merge = queue != "*"
@@ -422,6 +446,8 @@ class Outbox:
                 cel = ""
             elif queue != "*":
                 cel = profile.get(queue)
+                if cel is None and await self._odswiez_profile(profile):
+                    cel = profile.get(queue)
                 if cel is None or not nadal_chce(cel, item.note):
                     # Od chwili rozdzialu konto usunieto, stracilo kanal albo
                     # prawo do tej kategorii, albo je wylaczylo.
