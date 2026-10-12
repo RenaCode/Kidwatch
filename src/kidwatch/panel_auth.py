@@ -242,6 +242,9 @@ class Session:
     #: Flaga `users.admin_instancji` z bazy. Sama niczego nie otwiera —
     #: panel wymaga jeszcze grupy `admins` (SSO) albo TOTP (panel_domy.py).
     admin_instancji: bool = False
+    #: Administrator tylko przez Authelie (domy.ADMIN_TYLKO_SSO): sesja
+    #: z hasla nie daje roli nawet z TOTP.
+    admin_tylko_sso: bool = False
     #: Czy konto ma wlaczony TOTP (warunek roli administratora przy hasle).
     totp: bool = False
 
@@ -750,6 +753,12 @@ class PanelAuth:
             # po trafionym hasle: kogos, kto hasla nie zna, i tak zatrzymuje
             # licznik per adres, a samo haslo nic tu nie zdradza.
             self._check_lock(row, now)
+            if domy.tryb_admina(conn, row["id"]) == domy.ADMIN_TYLKO_SSO:
+                # Konto administracyjne „tylko przez Authelie” (przeglad E3a,
+                # B-2): haslo panelu nie otwiera nawet sesji. Po trafionym
+                # hasle — odpowiedz nie zdradza, ze konto takie jest.
+                log.warning("panel: logowanie haslem na konto tylko-SSO %r", row["login"])
+                raise AuthError(403, "To konto loguje się wyłącznie przez Authelię (SSO).")
             if rehash:
                 conn.execute(
                     "UPDATE users SET password_hash = ? WHERE id = ?", (rehash, row["id"])
@@ -1186,6 +1195,7 @@ class PanelAuth:
             rola=rola,
             uprawnienia=self._uprawnienia(conn, row["user_id"], rola),
             admin_instancji=domy.admin_instancji(conn, row["user_id"]),
+            admin_tylko_sso=domy.tryb_admina(conn, row["user_id"]) == domy.ADMIN_TYLKO_SSO,
             totp=bool(u["totp"]),
         )
         conn.execute(
@@ -1244,6 +1254,7 @@ class PanelAuth:
                 return None
             upr = self._uprawnienia(conn, row["id"], row["rola"])
             admin = domy.admin_instancji(conn, row["id"])
+            tylko_sso = domy.tryb_admina(conn, row["id"]) == domy.ADMIN_TYLKO_SSO
         return Session(
             login=row["login"],
             user_id=row["id"],
@@ -1254,6 +1265,7 @@ class PanelAuth:
             rola=row["rola"],
             uprawnienia=upr,
             admin_instancji=admin,
+            admin_tylko_sso=tylko_sso,
             totp=bool(row["totp"]),
         )
 

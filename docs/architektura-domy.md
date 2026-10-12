@@ -803,9 +803,12 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
   - **Administrator**: aktywny przy fladze + (`admins` w `Remote-Groups`
     przy żądaniu przez Authelię | TOTP przy haśle). `user-admin on` zawsze
     wypisuje konto ze wszystkich domów (odmowa, gdy to ostatni zarządzający)
-    i wymaga już włączonego 2FA panelu (`--tylko-sso` dla konta tylko przez
-    Authelię) — kto zna samo hasło, nie przejmie konta, włączając 2FA przed
-    właścicielem (przegląd E3a, U-1, U-3). Audyt: `admin.wglad` raz na sesję i dom na 15 min,
+    i wymaga już włączonego 2FA panelu — kto zna samo hasło, nie przejmie
+    konta, włączając 2FA przed właścicielem (przegląd E3a, U-1, U-3).
+    `--tylko-sso` zapisuje `users.admin_instancji = 2`: rola wyłącznie przez
+    Authelię z `admins`, logowanie hasłem panelu na to konto odrzucone
+    (przegląd E3a, B-2). Obraz sprzed E3a czyta kolumnę jako prawdę/fałsz
+    i roli administratora nie zna. Audyt: `admin.wglad` raz na sesję i dom na 15 min,
     `admin.<trasa>` każdego POST-a, przed wykonaniem; błąd zapisu = 503.
   - **Powiadomienia**: kanały osoby w `user_powiadomienia`, preferencje
     w `czlonkostwa_powiadomienia (dom_id, user_id)`, tryb `tryb:<dom>`

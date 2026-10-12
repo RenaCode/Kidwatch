@@ -1644,12 +1644,16 @@ async def cmd_user_admin(args) -> int:
                 print(f"odrzucone: {exc}", file=sys.stderr)
                 return 1
             print(f"wypisano z domu {c.dom_id} (byla rola: {c.rola})")
-    zmiana = rejestr.ustaw_admin_instancji(uid, wlacz)
+    zmiana = rejestr.ustaw_admin_instancji(uid, wlacz, tylko_sso=wlacz and args.tylko_sso)
     n = auth.revoke_sessions(args.login)
     print(f"konto {args.login!r}: administrator instalacji "
           f"{'TAK' if wlacz else 'nie'}{'' if zmiana else ' (bez zmian)'}, "
           f"wylogowano sesji: {n}")
-    if wlacz:
+    if wlacz and args.tylko_sso:
+        print("Rola dziala WYLACZNIE przy logowaniu przez Authelie z grupa 'admins'; "
+              "logowanie haslem panelu na to konto jest zablokowane. Kazde wejscie do "
+              "cudzego domu trafia do dziennika.")
+    elif wlacz:
         print("Rola dziala tylko przy logowaniu przez Authelie z grupa 'admins' "
               "albo haslem z wlaczonym 2FA. Kazde wejscie do cudzego domu trafia do dziennika.")
     return 0
@@ -1890,8 +1894,8 @@ def build_parser() -> argparse.ArgumentParser:
     user_admin.add_argument("login")
     user_admin.add_argument("stan", choices=("on", "off"))
     user_admin.add_argument("--tylko-sso", action="store_true",
-                            help="bez 2FA panelu: konto loguje sie wylacznie przez Authelie "
-                            "(grupa admins); haslem panelu nie dostanie roli")
+                            help="konto loguje sie wylacznie przez Authelie (grupa admins), "
+                            "bez 2FA panelu; logowanie haslem panelu zablokowane")
     dom_dodaj = sub.add_parser("dom-dodaj", help="zaloz nowy dom (bez czlonkow, pusta baza)")
     dom_dodaj.add_argument("nazwa")
     dom_dodaj.add_argument("--strefa", help="strefa czasowa (domyslnie jak w config.yaml)")

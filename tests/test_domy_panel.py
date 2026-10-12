@@ -780,6 +780,8 @@ def test_run_panel_domu_1_z_bazy_pokazuje_ten_sam_dom(tmp_path, monkeypatch, zro
     data["panel"] = {"enabled": True, "port": 0, "host": "127.0.0.1",
                      "static_dir": str(tmp_path / "web"), "cookie_secure": False}
     data["game_time"] = {"enabled": True}
+    data["tv"] = {"enabled": True, "name": "TV wspolny", "host": "192.0.2.20",
+                  "adb_key_dir": str(tmp_path / "adb")}
     cfg_path = _zapisz_konfig(tmp_path, data)
     PanelAuth(Config.load(cfg_path).panel_auth_path).add_user("konto-a", HASLO)
     if zrodlo == "baza":
@@ -787,6 +789,9 @@ def test_run_panel_domu_1_z_bazy_pokazuje_ten_sam_dom(tmp_path, monkeypatch, zro
         assert dm.RejestrDomow(Config.load(cfg_path).panel_auth_path).dom(
             DOM_A).zrodlo_konfiguracji == "baza"
     monkeypatch.setattr(cli, "build_source", lambda cfg, store: Puste())
+    # Bez sieci: czujnika TV nie budujemy (laczylby sie z telewizorem); kolejka
+    # pauzy TV w panelu zalezy od `tv.enabled` konfiguracji domu, nie od niego.
+    monkeypatch.setattr(cli, "build_tv_watcher", lambda *a, **kw: None)
     widziane = {}
     prawdziwy = panel_mod.start_panel
 
@@ -799,13 +804,19 @@ def test_run_panel_domu_1_z_bazy_pokazuje_ten_sam_dom(tmp_path, monkeypatch, zro
         widziane["game"] = call(srv, "POST", f"/api/domy/{DOM_A}/game",
                                 {"child": "Kuba", "action": "block"}, h)[0]
         widziane["day"] = call(srv, "GET", f"/api/domy/{DOM_A}/day", headers=h)[2]
+        widziane["tv"] = call(srv, "GET", f"/api/domy/{DOM_A}/tv/pause", headers=h)[2]
+        widziane["pauza"] = call(srv, "POST", f"/api/domy/{DOM_A}/tv/pause",
+                                 {"until": None}, h)[0]
         return srv
 
     monkeypatch.setattr(panel_mod, "start_panel", start_i_odpytaj)
     assert main(["--config", str(cfg_path), "run"]) == 1  # koniec atrapy zrodla
     assert widziane["meta"]["children"] == ["Kuba", "Zosia"], widziane
-    assert [d["name"] for d in widziane["day"]["devices"]] == ["iPad Kuby", "iPad Zosi"]
+    assert [d["name"] for d in widziane["day"]["devices"]] == ["iPad Kuby", "iPad Zosi",
+                                                              "TV wspolny"]
     assert widziane["game"] == 202  # czas gry wlaczony w Domu 1, dziecko znane
+    assert widziane["tv"]["available"] is True and widziane["tv"]["name"] == "TV wspolny"
+    assert widziane["pauza"] == 202  # pauza TV Domu 1 trafia do kolejki
 
 
 def test_blad_zapisu_dziennika_to_503_i_brak_zmiany(domy, monkeypatch):
@@ -832,3 +843,77 @@ def test_blad_zapisu_dziennika_to_503_i_brak_zmiany(domy, monkeypatch):
     assert call(domy, "GET", f"/api/domy/{DOM_B}/day", headers=h)[0] == 200
     assert call(domy, "POST", f"/api/domy/{DOM_B}/konta/dodaj",
                 {"login": "nowe-konto", "rola": "podglad", "confirm": HASLO}, h)[0] == 200
+
+
+def test_admin_tylko_sso_nie_dostaje_roli_haslem_nawet_z_2FA(tmp_path, monkeypatch, capsys):
+    """Przeglad E3a, B-2: `user-admin on --tylko-sso` przy wylaczonym SSO
+    (produkcja): kto zna haslo, logowal sie, wlaczal 2FA na ekranie „Brak
+    domu” i zostawal administratorem wszystkich domow. Teraz tryb jest
+    zapisany w bazie: haslo panelu nie otwiera temu kontu nawet sesji, a
+    sesja z hasla (np. sprzed nadania) i tak nie daje roli."""
+    from conftest import panel_login  # noqa: PLC0415
+    from kidwatch.panel_auth import AuthError, Session  # noqa: PLC0415
+    from kidwatch.panel_domy import admin_aktywny  # noqa: PLC0415
+    from test_panel_auth import CONFIG  # noqa: PLC0415
+
+    monkeypatch.delenv("SSO_NAGLOWKI", raising=False)
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(CONFIG, encoding="utf-8")
+    base = ["--config", str(cfg_path)]
+    monkeypatch.setattr("sys.stdin", io.StringIO(HASLO + "\n"))
+    assert main([*base, "user-add", "konto-admin", "--bez-domu", "--password-stdin"]) == 0
+    path = tmp_path / "panel-auth.db"
+    auth = PanelAuth(path, box=box_from_env())
+    # Sesja hasla otwarta PRZED nadaniem (user-admin ja zamyka, ale gdyby...).
+    przed = auth.login("konto-admin", HASLO).session
+    secret = auth.totp_setup(przed)["secret"]
+    auth.totp_confirm(przed, pyotp.TOTP(secret).now())
+    assert main([*base, "user-admin", "konto-admin", "on", "--tylko-sso"]) == 0
+    assert "WYLACZNIE" in capsys.readouterr().out
+    uid = auth.user_id("konto-admin")
+    assert dm.RejestrDomow(path).admin_instancji(uid)
+    # 1) Haslo (i kod) nie otwiera sesji.
+    with pytest.raises(AuthError) as e:
+        auth.login("konto-admin", HASLO)
+    assert e.value.status == 403 and "Authelię" in e.value.message
+    # 2) Sesja z hasla z TOTP — gdyby jakas przetrwala — roli nie daje.
+    with sqlite3.connect(path) as conn:
+        assert dm.tryb_admina(conn, uid) == dm.ADMIN_TYLKO_SSO
+    s = Session("konto-admin", uid, "t", "c", 0, kind="haslo", admin_instancji=True,
+                admin_tylko_sso=True, totp=True)
+    assert not admin_aktywny(s, None)
+    assert admin_aktywny(s, ("admins",))  # przez Authelie z grupa — tak
+    assert not admin_aktywny(s, ("wlasciciel",))
+    # 3) Przez HTTP przy wylaczonym SSO: logowanie haslem odrzucone.
+    cfg = Config.load(cfg_path)
+    cfg.panel.port = 0
+    cfg.panel.static_dir = str(tmp_path)
+    srv = start_panel(cfg)
+    try:
+        with pytest.raises(AssertionError):
+            panel_login(srv.server_address[1], "konto-admin", HASLO, secret)
+    finally:
+        srv.shutdown()
+    # Kontrola: zwykly tryb (bez --tylko-sso) z TOTP przechodzi haslem.
+    assert main([*base, "user-admin", "konto-admin", "on"]) == 0
+    s = auth.login("konto-admin", HASLO)
+    assert s.mfa_required
+
+
+def test_dom_czlonek_ostrzega_przy_koncie_administracyjnym(tmp_path, capsys):
+    from test_panel_auth import CONFIG  # noqa: PLC0415
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(CONFIG, encoding="utf-8")
+    base = ["--config", str(cfg_path)]
+    path = tmp_path / "panel-auth.db"
+    auth = PanelAuth(path)
+    auth.add_user("konto-admin", HASLO, dom_id=None)
+    auth.add_user("konto-zwykle", HASLO, dom_id=None)
+    dm.RejestrDomow(path).ustaw_admin_instancji(auth.user_id("konto-admin"), True)
+    capsys.readouterr()
+    assert main([*base, "dom-czlonek", "1", "konto-zwykle", "podglad"]) == 0
+    assert "UWAGA" not in capsys.readouterr().err
+    assert main([*base, "dom-czlonek", "1", "konto-admin", "podglad"]) == 0
+    err = capsys.readouterr().err
+    assert "UWAGA" in err and "konto administracyjne" in err

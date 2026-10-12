@@ -464,20 +464,44 @@ def admin_instancji(conn: sqlite3.Connection, user_id: int) -> bool:
 #: Nazwa z E1, zostawiona dla zgodnosci.
 _admin_instancji = admin_instancji
 
+#: Wartosci `users.admin_instancji`: 0 — nie; 1 — administrator (przez
+#: Authelie z grupa `admins` albo haslem z TOTP); 2 — administrator TYLKO
+#: przez Authelie: sesja z hasla nigdy nie daje roli, nawet z TOTP (przeglad
+#: E3a, B-2). Obraz sprzed E3a czyta kolumne jako prawde/falsz i roli
+#: administratora nie zna — 2 nic w nim nie otwiera.
+ADMIN = 1
+ADMIN_TYLKO_SSO = 2
+
+
+def tryb_admina(conn: sqlite3.Connection, user_id: int) -> int:
+    """0, ADMIN albo ADMIN_TYLKO_SSO. Nieznana wartosc (reczna edycja) =
+    ADMIN_TYLKO_SSO: wezsza droga, nie szersza."""
+    try:
+        row = conn.execute("SELECT admin_instancji FROM users WHERE id = ?",
+                           (user_id,)).fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    if not row or not row[0]:
+        return 0
+    return ADMIN if row[0] == ADMIN else ADMIN_TYLKO_SSO
+
 
 def ustaw_admin_instancji_conn(conn: sqlite3.Connection, user_id: int, wlaczona: bool,
-                               teraz: float | None = None) -> bool:
-    """Flaga `admin_instancji` (tylko CLI `user-admin`). Zwraca, czy sie
-    zmienila; zmiana idzie do `audyt` jako zdarzenie instancji."""
+                               teraz: float | None = None, *, tylko_sso: bool = False) -> bool:
+    """Flaga `admin_instancji` (tylko CLI `user-admin`); `tylko_sso` —
+    rola wylacznie przez Authelie. Zwraca, czy sie zmienila; zmiana idzie do
+    `audyt` jako zdarzenie instancji."""
     row = conn.execute("SELECT login, admin_instancji FROM users WHERE id = ?",
                        (user_id,)).fetchone()
     if row is None:
         raise LookupError(f"nie ma konta {user_id}")
-    if bool(row[1]) == wlaczona:
+    nowa = (ADMIN_TYLKO_SSO if tylko_sso else ADMIN) if wlaczona else 0
+    if tryb_admina(conn, user_id) == nowa:
         return False
-    conn.execute("UPDATE users SET admin_instancji = ? WHERE id = ?", (int(wlaczona), user_id))
+    conn.execute("UPDATE users SET admin_instancji = ? WHERE id = ?", (nowa, user_id))
+    opis = {0: "odebrany", ADMIN: "nadany", ADMIN_TYLKO_SSO: "nadany (tylko przez Authelie)"}
     zapisz_audyt(conn, None, row[0], "instancja.admin",
-                 "administrator instalacji: " + ("nadany" if wlaczona else "odebrany"), teraz)
+                 f"administrator instalacji: {opis[nowa]}", teraz)
     return True
 
 
@@ -1038,8 +1062,10 @@ class RejestrDomow:
         with self._conn() as conn:
             return admin_instancji(conn, user_id)
 
-    def ustaw_admin_instancji(self, user_id: int, wlaczona: bool) -> bool:
-        return self._w_transakcji(ustaw_admin_instancji_conn, user_id, wlaczona)
+    def ustaw_admin_instancji(self, user_id: int, wlaczona: bool, *,
+                              tylko_sso: bool = False) -> bool:
+        return self._w_transakcji(ustaw_admin_instancji_conn, user_id, wlaczona,
+                                  tylko_sso=tylko_sso)
 
     def zapisz_audyt(self, dom_id: int | None, login: str | None, akcja: str, opis: str) -> None:
         with self._conn() as conn:

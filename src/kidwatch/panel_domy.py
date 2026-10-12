@@ -111,7 +111,9 @@ def admin_aktywny(session: Session, grupy: tuple[str, ...] | None) -> bool:
         return False
     if grupy is not None:
         return GRUPA_ADMINOW in grupy
-    return session.kind == "haslo" and session.totp
+    # Konto „tylko przez Authelie”: sesja z hasla nie daje roli NIGDY —
+    # inaczej kto zna haslo, wlaczylby 2FA sam i zostal administratorem.
+    return session.kind == "haslo" and session.totp and not session.admin_tylko_sso
 
 
 def uprawnienia_sesji(session: Session, admin: bool) -> frozenset[str]:

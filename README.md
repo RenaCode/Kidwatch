@@ -421,7 +421,9 @@ The **installation administrator** is a separate account (Authelia group
 `admins`), not the owner's private account: `user-add <login> --bez-domu`,
 log in with that password **right away** and enable panel 2FA on the "Brak
 domu" screen, then `user-admin <login> on` — it refuses an account without
-2FA (`--tylko-sso` for an account that only ever logs in through Authelia)
+2FA (`--tylko-sso` for an account that only ever logs in through Authelia:
+the mode is stored in the database, password login to that account is
+refused and a password session never carries the role, even with 2FA)
 and always removes the account from all households, so it gets no household
 notifications. It sees every household, but only when the flag is
 set in the panel database **and** the request comes through Authelia with
