@@ -59,9 +59,39 @@ KOMUNIKAT_BLOKADY = "Blokada od rodzica (Kidwatch)"
 IOS = ("ipad", "iphone")
 #: Jak dlugo bot czeka na wynik zadania czasu gry (petla gry co ~3 s).
 CZEKAJ_NA_GRE = 20.0
-#: Alarm o padnietym LLM: od razu, potem co 1 h, 2 h, 4 h... najwyzej co dobe.
+#: Alarm o padnietym LLM: od razu, potem co 1 h, 2 h, 4 h... najwyzej co dobe
+#: — osobno dla kazdej PRZYCZYNY (429, limit, konkretna awaria).
 ALARM_PIERWSZY_ODSTEP = 3600.0
 ALARM_MAX_ODSTEP = 24 * 3600.0
+#: Wspolny bezpiecznik: najwyzej jeden alarm o LLM na tyle sekund.
+ALARM_BEZPIECZNIK = 300.0
+
+
+#: Klasy awarii LLM (klucz odstepu alarmu): migajaca awaria serwera (500,
+#: 503, timeout, polaczenie na zmiane) to JEDNA przyczyna, a niewazny klucz
+#: albo zle zapytanie to inna — ta alarmuje od razu. Kolejnosc = waga.
+KLASY_AWARII = ("klucz", "zapytanie", "serwer")
+
+
+def klasa_awarii(bledy: Sequence[str]) -> str:
+    """"awaria:klucz" (401/403), "awaria:zapytanie" (inne 4xx), "awaria:serwer"
+    (5xx, timeout, polaczenie, nieczytelna odpowiedz). Wpisy 429 i przerwy po
+    nim pomijane — maja wlasny alarm. Kilka klas naraz: najpowazniejsza."""
+    import re  # noqa: PLC0415
+
+    klasy = set()
+    for b in bledy:
+        if "429" in b:
+            continue
+        m = re.search(r"HTTP (\d{3})", b)
+        kod = int(m[1]) if m else None
+        if kod in (401, 403):
+            klasy.add("klucz")
+        elif kod is not None and 400 <= kod < 500:
+            klasy.add("zapytanie")
+        else:
+            klasy.add("serwer")
+    return "awaria:" + next((k_ for k_ in KLASY_AWARII if k_ in klasy), "serwer")
 
 
 # ================================================================= dom
@@ -224,9 +254,13 @@ class BotKomend:
         self.alarm = alarm
         self.clock = clock
         self.sleep = sleep
-        self._alarm_llm: tuple[float, float] | None = None
+        #: przyczyna -> (kiedy nastepny alarm, odstep). Zmiana przyczyny (np.
+        #: po godzinach 429 klucz nagle niewazny: 403) alarmuje od razu.
+        self._alarm_llm: dict[str, tuple[float, float]] = {}
+        self._alarm_llm_ostatni: float | None = None
         #: Pierwsze CHWILOWO (429) bez pozniejszego sukcesu; zeruje `_alarm_llm_ok`.
         self._chwilowo_od: float | None = None
+        self._chwilowo_ostatnie: float | None = None
         self._gotowy_log: bool | None = None
         #: obcy numer -> ostatni wpis w dzienniku (w pamieci: limit wierszy).
         self._obcy: dict[str, float] = {}
@@ -483,9 +517,12 @@ class BotKomend:
 
     def _adresaci_kopii(self, dom: DomKomend, login: str) -> list:
         """Kopia idzie do WSZYSTKICH pozostalych czlonkow domu z kanalem
-        powiadomien — takze w roli podgladu (typowo drugi rodzic) i niezaleznie
+        powiadomien i prawem podgladu — takze w roli podgladu (typowo drugi rodzic) i niezaleznie
         od ich ciszy, kategorii i `aktywne` (decyzja 2026-10-12)."""
-        return [p for p in self.profile(dom.dom_id) if p.login != login and p.ma_kanal]
+        # Bez `podglad.historia` konto nie widzi w panelu dzieci ani urzadzen —
+        # kopia z imieniem dziecka i wynikiem tez nie jest dla niego.
+        return [p for p in self.profile(dom.dom_id)
+                if p.login != login and p.ma_kanal and upr.PODGLAD in p.uprawnienia]
 
     def _sprawdz(self, dom: DomKomend, uprawnienia: frozenset[str], km: k.Komenda,
                  llm: bool, login: str) -> list[DeviceConfig]:
@@ -760,6 +797,7 @@ class BotKomend:
     # -------------------------------------------------------- alarm LLM
     async def _alarm_llm_awaria(self, bledy: Sequence[str]) -> None:
         await self._alarm_llm_z_odstepem(
+            klasa_awarii(bledy),
             "Kidwatch: komendy z WhatsAppa bez LLM",
             "Żaden dostawca LLM nie odpowiada (" + "; ".join(bledy) + "). Dokładne "
             "komendy działają; wolny tekst dostaje prośbę o dokładną komendę. "
@@ -770,12 +808,18 @@ class BotKomend:
         """Ciagle 429 bez sukcesu: po progu alarm z rosnacym odstepem (ta sama
         klasa bledu co Gemini 429 tygodniami u tradera)."""
         teraz = self.clock()
-        if self._chwilowo_od is None:
+        prog = self.llm.cfg.alarm_429_po_godzinach * 3600
+        # Dwa odlegle, pojedyncze 429 (bez wywolan pomiedzy) to nie "429 od
+        # X h" — po przerwie dluzszej niz prog liczymy od nowa.
+        if (self._chwilowo_od is None or self._chwilowo_ostatnie is None
+                or teraz - self._chwilowo_ostatnie > prog):
             self._chwilowo_od = teraz
+        self._chwilowo_ostatnie = teraz
         godziny = (teraz - self._chwilowo_od) / 3600
-        if godziny < self.llm.cfg.alarm_429_po_godzinach:
+        if godziny * 3600 < prog:
             return
         await self._alarm_llm_z_odstepem(
+            "429",
             "Kidwatch: Gemini odpowiada 429",
             f"Gemini odpowiada 429 od {godziny:.0f} h — klucz wspólny z Traderem i "
             "Dietetykiem. Swobodny tekst nie działa, dokładne komendy działają. "
@@ -792,20 +836,27 @@ class BotKomend:
         if wczoraj < limit:
             return
         await self._alarm_llm_z_odstepem(
+            "limit",
             "Kidwatch: limit wywołań LLM wyczerpany kolejną dobę",
             f"Komendy z WhatsAppa zużyły dzienny limit {limit} wywołań LLM wczoraj i dziś. "
             "Swobodny tekst nie działa do końca doby, dokładne komendy działają. Sprawdź "
             "dziennik komend (spam?) albo podnieś llm.wywolan_na_dobe.")
 
-    async def _alarm_llm_z_odstepem(self, tytul: str, tresc: str) -> None:
-        """Wspolny rosnacy odstep alarmow o LLM: od razu, potem 1 h, 2 h, 4 h...
-        najwyzej co dobe; zeruje go pierwsze udane wywolanie."""
+    async def _alarm_llm_z_odstepem(self, przyczyna: str, tytul: str, tresc: str) -> None:
+        """Rosnacy odstep alarmow o LLM PER PRZYCZYNA: od razu, potem 1 h,
+        2 h, 4 h... najwyzej co dobe; nowa przyczyna alarmuje od razu (z
+        bezpiecznikiem: jeden alarm o LLM na 5 min). Zeruje pierwszy sukces."""
         teraz = self.clock()
-        if self._alarm_llm is not None and teraz < self._alarm_llm[0]:
+        stan = self._alarm_llm.get(przyczyna)
+        if stan is not None and teraz < stan[0]:
             return
-        odstep = ALARM_PIERWSZY_ODSTEP if self._alarm_llm is None else \
-            min(self._alarm_llm[1] * 2, ALARM_MAX_ODSTEP)
-        self._alarm_llm = (teraz + odstep, odstep)
+        if (self._alarm_llm_ostatni is not None
+                and teraz - self._alarm_llm_ostatni < ALARM_BEZPIECZNIK):
+            return
+        odstep = ALARM_PIERWSZY_ODSTEP if stan is None else \
+            min(stan[1] * 2, ALARM_MAX_ODSTEP)
+        self._alarm_llm[przyczyna] = (teraz + odstep, odstep)
+        self._alarm_llm_ostatni = teraz
         log.error("komendy: %s — %s", tytul, tresc)
         if self.alarm is None:
             return
@@ -815,10 +866,10 @@ class BotKomend:
             log.exception("komendy: alarm o LLM nie wyszedl")
 
     def _alarm_llm_ok(self) -> None:
-        self._chwilowo_od = None
-        if self._alarm_llm is not None:
+        self._chwilowo_od = self._chwilowo_ostatnie = None
+        if self._alarm_llm:
             log.info("komendy: LLM znowu odpowiada")
-            self._alarm_llm = None
+            self._alarm_llm = {}
 
 
 async def petla_komend(bot: BotKomend, poll_seconds: float, sleep=asyncio.sleep,
