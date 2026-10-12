@@ -1,5 +1,5 @@
 {
- "_pobrano": "2026-10-09",
+ "_pobrano": "2026-10-11",
  "_uwaga": "Plik GENEROWANY przez tools/fetch_apple_schema.py. Nie edytuj recznie — to kopia specyfikacji Apple, a nie nasza konfiguracja.",
  "_zrodlo": "https://github.com/apple/device-management @ release",
  "commands": {
@@ -1180,6 +1180,9 @@
      "type": "array"
     },
     "ProhibitDisablement": {
+     "allowed_enrollments_ios": [
+      "supervised"
+     ],
      "introduced_ios": null,
      "presence": "optional",
      "supervised_ios": null,
@@ -1259,6 +1262,9 @@
      "type": "boolean"
     },
     "AutomaticActions": {
+     "allowed_enrollments_ios": [
+      "supervised"
+     ],
      "introduced_ios": null,
      "presence": "optional",
      "subkeys": {
@@ -1345,6 +1351,9 @@
         "AlwaysOn",
         "AlwaysOff"
        ],
+       "allowed_enrollments_ios": [
+        "supervised"
+       ],
        "introduced_ios": null,
        "presence": "optional",
        "supervised_ios": null,
@@ -1352,6 +1361,9 @@
        "type": "string"
       },
       "RequireProgram": {
+       "allowed_enrollments_ios": [
+        "supervised"
+       ],
        "introduced_ios": null,
        "presence": "optional",
        "subkeys": {
@@ -1380,6 +1392,9 @@
      "type": "dictionary"
     },
     "Deferrals": {
+     "allowed_enrollments_ios": [
+      "supervised"
+     ],
      "introduced_ios": null,
      "presence": "optional",
      "subkeys": {
@@ -1424,6 +1439,9 @@
      "type": "boolean"
     },
     "RapidSecurityResponse": {
+     "allowed_enrollments_ios": [
+      "supervised"
+     ],
      "introduced_ios": null,
      "presence": "optional",
      "subkeys": {

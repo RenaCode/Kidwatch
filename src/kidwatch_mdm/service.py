@@ -29,7 +29,7 @@ from typing import Any
 from . import profiles
 from .apns import NoPusher, Pusher
 from .pki import CA, SignatureError, fingerprint, verify_mdm_signature
-from .policy import Policy
+from .policy import MdmKind, Policy
 from .signing import ProfileSigner
 from .store import Store, from_iso, iso, now_utc
 
@@ -167,6 +167,9 @@ class MDMService:
             org=self.policy.org,
             label=row["label"],
             device_name=dev.name,
+            # Przed zapisem znamy tylko polityke — iPhone musi miec `kind: iphone`
+            # w polityce, zanim powstanie zaproszenie (docs/iphone.md).
+            kind=dev.kind,
         )
         self.store.record_identity(token, prof.cert_fingerprint, now)
         data = prof.data
@@ -441,12 +444,17 @@ class MDMService:
             return override or None  # {} = jawnie wylaczone z API
         return self.policy.os_update.model_dump() if self.policy.os_update else None
 
+    def kind_of(self, device) -> MdmKind:
+        """Rodzaj zapisanego urzadzenia: z polityki albo z ProductName."""
+        return self.policy.kind(device["label"], device["product"])
+
     def declarations_for(self, device) -> list[dict]:
         return profiles.declarations(
             self.policy,
             device["label"],
             supervised=bool(device["supervised"]),
             os_update=self.os_update(),
+            kind=self.kind_of(device),
         )
 
     def _declarative(self, device, message: dict) -> Response:
@@ -530,7 +538,9 @@ class MDMService:
                 for request_type in REFRESH_COMMANDS:
                     self._enqueue_refresh(udid, request_type)
 
-            profile, digest = profiles.restrictions_profile(self.policy, device["label"])
+            profile, digest = profiles.restrictions_profile(
+                self.policy, device["label"], self.kind_of(device)
+            )
             state = self.store.profile_states(udid).get(profiles.RESTRICTIONS_ID)
             retry_after = from_iso(state["retry_after"]) if state else None
             if (

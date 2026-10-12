@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generator profilu DNS-over-HTTPS dla iPada.
+"""Generator profilu DNS-over-HTTPS dla iPada i iPhone'a.
 
 Wszystkie nazwy kluczy sprawdzone w oficjalnym schemacie Apple
 (github.com/apple/device-management, galaz `release`) 2026-09-27:
@@ -26,6 +26,13 @@ Wszystkie nazwy kluczy sprawdzone w oficjalnym schemacie Apple
 Stad podzial na dwa tryby. Domyslny (bez --supervised) zawiera wylacznie payload
 DNS, bo reszta kluczy na nienadzorowanym iPadzie jest ignorowana — wstawianie ich
 dawaloby zludzenie zabezpieczenia, ktorego nie ma.
+
+iPhone (`--kind iphone`, docs/iphone.md) dostaje DOKLADNIE ten sam profil co
+zwykly iPad: sam payload DNS. Instalacja RECZNA jest tu wazniejsza niz na
+iPadzie — tylko ona obejmuje siec komorkowa, na ktorej telefon spedza duza
+czesc dnia. `--supervised` dla iPhone'a jest odrzucane: iPhone dziecka jest
+zwykle bez nadzoru, a nadzor telefonu (wymazanie, Apple Configurator) to
+osobna decyzja, nie flaga generatora.
 """
 
 from __future__ import annotations
@@ -45,6 +52,7 @@ NAMESPACE = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
 
 DEFAULT_ORG = "Dom"
 BASE_ID = "com.renacode.kidwatch"
+KINDS = ("ipad", "iphone")
 
 
 def slug(text: str) -> str:
@@ -72,7 +80,14 @@ def build_profile(
     doh_url: str,
     org: str = DEFAULT_ORG,
     supervised: bool = False,
+    kind: str = "ipad",
 ) -> dict:
+    if kind not in KINDS:
+        raise ValueError(f"kind: {' albo '.join(KINDS)}, dostalem {kind!r}")
+    if kind == "iphone" and supervised:
+        raise ValueError(
+            "iPhone: profil tylko bez nadzoru (klucze nadzoru iPhone dziecka zignoruje)"
+        )
     device = slug(name)
 
     dns_settings: dict[str, object] = {
@@ -179,7 +194,9 @@ def build_declaration(*, name: str, doh_url: str, supervised: bool = False) -> d
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Generuje profil .mobileconfig wymuszajacy DNS-over-HTTPS na iPadzie.",
+        description=(
+            "Generuje profil .mobileconfig wymuszajacy DNS-over-HTTPS na iPadzie albo iPhonie."
+        ),
         epilog=(
             "Domyslnie profil jest przeznaczony dla ZWYKLEGO, nienadzorowanego iPada: "
             "instalujesz go recznie i obejmuje wszystkie sieci, ale dziecko moze go zdjac. "
@@ -187,7 +204,15 @@ def main(argv: list[str] | None = None) -> int:
             "(co wymaga wymazania urzadzenia)."
         ),
     )
-    parser.add_argument("--name", required=True, help='nazwa urzadzenia, np. "iPad Kuby"')
+    parser.add_argument(
+        "--name", required=True, help='nazwa urzadzenia, np. "iPad Kuby" albo "iPhone Kuby"'
+    )
+    parser.add_argument(
+        "--kind",
+        choices=KINDS,
+        default="ipad",
+        help="rodzaj urzadzenia (iphone: tylko bez nadzoru, docs/iphone.md)",
+    )
     parser.add_argument(
         "--doh-url",
         required=True,
@@ -211,9 +236,18 @@ def main(argv: list[str] | None = None) -> int:
         help="zapisz obok plik .json z deklaracja DDM (iOS 27+, na przyszlosc)",
     )
     args = parser.parse_args(argv)
+    if args.kind == "iphone" and args.supervised:
+        parser.error(
+            "--supervised nie dla iPhone'a: iPhone dziecka jest zwykle bez nadzoru, "
+            "a klucze nadzoru zignoruje bez slowa (docs/iphone.md)"
+        )
 
     profile = build_profile(
-        name=args.name, doh_url=args.doh_url, org=args.org, supervised=args.supervised
+        name=args.name,
+        doh_url=args.doh_url,
+        org=args.org,
+        supervised=args.supervised,
+        kind=args.kind,
     )
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -235,7 +269,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"zapisano {decl} (deklaracja DDM, iOS 27+)")
 
-    if args.supervised:
+    if args.kind == "iphone":
+        print(
+            "iPhone (bez nadzoru): zainstaluj profil RECZNIE (AirDrop/Safari ->\n"
+            "  Ustawienia -> Pobrany profil), nie przez MDM — tylko tak obejmie\n"
+            "  takze siec komorkowa. Dziecko moze go usunac w Ustawieniach;\n"
+            "  kidwatch zglosi to jako cisze urzadzenia."
+        )
+    elif args.supervised:
         print(
             "TRYB NADZOROWANY: te klucze zadzialaja tylko, jesli iPad przeszedl\n"
             "  nadzor w Apple Configurator. Na zwyklym iPadzie zostana zignorowane."

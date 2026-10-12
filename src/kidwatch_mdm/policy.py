@@ -1,4 +1,4 @@
-"""Polityka: czego serwer pilnuje na iPadach.
+"""Polityka: czego serwer pilnuje na iPadach i iPhone'ach.
 
 Plik YAML (ConfigMap w klastrze) opisuje ograniczenia, DNS, aktualizacje
 i urzadzenia. Docelowa wersja systemu moze byc dodatkowo nadpisana z Kidwatch
@@ -8,6 +8,13 @@ Klucze ograniczen sa walidowane wzgledem OFICJALNEGO schematu Apple przy
 starcie. Literowka w nazwie klucza jest przez iOS milczaco ignorowana:
 profil instaluje sie „poprawnie", a blokady nie ma. Dlatego nieznany klucz
 zatrzymuje start serwera — lepiej glosno nie dzialac niz cicho nie chronic.
+
+iPhone dziecka (`kind: iphone`) jest zwykle BEZ nadzoru — nadzor wymaga
+wymazania telefonu. Dostaje wiec wylacznie to, co dziala bez nadzoru:
+zadnych domyslnych blokad iPada, zadnych wspolnych nadpisan, zadnego
+`blockedAppBundleIDs`; wlasne `restrictions` urzadzenia tylko z kluczy, ktore
+schemat Apple dopuszcza bez nadzoru (docs/iphone.md). Zostaja inwentarz,
+blokada ekranu (restart wymaga nadzoru), status DDM i wymuszenie wersji systemu.
 """
 
 from __future__ import annotations
@@ -16,7 +23,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -71,6 +78,9 @@ DEFAULT_STATUS_ITEMS = [
     "passcode.is-present",
 ]
 
+#: Rodzaje urzadzen MDM. iPhone = polityka bez kluczy „tylko pod nadzorem".
+MdmKind = Literal["ipad", "iphone"]
+
 LOCAL_DT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
 
 
@@ -100,6 +110,10 @@ class OsUpdate(BaseModel):
 
 class DevicePolicy(BaseModel):
     name: str
+    #: "iphone" = iPhone dziecka bez nadzoru (patrz docstring modulu). Brak =
+    #: iPad, jak w politykach sprzed iPhone'ow. Ustaw PRZED `enroll`: rodzaj
+    #: decyduje tez o profilu zapisu.
+    kind: MdmKind = "ipad"
     #: Adres DNS-over-HTTPS (np. NextDNS z nazwa urzadzenia). Brak = bez DNS z MDM.
     dns_url: str | None = None
     restrictions: dict[str, Any] = Field(default_factory=dict)
@@ -131,8 +145,22 @@ class Policy(BaseModel):
     def device(self, label: str) -> DevicePolicy:
         return self.devices.get(label) or DevicePolicy(name=label)
 
-    def restrictions_for(self, label: str) -> dict[str, Any]:
+    def kind(self, label: str, product: str | None = None) -> MdmKind:
+        """iPhone, gdy tak mowi polityka ALBO gdy urzadzenie zglosilo sie jako
+        iPhone (ProductName). Drugie lapie iPhone'a zapisanego pod etykieta bez
+        `kind: iphone`: dostanie polityke bez kluczy nadzoru, a nie blokady,
+        ktore iOS po cichu zignoruje. iPad nie zglasza sie jako „iPhone…"."""
+        if self.device(label).kind == "iphone" or (product or "").startswith("iPhone"):
+            return "iphone"
+        return "ipad"
+
+    def restrictions_for(self, label: str, kind: MdmKind | None = None) -> dict[str, Any]:
         dev = self.device(label)
+        if "iphone" in (kind, dev.kind):
+            # Tylko wlasne klucze urzadzenia, i to tylko zadeklarowanego jako
+            # iPhone — tylko te walidacja sprawdzila pod katem nadzoru. Domyslne
+            # i wspolne sa dla nadzorowanych iPadow.
+            return dict(dev.restrictions) if dev.kind == "iphone" else {}
         merged = {**DEFAULT_RESTRICTIONS, **self.restrictions, **dev.restrictions}
         blocked = dev.blocked_apps if dev.blocked_apps is not None else self.blocked_apps
         if blocked:
@@ -153,7 +181,7 @@ def load_schema(path: str | os.PathLike | None) -> dict | None:
 def validate(policy: Policy, schema: dict | None) -> list[str]:
     """Bledy polityki. Pusta lista = mozna startowac."""
     errors: list[str] = []
-    labels = ["(wspolne)", *policy.devices]
+    labels = ["(wspolne)", *(lb for lb, d in policy.devices.items() if d.kind != "iphone")]
     for label in labels:
         restr = (
             {**DEFAULT_RESTRICTIONS, **policy.restrictions}
@@ -177,11 +205,48 @@ def validate(policy: Policy, schema: dict | None) -> list[str]:
                     and not (expected is int and isinstance(value, bool))
                 ):
                     errors.append(f"{label}: {key} ma typ {spec['type']}, dostalem {value!r}")
+    for label, dev in policy.devices.items():
+        if dev.kind == "iphone":
+            errors += _iphone_errors(label, dev, schema)
     if schema is not None:
         su_keys = schema["declarations"]["com.apple.configuration.softwareupdate.settings"]["keys"]
         for key in policy.software_update:
             if key not in su_keys:
                 errors.append(f"software_update: nieznany klucz {key!r}")
+    return errors
+
+
+def _iphone_errors(label: str, dev: DevicePolicy, schema: dict | None) -> list[str]:
+    """iPhone bez nadzoru zignoruje klucz „tylko pod nadzorem" bez slowa —
+    w polityce bylby blokada, ktorej nie ma. Odrzucamy go glosno."""
+    errors: list[str] = []
+    if dev.blocked_apps:
+        errors.append(
+            f"{label}: blocked_apps (blockedAppBundleIDs) wymaga nadzoru — iPhone go zignoruje"
+        )
+    keys = schema["profiles"]["com.apple.applicationaccess"]["keys"] if schema else {}
+    types = {"boolean": bool, "integer": int, "array": list, "string": str}
+    for key, value in dev.restrictions.items():
+        if key in FORBIDDEN_FALSE and value is False:
+            errors.append(f"{label}: {key}=false psuje Popros o zakup / konta Rodziny")
+        if key in DEFAULT_RESTRICTIONS:
+            # Bez schematu znamy przynajmniej te: wszystkie wymagaja nadzoru.
+            errors.append(f"{label}: {key} dziala tylko pod nadzorem — iPhone go zignoruje")
+            continue
+        if schema is None:
+            continue
+        spec = keys.get(key)
+        if spec is None:
+            errors.append(f"{label}: nieznany klucz ograniczen {key!r} (literowka?)")
+            continue
+        if spec.get("supervised_ios") is True:
+            errors.append(f"{label}: {key} dziala tylko pod nadzorem — iPhone go zignoruje")
+            continue
+        expected = types.get(spec["type"])
+        if expected and not (
+            isinstance(value, expected) and not (expected is int and isinstance(value, bool))
+        ):
+            errors.append(f"{label}: {key} ma typ {spec['type']}, dostalem {value!r}")
     return errors
 
 

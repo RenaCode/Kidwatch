@@ -40,3 +40,12 @@ devices:
     # iPad testowy bez nadzoru: ograniczenia zostana zignorowane przez iOS,
     # ale caly protokol (zapis, komendy, DDM, aplikacje) da sie sprawdzic.
     name: iPad testowy
+  # iPhone dziecka (zwykle bez nadzoru): ZERO kluczy „tylko pod nadzorem".
+  # Domyslne blokady i wspolne `restrictions`/`blocked_apps` go nie dotycza;
+  # wlasne `restrictions` tylko z kluczy dzialajacych bez nadzoru (serwer
+  # odrzuci inne przy starcie). Bez dns_url — DNS idzie recznym profilem
+  # NextDNS (tools/gen_profile.py --kind iphone). Wpisz PRZED `enroll`.
+  # Instrukcja: docs/iphone.md
+  # iphone1:
+  #   name: iPhone Dziecka 1
+  #   kind: iphone

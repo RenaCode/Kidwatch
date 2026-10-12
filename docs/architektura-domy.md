@@ -284,7 +284,7 @@ telewizor zostaje osobną ścieżką (`sources/tv*.py`), ale w tabeli
 | Rodzaj | DNS | Odczyt wprost | MDM | Uwagi |
 |---|---|---|---|---|
 | `ipad` | NextDNS (profil / DDM) | lockdown, tylko z LAN domu | tak | jak dziś |
-| `iphone` | NextDNS (profil / DDM) | lockdown, tylko z LAN domu | tak (bez nadzoru: ograniczenia ignorowane) | etap E5 |
+| `iphone` | NextDNS (profil ręczny; DDM nie) | lockdown, tylko z LAN domu | tak, bez kluczy nadzoru: inwentarz, blokada ekranu, wersja iOS (restart wymaga nadzoru) | etap E5, `docs/iphone.md` |
 | `phone-android` | Prywatny DNS → NextDNS | brak (walidator jak dziś dla `phone`) | brak (Family Link) | `phone` w YAML zostaje aliasem |
 | `tv` | opcjonalnie `nextdns_ids` | ADB / aplikacja TV / Sony REST | – | wymaga osiągalności LAN domu |
 
@@ -841,6 +841,20 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
 - **Gotowe, gdy**: iPhone testowy w Domu 1 zapisany do MDM, ruch DNS
   liczony jako sesje, czujka ciszy działa.
 - **Równolegle z**: E2, E3a (po E1).
+- **Ustalenia z realizacji**:
+  - `iphone` jest w `KINDS`, `DeviceKindName` i `RODZAJ_W_BAZIE` naraz (test
+    spójności); `RODZAJ_W_BAZIE` ma też `tv` (wiersz w `urzadzenia`), ale `tv`
+    nie jest rodzajem z `devices` — telewizor zostaje w sekcji `tv`.
+  - Schemat Apple: `RestartDevice` wymaga nadzoru — iPhone bez nadzoru ma
+    blokadę ekranu, nie restart (serwer: 409). Deklaracja DNS przez MDM bez
+    nadzoru obejmuje tylko sieci zarządzane, więc iPhone jej nie dostaje;
+    DNS = ręczny profil NextDNS (także sieć komórkowa).
+  - Polityka MDM: `devices.<etykieta>.kind: iphone`; iPhone rozpoznawany też
+    po `ProductName`. Indeks schematu ma `allowed_enrollments_ios` (wymóg
+    nadzoru kluczy DDM), test liczy klucze nadzoru z niego.
+  - `/api/devices` podaje `kind`; czujka MDM Kidwatcha pisze o iPhonie inne
+    teksty (stary serwer bez `kind` → rozstrzyga `product`). iPad bajt w bajt
+    jak przed E5 (migawka `tests/fixtures/mdm_ipad_przed_e5.json`).
 
 ### E6 — Dom 2 end-to-end
 
