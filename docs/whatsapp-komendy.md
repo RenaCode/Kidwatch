@@ -107,8 +107,10 @@ Bez zapisu na telewizor, bez głośności, bez restartu i wyłączania iPada.
     („Nie rozumiem teraz swobodnego tekstu, napisz np. …”) i przerwa
     `llm.przerwa_po_429_seconds` (domyślnie 15 min), w której Gemini nie
     jest wołany wcale;
-  - odstęp alarmów jest **osobny dla każdej przyczyny** (429, limit,
-    konkretna awaria, np. HTTP 403): zmiana przyczyny alarmuje od razu,
+  - odstęp alarmów jest **osobny dla każdej klasy przyczyny**: 429, limit,
+    awaria klucza (401/403), awaria zapytania (inne 4xx), awaria serwera
+    (5xx, timeout, połączenie — migająca awaria to jedna przyczyna); zmiana
+    klasy alarmuje od razu, w treści pełna lista błędów,
     z bezpiecznikiem najwyżej jeden alarm o LLM na 5 min;
   - **ciągłe 429 nie jest ciche:** gdy od pierwszego 429 nie było ani
     jednego udanego wywołania przez `llm.alarm_429_po_godzinach`

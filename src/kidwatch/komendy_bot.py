@@ -67,6 +67,33 @@ ALARM_MAX_ODSTEP = 24 * 3600.0
 ALARM_BEZPIECZNIK = 300.0
 
 
+#: Klasy awarii LLM (klucz odstepu alarmu): migajaca awaria serwera (500,
+#: 503, timeout, polaczenie na zmiane) to JEDNA przyczyna, a niewazny klucz
+#: albo zle zapytanie to inna — ta alarmuje od razu. Kolejnosc = waga.
+KLASY_AWARII = ("klucz", "zapytanie", "serwer")
+
+
+def klasa_awarii(bledy: Sequence[str]) -> str:
+    """"awaria:klucz" (401/403), "awaria:zapytanie" (inne 4xx), "awaria:serwer"
+    (5xx, timeout, polaczenie, nieczytelna odpowiedz). Wpisy 429 i przerwy po
+    nim pomijane — maja wlasny alarm. Kilka klas naraz: najpowazniejsza."""
+    import re  # noqa: PLC0415
+
+    klasy = set()
+    for b in bledy:
+        if "429" in b:
+            continue
+        m = re.search(r"HTTP (\d{3})", b)
+        kod = int(m[1]) if m else None
+        if kod in (401, 403):
+            klasy.add("klucz")
+        elif kod is not None and 400 <= kod < 500:
+            klasy.add("zapytanie")
+        else:
+            klasy.add("serwer")
+    return "awaria:" + next((k_ for k_ in KLASY_AWARII if k_ in klasy), "serwer")
+
+
 # ================================================================= dom
 @dataclass
 class DomKomend:
@@ -769,11 +796,8 @@ class BotKomend:
 
     # -------------------------------------------------------- alarm LLM
     async def _alarm_llm_awaria(self, bledy: Sequence[str]) -> None:
-        # Przyczyna = bledy bez 429 i przerwy po nim (te maja wlasny alarm),
-        # wiec "429 + ConnectError" i "przerwa + ConnectError" to ta sama.
-        przyczyna = "awaria:" + "; ".join(sorted(b for b in bledy if "429" not in b))
         await self._alarm_llm_z_odstepem(
-            przyczyna,
+            klasa_awarii(bledy),
             "Kidwatch: komendy z WhatsAppa bez LLM",
             "Żaden dostawca LLM nie odpowiada (" + "; ".join(bledy) + "). Dokładne "
             "komendy działają; wolny tekst dostaje prośbę o dokładną komendę. "

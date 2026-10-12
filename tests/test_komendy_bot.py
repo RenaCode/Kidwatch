@@ -897,8 +897,9 @@ async def test_bezpiecznik_jeden_alarm_na_5_min(tmp_path):
     g = Dostawca("gemini", blad=httpx.ConnectError("x"))
     s = Swiat(tmp_path, cfg=WhatsappKomendyConfig(enabled=True, na_godzine=50), dostawcy=[g])
     await s.pisz(NR_A, "niech koncza")
-    g.blad = httpx.ReadTimeout("t")
-    await s.pisz(NR_A, "niech koncza")              # inna przyczyna, ale po 0 s
+    g.blad = httpx.HTTPStatusError("403", request=httpx.Request("POST", "http://x"),
+                                   response=httpx.Response(403))
+    await s.pisz(NR_A, "niech koncza")              # inna klasa (klucz), ale po 0 s
     assert len(s.alarmy) == 1
     s.zegar.plus(301)
     await s.pisz(NR_A, "niech koncza")
@@ -912,3 +913,51 @@ async def test_dwa_odlegle_429_to_nie_ciagle_429(tmp_path):
     s.zegar.plus(7 * 3600)                           # cisza 7 h, potem znowu 429
     await s.pisz(NR_A, "niech koncza")
     assert s.alarmy == []
+
+
+# ===================================================== klasa przyczyny (#68)
+def test_klasa_awarii():
+    from kidwatch.komendy_bot import klasa_awarii  # noqa: PLC0415
+
+    assert klasa_awarii(["gemini: HTTP 403"]) == "awaria:klucz"
+    assert klasa_awarii(["gemini: HTTP 401"]) == "awaria:klucz"
+    assert klasa_awarii(["gemini: HTTP 400"]) == "awaria:zapytanie"
+    assert klasa_awarii(["gemini: HTTP 404"]) == "awaria:zapytanie"
+    for b in ("gemini: HTTP 500", "gemini: HTTP 503", "gemini: przekroczony czas",
+              "gemini: ConnectError", "gemini: nieczytelna odpowiedz (KeyError)"):
+        assert klasa_awarii([b]) == "awaria:serwer", b
+    assert klasa_awarii(["gemini: HTTP 429", "anthropic: ConnectError"]) == "awaria:serwer"
+    assert klasa_awarii(["gemini: HTTP 503", "anthropic: HTTP 401"]) == "awaria:klucz"
+
+
+async def test_migajaca_awaria_serwera_to_jedna_przyczyna(tmp_path):
+    def status(kod):
+        return httpx.HTTPStatusError(str(kod), request=httpx.Request("POST", "http://x"),
+                                     response=httpx.Response(kod))
+
+    bledy = [status(500), status(503), httpx.ReadTimeout("t"), httpx.ConnectError("c")]
+    g = Dostawca("gemini", blad=bledy[0])
+    s = Swiat(tmp_path, cfg=WhatsappKomendyConfig(enabled=True, na_godzine=50), dostawcy=[g])
+    s.llm.rezerwuj = lambda: True                    # bez dobowego limitu w symulacji
+    for i in range(6 * 24):                          # co 10 min przez dobe
+        g.blad = bledy[i % 4]
+        await s.pisz(NR_A, "niech koncza")
+        s.zegar.plus(600)
+    # Odstep 1, 2, 4, 8 h: alarmy po 0, 1, 3, 7 i 15 h.
+    assert len(s.alarmy) == 5, [a[1] for a in s.alarmy]
+    # W tresci nadal pelna lista bledow.
+    assert "HTTP 500" in s.alarmy[0][1]
+
+
+async def test_429_potem_niewazny_klucz_nadal_od_razu(tmp_path):
+    g = Dostawca("gemini", blad=_blad_429())
+    s = Swiat(tmp_path, dostawcy=[g])
+    for _ in range(13):                              # 0..6 h: alarm o 429
+        await s.pisz(NR_A, "niech koncza")
+        s.zegar.plus(1800)
+    assert len(s.alarmy) == 1
+    s.llm._przerwa.clear()
+    g.blad = httpx.HTTPStatusError("401", request=httpx.Request("POST", "http://x"),
+                                   response=httpx.Response(401))
+    await s.pisz(NR_A, "niech koncza")
+    assert len(s.alarmy) == 2 and "HTTP 401" in s.alarmy[1][1]
