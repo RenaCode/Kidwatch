@@ -205,3 +205,33 @@ def test_zapomnij_zamyka_klienta_mdm(tmp_path):
     assert zamkniete == [True]
     domy.zapomnij(1)  # nic do zamkniecia
     assert zamkniete == [True]
+
+
+# ===================================== komunikaty CLI: kiedy zmiana dziala
+def test_kiedy_zadziala_tylko_dom_1_w_bazie_bez_restartu(monkeypatch):
+    from kidwatch.__main__ import kiedy_zadziala  # noqa: PLC0415
+
+    monkeypatch.delenv("KIDWATCH_DOM_1_ZRODLO", raising=False)
+    szybko = "Zadziala w ciagu ok. 10 s, bez restartu poda (przeladowanie domu)."
+    restart = "Dziala po restarcie poda."
+    assert kiedy_zadziala(1, True, True) == szybko
+    assert kiedy_zadziala(1, False, True) == restart   # yaml -> baza: pod chodzi na yaml
+    assert kiedy_zadziala(1, True, False) == restart   # baza -> yaml
+    assert kiedy_zadziala(2, True, True) == restart    # kolejne domy: E3b
+    monkeypatch.setenv("KIDWATCH_DOM_1_ZRODLO", "yaml")
+    assert kiedy_zadziala(1, True, True) == restart    # wymuszony config.yaml
+
+
+def test_dom_sieci_komunikat_zalezy_od_trybu_domu(tmp_path, kek, capsys, monkeypatch):
+    import kidwatch.__main__ as cli  # noqa: PLC0415
+    from test_domy_e2 import _prosta, _zapisz_konfig  # noqa: PLC0415
+
+    monkeypatch.delenv("KIDWATCH_DOM_1_ZRODLO", raising=False)
+    cfg_path = _zapisz_konfig(tmp_path, _prosta(tmp_path))
+    argv = ["--config", str(cfg_path), "dom-sieci", "1", "--dodaj", "192.0.2.0/24"]
+    assert cli.main(argv) == 0
+    assert "Dziala po restarcie poda." in capsys.readouterr().out
+    dm.RejestrDomow(tmp_path / "panel-auth.db").ustaw_zrodlo(1, dm.ZRODLO_BAZA)
+    assert cli.main([*argv[:4], "--dodaj", "198.51.100.0/24"]) == 0
+    out = capsys.readouterr().out
+    assert "Zadziala w ciagu ok. 10 s, bez restartu poda" in out and "E3b" not in out

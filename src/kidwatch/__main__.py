@@ -1642,9 +1642,22 @@ def _rejestr(cfg: Config):
     return rejestr
 
 
+def kiedy_zadziala(dom_id: int, baza_przed: bool, baza_po: bool) -> str:
+    """Kiedy zmiana konfiguracji domu z CLI zacznie dzialac (§5.1). Nadzorca
+    przeladowuje bez restartu tylko Dom 1, ktory JUZ chodzi w trybie `baza`
+    (i nie jest wymuszony na config.yaml): przelaczenie zrodla w ktoras
+    strone i kazdy inny dom (E3b) dalej wymagaja restartu poda."""
+    from .domy import DOM_1  # noqa: PLC0415
+
+    wymuszony_yaml = os.environ.get(WYMUSZENIE_DOMU_1_ENV, "").strip().lower() == "yaml"
+    if dom_id == DOM_1 and baza_przed and baza_po and not wymuszony_yaml:
+        return "Zadziala w ciagu ok. 10 s, bez restartu poda (przeladowanie domu)."
+    return "Dziala po restarcie poda."
+
+
 async def cmd_dom_importuj(args) -> int:
     """Dom 1: config.yaml + sekrety z env/plikow -> baza (§6 p. 4)."""
-    from .domy import DOM_1, katalog_domu  # noqa: PLC0415
+    from .domy import DOM_1, ZRODLO_BAZA, katalog_domu  # noqa: PLC0415
     from .konfiguracja_domu import importuj, sekrety_z_yaml  # noqa: PLC0415
 
     if args.dom != DOM_1:
@@ -1653,6 +1666,8 @@ async def cmd_dom_importuj(args) -> int:
     cfg = Config.load(args.config)
     inst, home = cfg.split()
     rejestr = _rejestr(cfg)
+    przed = rejestr.dom(DOM_1)
+    baza_przed = przed is not None and przed.zrodlo_konfiguracji == ZRODLO_BAZA
     sekrety = sekrety_z_yaml(home, katalog_domu(DOM_1, inst.store.path))
     raport = importuj(rejestr, DOM_1, home, sekrety, sejf=_sejf(), zapisz=args.zapisz,
                       kto="cli",
@@ -1674,7 +1689,8 @@ async def cmd_dom_importuj(args) -> int:
         return 1
     print("Porownanie: konfiguracja z bazy identyczna z config.yaml, sekrety identyczne.")
     if raport.zapisano:
-        print("ZAPISANO. Dom 1 ma teraz konfiguracje z bazy — dziala po restarcie poda.\n"
+        print(f"ZAPISANO. Dom 1 ma teraz konfiguracje z bazy. "
+              f"{kiedy_zadziala(DOM_1, baza_przed, True)}\n"
               "Powrot: kidwatch dom-zrodlo 1 yaml (+ restart).")
     else:
         print("Podglad — nic nie zapisano. Zapis: dom-importuj 1 --zapisz")
@@ -1688,6 +1704,8 @@ async def cmd_dom_zrodlo(args) -> int:
 
     cfg = Config.load(args.config)
     rejestr = _rejestr(cfg)
+    przed = rejestr.dom(args.dom)
+    baza_przed = przed is not None and przed.zrodlo_konfiguracji == ZRODLO_BAZA
     try:
         if args.zrodlo == ZRODLO_BAZA:
             # Przelaczenie tylko na konfiguracje, ktora sie buduje i odszyfrowuje.
@@ -1696,12 +1714,15 @@ async def cmd_dom_zrodlo(args) -> int:
     except (ValueError, LookupError, OdmowaSieci) as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    print(f"Dom {args.dom}: konfiguracja z {args.zrodlo}. Dziala po restarcie poda.")
+    print(f"Dom {args.dom}: konfiguracja z {args.zrodlo}. "
+          f"{kiedy_zadziala(args.dom, baza_przed, args.zrodlo == ZRODLO_BAZA)}")
     return 0
 
 
 async def cmd_dom_sieci(args) -> int:
     """Sieci i hosty domu (§3.6) — wylacznie administrator instancji (CLI)."""
+    from .domy import ZRODLO_BAZA  # noqa: PLC0415
+
     cfg = Config.load(args.config)
     rejestr = _rejestr(cfg)
     dom = rejestr.dom(args.dom)
@@ -1725,7 +1746,8 @@ async def cmd_dom_sieci(args) -> int:
     print(f"Dom {dom.id}: dozwolone_sieci: {', '.join(dom.dozwolone_sieci) or '-'}")
     print(f"        dozwolone_hosty: {', '.join(dom.dozwolone_hosty) or '-'}")
     if zmiana:
-        print("Dziala po restarcie poda (albo przeladowaniu domu w E3b).")
+        baza = dom.zrodlo_konfiguracji == ZRODLO_BAZA
+        print(kiedy_zadziala(dom.id, baza, baza))
     return 0
 
 

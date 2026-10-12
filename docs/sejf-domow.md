@@ -261,7 +261,10 @@ k dom-sieci 1 --usun 192.0.2.0/24
 k dom-sieci 2 --host api.example.invalid
 ```
 
-Działa po restarcie poda. Strażnik nie zastępuje NetworkPolicy (`wDomu`) —
+Dom 1 w trybie `baza`: zmiana działa w ciągu ok. 10 s, bez restartu poda
+(przeładowanie domu, pkt 10). Dom w trybie `yaml`, wymuszony
+`KIDWATCH_DOM_1_ZRODLO=yaml` i kolejne domy (E3b) — po restarcie poda. To samo
+wypisują `dom-sieci`, `dom-zrodlo` i `dom-importuj`. Strażnik nie zastępuje NetworkPolicy (`wDomu`) —
 to druga, niezależna bariera.
 
 ## 7. Rotacja KEK
