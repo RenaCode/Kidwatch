@@ -1416,10 +1416,13 @@ async def cmd_user_login(args) -> int:
     bazy = bazy_domow(cfg.panel_auth_path, cfg.store.path)
     try:
         plan = zmien_login(cfg.panel_auth_path, args.login, args.nowy, bazy=bazy,
-                           zapisz=args.zapisz)
+                           zapisz=args.zapisz, dokoncz=args.dokoncz)
     except BladZmiany as exc:
         print(f"odrzucone: {exc}", file=sys.stderr)
         return 1
+    if plan.dokonczenie:
+        print(f"DOKONCZENIE: konto {plan.nowy!r} (id {plan.user_id}) ma juz nowy login — "
+              f"przepisuje pozostale slady {plan.stary!r}.")
     print(f"Konto {plan.stary!r} (id {plan.user_id}) -> {plan.nowy!r}; bazy domow: "
           f"{', '.join(str(d) for d in sorted(bazy)) or '-'}")
     for miejsce, n in plan.zmiany:
@@ -1428,11 +1431,19 @@ async def cmd_user_login(args) -> int:
           "czlonkostwa domow, flaga administratora, kanaly i preferencje powiadomien.")
     print(f"Sprawdzone miejsca z loginem jako tekstem: {len(MIEJSCA)} "
           f"({', '.join(m for _, m, _ in MIEJSCA)}).")
+    kolejka = sum(n for m, n in plan.zmiany if m.endswith("outbox.odbiorca"))
+    if kolejka:
+        print(f"UWAGA: {kolejka} powiadomien czeka w kolejce konta. Zmiana ich nie gubi "
+              "(kolejka idzie za kontem), ale najbezpieczniej zrobic ja przy pustej kolejce.")
     if not plan.zapisano:
         print("Podglad — nic nie zapisano. Zapis: dodaj --zapisz.")
         return 0
+    if plan.dokonczenie:
+        print("ZAPISANO (dokonczenie). Sesje bez zmian.")
+        return 0
     print(f"ZAPISANO. Sesje konta zamkniete — zaloguj sie jako {plan.nowy!r}. Login "
-          "w Authelii (SSO) musi byc taki sam.")
+          "w Authelii (SSO) musi byc taki sam. Restart poda nie jest potrzebny; "
+          "kontrola: user-list (blokady), ponowne uruchomienie = dokonczenie.")
     return 0
 
 
@@ -2146,6 +2157,10 @@ def build_parser() -> argparse.ArgumentParser:
     user_login.add_argument("login", help="obecny login")
     user_login.add_argument("nowy", help="nowy login (a-z, 0-9, '.', '_', '-'; jak w Authelii)")
     user_login.add_argument("--zapisz", action="store_true", help="zapisz zmiane")
+    user_login.add_argument(
+        "--dokoncz", action="store_true",
+        help="tylko slady starego loginu (konto ma juz nowy) — po przerwanym przebiegu; "
+             "bez tej opcji wlacza sie sam, gdy starego konta nie ma, a nowe jest")
     user_del = sub.add_parser("user-del", help="usun konto panelu WWW razem z sesjami")
     user_del.add_argument("login")
     sub.add_parser("user-list", help="konta panelu WWW, ostatnie logowanie i blokady")

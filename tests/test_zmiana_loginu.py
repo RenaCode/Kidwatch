@@ -245,5 +245,53 @@ def test_cli_podglad_potem_zapis(inst, capsys):
     assert main([*argv, "--zapisz"]) == 0
     assert "ZAPISANO" in capsys.readouterr().out
     assert inst["auth"].user_id(NOWY) == inst["uid"]
-    assert main([*argv, "--zapisz"]) == 1  # starego juz nie ma
-    assert "nie ma konta" in capsys.readouterr().err
+    # Powtorka = dokonczenie (nic do zrobienia), nie blad.
+    assert main([*argv, "--zapisz"]) == 0
+    assert "DOKONCZENIE" in capsys.readouterr().out
+
+
+# ======================================================== dokonczenie
+def test_czesciowy_stan_ponowne_uruchomienie_dokancza(inst):
+    """Przypadek z przegladu: panel-auth.db juz po zmianie, baza domu jeszcze
+    nie (WAL = atomowosc per plik albo przerwany przebieg). Ponowne
+    uruchomienie tego samego polecenia przepisuje reszte sladow."""
+    zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy={}, zapisz=True)
+    zostalo = set(_slady_starego(inst))
+    assert {"kidwatch.db:sent.dedup_key", "kidwatch.db:notifications.channels",
+            "kidwatch.db:outbox.odbiorca", "kidwatch.db:tv_pause.started_by"} <= zostalo
+    # Uzytkownik zdazyl sie zalogowac nowym loginem — dokonczenie go nie wyloguje.
+    r = inst["auth"].login(NOWY, HASLO)
+    token, _ = inst["auth"].mfa(r.challenge, next_code(inst["secret"], inst["clock"]))
+    plan = zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy=_bazy(inst),
+                          zapisz=True)
+    assert plan.dokonczenie and plan.user_id == inst["uid"]
+    assert _slady_starego(inst) == []
+    assert inst["auth"].session(token) is not None
+    with sqlite3.connect(inst["cfg"].panel_auth_path) as conn:
+        assert conn.execute("SELECT count(*) FROM audyt WHERE akcja = 'konto.login' "
+                            "AND dom_id IS NULL").fetchone()[0] == 1
+
+
+def test_dokoncz_jawnie_gdy_stare_konto_istnieje_to_blad(inst):
+    with pytest.raises(zl.BladZmiany, match="nadal istnieje"):
+        zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy=_bazy(inst),
+                       zapisz=True, dokoncz=True)
+    assert inst["auth"].user_id(STARY) == inst["uid"]
+
+
+def test_kanarek_bez_dokonczenia_slady_zostaja(inst, monkeypatch):
+    """Gdyby brak starego konta konczyl sie bledem (stare zachowanie), slady
+    zostalyby na zawsze — detektor to widzi."""
+    zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy={}, zapisz=True)
+    stary_waliduj = zl._waliduj
+
+    def bez_dokonczenia(conn, stary, nowy, dokoncz=False):
+        uid, dok = stary_waliduj(conn, stary, nowy, dokoncz)
+        if dok:
+            raise zl.BladZmiany(f"nie ma konta {stary!r}")
+        return uid, dok
+
+    monkeypatch.setattr(zl, "_waliduj", bez_dokonczenia)
+    with pytest.raises(zl.BladZmiany):
+        zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy=_bazy(inst), zapisz=True)
+    assert _slady_starego(inst)

@@ -475,6 +475,19 @@ renacode-infra) in front of the panel **and** the same switch sets
   history stay (same account id); every place that stores the login as text
   (audit, request queues, outbox, per-account dedup, notification history)
   is rewritten in the same run, sessions are closed. Dry run by default.
+  Procedure: (1) run without `--zapisz` and check the line
+  `dom N: outbox.odbiorca` — notifications waiting for this account; best
+  done when it is 0 (they are not lost either way: the running process
+  reloads accounts before dropping a queue it no longer recognises);
+  (2) run with `--zapisz` — **no pod restart needed**, the panel and the
+  notification queue read accounts from the database on every request;
+  (3) `user-list`: failed password attempts already recorded for the NEW
+  login are merged into the account (the stricter lock wins) — if it shows
+  as locked, `user-reset`; (4) running the same command again is safe and
+  finishes anything left after an interrupted run (the old account no
+  longer exists, the new one does → only the text traces are rewritten;
+  `--dokoncz` forces this). With SSO the Authelia login is the target —
+  change only Kidwatch, never the Authelia account, to match.
 - `Remote-Groups` must contain `wlasciciel`, `rodzina` or `admins` (chart
   `sso.grupy` → `SSO_GRUPY`; must match the Authelia rule for this host).
   Groups only gate entry; what an account may do comes from its household

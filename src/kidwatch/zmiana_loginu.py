@@ -32,6 +32,13 @@ kto to zrobil — idzie za kontem.
 
 Domyslnie na sucho: te same zmiany w transakcji wycofanej na koncu, wiec
 liczby w podgladzie sa prawdziwe, nie szacowane.
+
+DOKONCZENIE. Gdy STAREGO konta juz nie ma, a NOWE jest (przerwany albo
+czesciowy przebieg: przy WAL panel-auth.db moze byc po zmianie, a baza domu
+jeszcze nie; wpis kolejki rozdzielony przez zywy proces tuz po zmianie),
+ponowne uruchomienie tego samego polecenia przepisuje same slady tekstowe —
+bez `users.login`, bez sprawdzania zajetosci, bez wylogowania i bez
+drugiego wpisu w audycie. `--dokoncz` wymusza ten tryb jawnie.
 """
 
 from __future__ import annotations
@@ -74,6 +81,8 @@ class PlanZmiany:
     #: Domy, w ktorych konto jest czlonkiem (wpis w ich dzienniku).
     domy: list[int] = field(default_factory=list)
     zapisano: bool = False
+    #: Tryb dokonczenia: konto juz ma nowy login, przepisane same slady.
+    dokonczenie: bool = False
 
 
 def _tabela(conn: sqlite3.Connection, schemat: str, nazwa: str) -> bool:
@@ -87,22 +96,29 @@ def _kolumna(conn: sqlite3.Connection, schemat: str, tabela: str, kolumna: str) 
         r[1] for r in conn.execute(f"PRAGMA {schemat}.table_info({tabela})")}
 
 
-def _waliduj(conn: sqlite3.Connection, stary: str, nowy: str) -> int:
+def _waliduj(conn: sqlite3.Connection, stary: str, nowy: str,
+             dokoncz: bool = False) -> tuple[int, bool]:
+    """(id konta, czy tryb dokonczenia)."""
     nowy_czysty = nowy.strip()
     if nowy_czysty != nowy or not login_ok(nowy):
         raise BladZmiany(f"login {nowy!r} niedozwolony — tylko a-z, 0-9, '.', '_', '-' "
                          f"(1-64 znaki, male litery: tak przychodzi Remote-User z Authelii)")
-    row = conn.execute("SELECT id FROM users WHERE login = ?", (stary,)).fetchone()
-    if row is None:
-        raise BladZmiany(f"nie ma konta {stary!r}")
     if stary == nowy:
         raise BladZmiany("nowy login jest taki sam jak obecny")
+    row = conn.execute("SELECT id FROM users WHERE login = ?", (stary,)).fetchone()
+    if row is None:
+        juz = conn.execute("SELECT id FROM users WHERE login = ?", (nowy,)).fetchone()
+        if juz is not None:
+            return int(juz[0]), True
+        raise BladZmiany(f"nie ma konta {stary!r} (ani {nowy!r} — nie ma czego dokonczyc)")
+    if dokoncz:
+        raise BladZmiany(f"konto {stary!r} nadal istnieje — to zwykla zmiana, bez --dokoncz")
     zajety = conn.execute("SELECT login FROM users WHERE lower(login) = lower(?) AND id != ?",
                           (nowy, row[0])).fetchone()
     if zajety is not None:
         raise BladZmiany(f"login {nowy!r} jest zajety (konto {zajety[0]!r}, wielkosc liter "
                          f"nie ma znaczenia)")
-    return int(row[0])
+    return int(row[0]), False
 
 
 def _panel(conn: sqlite3.Connection, stary: str, nowy: str, uid: int,
@@ -111,7 +127,8 @@ def _panel(conn: sqlite3.Connection, stary: str, nowy: str, uid: int,
         if cur.rowcount > 0:
             plan.zmiany.append((miejsce, cur.rowcount))
 
-    ile("users.login", conn.execute("UPDATE users SET login = ? WHERE id = ?", (nowy, uid)))
+    if not plan.dokonczenie:
+        ile("users.login", conn.execute("UPDATE users SET login = ? WHERE id = ?", (nowy, uid)))
     if _tabela(conn, "main", "login_failures"):
         # Blokada po nieudanych haslach idzie za kontem: zmiana loginu nie
         # moze jej zdjac. Wiersz nowego loginu (proby na nieistniejace konto)
@@ -135,6 +152,9 @@ def _panel(conn: sqlite3.Connection, stary: str, nowy: str, uid: int,
             ile(f"{tabela}.{kolumna}", conn.execute(
                 f"UPDATE {tabela} SET {kolumna} = ? WHERE {kolumna} = ?",  # noqa: S608
                 (nowy, stary)))
+    if plan.dokonczenie:
+        # Konto juz dziala pod nowym loginem: bez wylogowania i drugiego wpisu.
+        return
     for tabela in ("sessions", "tickets"):
         if _tabela(conn, "main", tabela):
             ile(f"{tabela} (wylogowanie)", conn.execute(
@@ -204,7 +224,7 @@ def bazy_domow(auth_path: str | Path, baza_domu_1: str | Path) -> dict[int, Path
 
 def zmien_login(auth_path: str | Path, stary: str, nowy: str, *,
                 bazy: dict[int, Path] | None = None, zapisz: bool = False,
-                teraz: float | None = None) -> PlanZmiany:
+                dokoncz: bool = False, teraz: float | None = None) -> PlanZmiany:
     """Zmiana loginu w panel-auth.db i bazach zdarzen domow (`bazy`).
     `zapisz=False`: te same zmiany, policzone i wycofane. BladZmiany przy
     odmowie — nic nie zapisano."""
@@ -219,8 +239,8 @@ def zmien_login(auth_path: str | Path, stary: str, nowy: str, *,
             aliasy[dom_id] = alias
         conn.execute("BEGIN IMMEDIATE")
         try:
-            uid = _waliduj(conn, stary, nowy)
-            plan = PlanZmiany(stary, nowy, uid)
+            uid, dokonczenie = _waliduj(conn, stary, nowy, dokoncz)
+            plan = PlanZmiany(stary, nowy, uid, dokonczenie=dokonczenie)
             _panel(conn, stary, nowy, uid, plan, teraz)
             for dom_id, alias in aliasy.items():
                 _baza_domu(conn, alias, dom_id, stary, nowy, plan)
