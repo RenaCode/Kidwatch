@@ -36,6 +36,15 @@ rola `wlasciciel-domu`; `zarzadca` tylko pojedynczym nadaniem
 
 Bez zapisu na telewizor, bez głośności, bez restartu i wyłączania iPada.
 
+## Decyzje właściciela (2026-10-12)
+
+- `stan` i `pomoc` odpowiadają **bez kodu** — niczego nie zmieniają.
+  Każda inna akcja wymaga `TAK <kod>`.
+- Dzienny limit luzowania z WhatsAppa na dziecko: **+30 min** czasu gry
+  i **1 odblokowanie** gier (oba konfigurowalne, 0 = wyłączone).
+- `zarzadca` **nie ma** komend domyślnie — tylko po pojedynczym nadaniu
+  `whatsapp.komendy`; `wlasciciel-domu` ma je z roli, `podglad` nigdy.
+
 ## Bezpieczeństwo
 
 - **Nieznany numer: cisza.** Bot nie odpowiada (nie zdradza, że przyjmuje
