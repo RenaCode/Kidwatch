@@ -793,3 +793,29 @@ def test_run_panel_domu_1_z_bazy_pokazuje_ten_sam_dom(tmp_path, monkeypatch, zro
     assert widziane["meta"]["children"] == ["Kuba", "Zosia"], widziane
     assert [d["name"] for d in widziane["day"]["devices"]] == ["iPad Kuby", "iPad Zosi"]
     assert widziane["game"] == 202  # czas gry wlaczony w Domu 1, dziecko znane
+
+
+def test_blad_zapisu_dziennika_to_503_i_brak_zmiany(domy, monkeypatch):
+    """Przeglad E3a, U-2: wejscie administratora bez wpisu w `audyt` nie moze
+    sie zdarzyc — ani do domu (GET i POST), ani zmiana instancji."""
+    h = sso(domy, "admin", "admins")
+
+    def pada(*_a, **_kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(dm.RejestrDomow, "zapisz_audyt", pada)
+    st, _, body = call(domy, "GET", f"/api/domy/{DOM_B}/day", headers=h)
+    assert st == 503 and "TYLKO-B" not in json.dumps(body)
+    st, _, _ = call(domy, "POST", f"/api/domy/{DOM_B}/konta/dodaj",
+                    {"login": "nowe-konto", "rola": "podglad", "confirm": HASLO}, h)
+    assert st == 503
+    assert "nowe-konto" not in {u_["login"] for u_ in domy.auth.list_users()}
+    st, _, body = call(domy, "POST", "/api/profile/test", {}, h)
+    assert st == 503 and "dzienniku" in body["error"]
+    # Kontrola: bez awarii dziennika te same zadania przechodza.
+    monkeypatch.undo()
+    monkeypatch.setenv("SSO_NAGLOWKI", "1")
+    h = sso(domy, "admin", "admins")
+    assert call(domy, "GET", f"/api/domy/{DOM_B}/day", headers=h)[0] == 200
+    assert call(domy, "POST", f"/api/domy/{DOM_B}/konta/dodaj",
+                {"login": "nowe-konto", "rola": "podglad", "confirm": HASLO}, h)[0] == 200
