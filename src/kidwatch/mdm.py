@@ -226,13 +226,21 @@ def _describe(
     if kind == "kind_mismatch":
         product = detail.get("product") if isinstance(detail, dict) else "?"
         label = detail.get("label") if isinstance(detail, dict) else "?"
+        quarantined = isinstance(detail, dict) and detail.get("quarantined")
         return (
             NotifyKind.MDM,
-            4,
+            5 if quarantined else 4,
             f"{name}: pomylka rodzaju w polityce MDM",
             f"Etykieta {label} ma kind: iphone, a urzadzenie to iPad ({product}). "
-            "Serwer traktuje je jako iPada i zostawia blokady, ale popraw polityke; "
-            "profil zapisu mogl powstac bez blokady usuniecia — zapisz iPada ponownie.",
+            + (
+                "Wpis jest w kwarantannie (bledy iPhone'a), wiec iPad NIE dostaje "
+                "wlasnych ograniczen z tego wpisu — usun `kind: iphone` i zrestartuj "
+                "serwer. "
+                if quarantined
+                else "Serwer traktuje je jako iPada i zostawia blokady, ale popraw "
+                "polityke; "
+            )
+            + "profil zapisu mogl powstac bez blokady usuniecia — zapisz iPada ponownie.",
         )
     if kind in ("cert_mismatch", "enrollment_reuse", "unknown_identity"):
         return (

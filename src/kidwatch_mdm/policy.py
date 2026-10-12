@@ -212,9 +212,17 @@ def load_schema(path: str | os.PathLike | None) -> dict | None:
 
 def validate(policy: Policy, schema: dict | None) -> list[str]:
     """Bledy polityki. Pusta lista = mozna startowac."""
-    errors: list[str] = []
+    return [error for _, error in validate_entries(policy, schema)]
+
+
+def validate_entries(policy: Policy, schema: dict | None) -> list[tuple[str | None, str]]:
+    """Bledy z wpisem, ktorego dotycza: (etykieta urzadzenia albo None dla
+    ustawien wspolnych, tresc). Przypisanie nie z tekstu bledu — iPhone
+    z etykieta `software_update` nie moze polknac bledu wspolnych ustawien."""
+    entries: list[tuple[str | None, str]] = []
     labels = ["(wspolne)", *(lb for lb, d in policy.devices.items() if d.kind != "iphone")]
     for label in labels:
+        errors: list[str] = []
         restr = (
             {**DEFAULT_RESTRICTIONS, **policy.restrictions}
             if label == "(wspolne)"
@@ -237,15 +245,17 @@ def validate(policy: Policy, schema: dict | None) -> list[str]:
                     and not (expected is int and isinstance(value, bool))
                 ):
                     errors.append(f"{label}: {key} ma typ {spec['type']}, dostalem {value!r}")
+        owner = None if label == "(wspolne)" else label
+        entries += [(owner, e) for e in errors]
     for label, dev in policy.devices.items():
         if dev.kind == "iphone":
-            errors += _iphone_errors(label, dev, schema)
+            entries += [(label, e) for e in _iphone_errors(label, dev, schema)]
     if schema is not None:
         su_keys = schema["declarations"]["com.apple.configuration.softwareupdate.settings"]["keys"]
         for key in policy.software_update:
             if key not in su_keys:
-                errors.append(f"software_update: nieznany klucz {key!r}")
-    return errors
+                entries.append((None, f"software_update: nieznany klucz {key!r}"))
+    return entries
 
 
 def _iphone_errors(label: str, dev: DevicePolicy, schema: dict | None) -> list[str]:
@@ -285,24 +295,38 @@ def _iphone_errors(label: str, dev: DevicePolicy, schema: dict | None) -> list[s
 def load(path: str | os.PathLike, schema: dict | None = None) -> Policy:
     """Polityka gotowa do startu albo PolicyError.
 
-    Bledny wpis iPhone'a NIE zatrzymuje startu: trafia do kwarantanny (zostaje
-    sama nazwa i rodzaj, bez wlasnych ograniczen) i do `policy.rejected`,
-    a serwer zapisuje zdarzenie, z ktorego Kidwatch robi alarm. iPhone i tak
-    dostaje tylko klucze bez nadzoru, wiec kwarantanna nie zdejmuje zadnej
-    dzialajacej blokady — a brak startu odcialby od komend wszystkie iPady.
-    Kazdy inny blad (wspolne ustawienia, wpis iPada) dalej zatrzymuje start:
-    zdjecie wpisu iPada po cichu zabraloby nadzorowanemu iPadowi DNS
-    i blokady. Sprawdzenie na sucho: `kidwatch-mdm check-policy`.
+    Zasada: zaden blad w polityce nie moze po cichu ZDJAC ochrony z iPada.
+
+    Bledny wpis, o ktorym wiadomo, ze to iPhone (`kind: iphone` i bez
+    `dns_url`), NIE zatrzymuje startu: trafia do kwarantanny (zostaje sama
+    nazwa i rodzaj, bez wlasnych ograniczen — iPhone traci tez te dzialajace
+    bez nadzoru) i do `policy.rejected`, a serwer zapisuje zdarzenie, z ktorego
+    Kidwatch robi alarm. Brak startu odcialby od komend wszystkie iPady.
+
+    Zatrzymuje start, jak przed E5:
+      * blad we wspolnych ustawieniach albo we wpisie iPada;
+      * blad we wpisie `kind: iphone` z `dns_url` — iPhone nigdy go nie ma (DNS
+        idzie recznym profilem), wiec to najpewniej iPad z pomylonym `kind`,
+        a kwarantanna skasowalaby mu DNS i blokady;
+      * kwarantanna wpisu, pod ktorego etykieta w bazie jest zapisany iPad —
+        tego load() nie wie, sprawdza MDMService przy starcie.
+    Sprawdzenie na sucho: `kidwatch-mdm check-policy`.
     """
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     policy = Policy.model_validate(raw)
-    iphones = {label for label, d in policy.devices.items() if d.kind == "iphone"}
+    iphones = {
+        label for label, d in policy.devices.items() if d.kind == "iphone" and not d.dns_url
+    }
     rejected: dict[str, list[str]] = {}
     fatal: list[str] = []
-    for error in validate(policy, schema):
-        label = error.split(":", 1)[0]
+    for label, error in validate_entries(policy, schema):
         if label in iphones:
             rejected.setdefault(label, []).append(error)
+        elif label is not None and policy.devices[label].kind == "iphone":
+            fatal.append(
+                f"{error} (wpis ma dns_url, ktorego iPhone nie uzywa — jesli to iPad, "
+                f"usun `kind: iphone`; jesli iPhone, usun dns_url)"
+            )
         else:
             fatal.append(error)
     if fatal:

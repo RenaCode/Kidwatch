@@ -117,13 +117,23 @@ placeholdery.
    ```
 
    Kod 0 = można wgrywać. Potem podmień Sekret i zrestartuj `kidwatch-mdm`
-   (polityka czyta się przy starcie). Jeśli mimo to wpis iPhone'a ma błąd,
-   serwer **wstaje** (iPady dalej zarządzane), a ten wpis idzie do kwarantanny
-   bez własnych ograniczeń — z alarmem „MDM: wpis … w polityce odrzucony”.
-   Błąd we wspólnych ustawieniach albo we wpisie iPada nadal zatrzymuje start:
-   zdjęcie wpisu iPada po cichu zabrałoby nadzorowanemu iPadowi DNS i blokady.
-   `kind: iphone` wpisany pomyłkowo pod etykietą iPada nie zdejmuje mu blokad
-   (urządzenie zgłasza się jako iPad) — daje alarm „pomyłka rodzaju”.
+   (polityka czyta się przy starcie). Zasada: **żaden błąd w polityce nie
+   zdejmuje po cichu ochrony z iPada.**
+   - Błąd we wpisie, o którym wiadomo, że to iPhone (`kind: iphone`, bez
+     `dns_url`, pod etykietą nie ma zapisanego iPada): serwer **wstaje**
+     (iPady dalej zarządzane), a ten wpis idzie do kwarantanny — iPhone traci
+     **wszystkie** własne ograniczenia z wpisu, także działające bez nadzoru
+     (np. `allowCamera`). Alarm „MDM: wpis … w polityce odrzucony” przychodzi
+     raz na zmianę błędów, nie po każdym restarcie.
+   - Start zatrzymują, jak dotąd: błąd we wspólnych ustawieniach albo we
+     wpisie iPada; błąd we wpisie `kind: iphone` **z `dns_url`** (iPhone go
+     nie używa, więc to najpewniej iPad z pomylonym `kind`); błąd we wpisie,
+     pod którego etykietą jest zapisany iPad.
+   - `kind: iphone` pomyłkowo pod etykietą iPada **bez błędów** we wpisie:
+     iPad zostaje iPadem z pełnym wpisem (zgłasza się jako iPad) i jest alarm
+     „pomyłka rodzaju”. Jeśli taki wpis jest w kwarantannie, a iPad zapisze się
+     dopiero później, nie dostaje ograniczeń z wpisu — alarm mówi to wprost
+     (priorytet 5).
 7. **Zapis do MDM**: w panelu (zakładka MDM → link do zapisu, etykieta
    `iphone1`) albo `kubectl -n default exec deploy/kidwatch-mdm --
    kidwatch-mdm enroll iphone1`. Link otwórz w Safari **na iPhonie** →

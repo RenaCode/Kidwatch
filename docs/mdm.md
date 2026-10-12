@@ -69,7 +69,7 @@ Repo jest publiczne — prawdziwej polityki (adresy NextDNS, etykiety dzieci) ni
 uv run python -m kidwatch_mdm check-policy policy.yaml --schema tools/apple_schema_index.json
 ```
 
-Błędny wpis iPhone'a (`kind: iphone`) nie zatrzymuje startu: trafia do kwarantanny (bez własnych ograniczeń) z alarmem w Kidwatchu — iPhone i tak dostaje tylko klucze działające bez nadzoru, więc nic działającego nie znika.
+Błędny wpis iPhone'a (`kind: iphone`, bez `dns_url`, bez zapisanego pod tą etykietą iPada) nie zatrzymuje startu: trafia do kwarantanny z alarmem w Kidwatchu (raz na zmianę błędów). iPhone traci wtedy **wszystkie** własne ograniczenia z wpisu, także te działające bez nadzoru. Wpis `kind: iphone` z `dns_url` albo z etykietą zapisanego iPada zatrzymuje start jak dotąd — kwarantanna zdjęłaby iPadowi DNS i blokady. Szczegóły: [`docs/iphone.md`](iphone.md) krok 6.
 
 ## Krok 3 — DNS i ArgoCD
 

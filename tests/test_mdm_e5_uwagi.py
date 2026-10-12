@@ -190,3 +190,85 @@ def test_pomylka_rodzaju_daje_jedno_zdarzenie(tmp_path):
 
     payload = plistlib.loads(install[0]["Command"]["Payload"])["PayloadContent"][0]
     assert payload["allowVPNCreation"] is False
+
+
+# ========================================== przeglad #53: B1, D2-D4
+def _ipad_jako_iphone(**extra) -> dict:
+    """Scenariusz recenzenta: wpis iPada z DNS, pomylkowe `kind: iphone`
+    i wlasne klucze nadzoru."""
+    return {**POLITYKA, "devices": {**POLITYKA["devices"], "dziecko1": {
+        **POLITYKA["devices"]["dziecko1"], "kind": "iphone", **extra}}}
+
+
+@pytest.mark.parametrize("kind", ["iphone", "iPhone", " IPHONE "])
+@pytest.mark.parametrize("extra", [{"blocked_apps": ["com.example.x"]},
+                                   {"restrictions": {"allowDeviceNameModification": False}}])
+def test_wpis_z_dns_url_i_bledem_iphone_a_zatrzymuje_start(tmp_path, kind, extra):
+    """Bloker B1: kwarantanna skasowalaby iPadowi dns_url i blokady.
+    iPhone nigdy nie ma dns_url (DNS idzie recznym profilem), wiec taki wpis
+    to najpewniej iPad — glosny brak startu, jak przed E5."""
+    with pytest.raises(PolicyError, match="dns_url"):
+        load(_zapisz(tmp_path, _ipad_jako_iphone(kind=kind, **extra)), SCHEMA)
+
+
+def test_kwarantanna_wpisu_zapisanego_ipada_zatrzymuje_start(tmp_path):
+    """Wpis bez dns_url, ale etykieta nalezy do zapisanego iPada: tez stop."""
+    raw = {**POLITYKA, "devices": {**POLITYKA["devices"], "test": {
+        "name": "iPad testowy", "kind": "iphone", "blocked_apps": ["com.example.x"]}}}
+    policy = load(_zapisz(tmp_path, raw), SCHEMA)
+    assert set(policy.rejected) == {"test"}
+    store = Store(tmp_path / "m.db")
+    token = store.create_enrollment("test", __import__("datetime").timedelta(hours=1))
+    with store.tx() as c:
+        c.execute("INSERT INTO devices (udid, label, enrollment_token, cert_fp, product, "
+                  "enrolled_at, last_seen_at) VALUES ('00000000-0000000000000003', 'test', "
+                  "?, 'fp', 'iPad7,5', '2026-10-12T00:00:00Z', '2026-10-12T00:00:00Z')",
+                  (token,))
+    with pytest.raises(PolicyError, match="iPad7,5"):
+        MDMService(store=store, ca=nowe_ca(tmp_path / "ca"), policy=policy,
+                   public_url="https://mdm.example.invalid")
+
+
+def test_bledy_przypisane_do_wpisu_nie_po_tekscie(tmp_path):
+    """D2: iPhone z etykieta `software_update` nie polyka bledu wspolnych ustawien."""
+    raw = {**POLITYKA, "software_update": {"Notyfikacje": True},
+           "devices": {**POLITYKA["devices"],
+                       "software_update": {"name": "iPhone", "kind": "iphone",
+                                           "blocked_apps": ["com.example.x"]}}}
+    with pytest.raises(PolicyError, match="Notyfikacje"):
+        load(_zapisz(tmp_path, raw), SCHEMA)
+
+
+def test_check_policy_bez_schematu_uzywa_schematu_z_repo(tmp_path, monkeypatch):
+    """D3: bez --schema i bez KIDWATCH_MDM_SCHEMA nie wolno przepuscic literowki."""
+    bad = _zapisz(tmp_path, {**POLITYKA, "restrictions": {"allowCamra": False}})
+    env = {k: v for k, v in __import__("os").environ.items() if k != "KIDWATCH_MDM_SCHEMA"}
+    res = subprocess.run([sys.executable, "-m", "kidwatch_mdm", "check-policy", str(bad)],
+                         capture_output=True, text=True, check=False, env=env)
+    assert res.returncode == 1 and "allowCamra" in res.stdout
+
+
+def test_alarm_kwarantanny_raz_na_zmiane_bledow(tmp_path):
+    """D4: restart poda nie powtarza alarmu; nowy blad - nowy alarm."""
+    store = Store(tmp_path / "m.db")
+    ca = nowe_ca(tmp_path / "ca")
+
+    def start(restrictions):
+        policy = load(_zapisz(tmp_path, _z_iphonem(restrictions=restrictions)), SCHEMA)
+        MDMService(store=store, ca=ca, policy=policy, public_url="https://mdm.example.invalid")
+        return [e for e in store.events() if e["kind"] == "policy_entry_rejected"]
+
+    assert len(start({"allowVPNCreation": False})) == 1
+    assert len(start({"allowVPNCreation": False})) == 1
+    assert len(start({"allowEraseContentAndSettings": False})) == 2
+    assert len(start({})) == 2
+    assert len(start({"allowEraseContentAndSettings": False})) == 3  # znow zepsute
+
+
+def test_alarm_pomylki_rodzaju_mowi_prawde_przy_kwarantannie():
+    tekst = kw_mdm._describe({"kind": "kind_mismatch", "detail": {
+        "label": "test", "product": "iPad7,5", "quarantined": True}}, "iPad")[3]
+    assert "zostawia blokady" not in tekst and "kwarantann" in tekst
+    zwykly = kw_mdm._describe({"kind": "kind_mismatch", "detail": {
+        "label": "test", "product": "iPad7,5"}}, "iPad")[3]
+    assert "zostawia blokady" in zwykly

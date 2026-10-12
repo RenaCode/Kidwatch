@@ -30,6 +30,8 @@ from pathlib import Path
 from . import apns_cert
 
 DEFAULT_APNS_DIR = Path.home() / ".kidwatch-mdm" / "apns"
+#: Indeks schematu w repo (check-policy na Macu, bez zmiennych obrazu).
+REPO_SCHEMA = Path(__file__).resolve().parents[2] / "tools" / "apple_schema_index.json"
 #: Co ile uzgadniac stan iPadow z polityka. Zmiana z API wymusza obieg od razu.
 RECONCILE_SECONDS = 300
 #: Ponowienie po nieudanym uzgadnianiu.
@@ -153,9 +155,12 @@ def cmd_check_policy(args) -> int:
     """Walidacja polityki na sucho — PRZED podmiana Sekretu i restartem."""
     from . import policy as policy_mod
 
-    schema = policy_mod.load_schema(args.schema)
-    if schema is None:
-        print("UWAGA: bez --schema klucze nie sa sprawdzane ze schematem Apple")
+    path = args.schema or _env("KIDWATCH_MDM_SCHEMA") or str(REPO_SCHEMA)
+    if not Path(path).is_file():
+        # Serwer w obrazie waliduje ze schematem — „OK" bez niego byloby falszywe.
+        print(f"BLAD: brak indeksu schematu Apple ({path}); podaj --schema")
+        return 2
+    schema = policy_mod.load_schema(path)
     try:
         policy = policy_mod.load(args.file, schema)
     except (policy_mod.PolicyError, ValueError, OSError) as exc:
@@ -240,8 +245,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("check-policy", help="sprawdz polityke na sucho, przed restartem")
     sp.add_argument("file", help="plik polityki YAML")
-    sp.add_argument("--schema", default=_env("KIDWATCH_MDM_SCHEMA"),
-                    help="indeks schematu Apple (domyslnie $KIDWATCH_MDM_SCHEMA)")
+    sp.add_argument("--schema", help="indeks schematu Apple (domyslnie $KIDWATCH_MDM_SCHEMA "
+                    "albo tools/apple_schema_index.json z repo)")
     sp.set_defaults(func=cmd_check_policy)
 
     sp = sub.add_parser("init-ca", help="nowe CA tozsamosci urzadzen (raz na zawsze)")

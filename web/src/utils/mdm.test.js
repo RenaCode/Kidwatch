@@ -10,6 +10,8 @@ test('karta MDM: iPhone ma ikone telefonu, iOS i restart tylko pod nadzorem', ()
   const ipad = mdmDevice({ kind: 'ipad', product: 'iPad13,18', supervised: true });
   assert.deepEqual(ipad, { icon: 'tablet', os: 'iPadOS', canRestart: true, restartHint: '' });
   assert.equal(mdmDevice({ product: 'iPad13,18' }).icon, 'tablet');
+  assert.equal(eventTone({ kind: 'policy_entry_rejected', detail: '{}' }), 'warn');
+  assert.equal(eventTone({ kind: 'kind_mismatch', detail: '{}' }), 'warn');
 });
 
 test('stare os_update_failed z count 0 nie jest alarmem ani wpisem', () => {

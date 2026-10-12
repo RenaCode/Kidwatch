@@ -15,7 +15,8 @@ export function isMeaningfulEvent(event) {
 }
 
 const ALARM = new Set(['checkout', 'profile_missing', 'push_token_dead', 'cert_mismatch',
-  'enrollment_reuse', 'unknown_identity', 'os_update_failed']);
+  'enrollment_reuse', 'unknown_identity', 'os_update_failed', 'policy_entry_rejected',
+  'kind_mismatch']);
 
 /* 'warn' | 'ok' | '' - kolor plakietki zdarzenia. Zmiana nadzoru to alarm
    tylko przy UTRACIE; odzyskanie nadzoru jest dobra wiadomoscia. */

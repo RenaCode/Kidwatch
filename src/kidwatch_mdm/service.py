@@ -29,7 +29,7 @@ from typing import Any
 from . import profiles
 from .apns import NoPusher, Pusher
 from .pki import CA, SignatureError, fingerprint, verify_mdm_signature
-from .policy import MdmKind, Policy
+from .policy import MdmKind, Policy, PolicyError
 from .signing import ProfileSigner
 from .store import Store, from_iso, iso, now_utc
 
@@ -130,15 +130,34 @@ class MDMService:
         #: TokenUpdate, nie powinien dostac pusha w trakcie tej samej wymiany.
         self._kick_lock = threading.Lock()
         self._kicks: set[str] = set()
-        for label, errors in policy.rejected.items():
-            # Kwarantanna wpisu iPhone'a (policy.load): serwer wstaje, ale
-            # wlasciciel ma sie o tym dowiedziec — zdarzenie = alarm Kidwatcha.
-            log.error("polityka: wpis %s odrzucony: %s", label, "; ".join(errors))
-            self.store.event("policy_entry_rejected", detail={"label": label, "errors": errors})
+        self._check_quarantine()
         #: Stan petli uzgadniania (ustawia __main__.loop_step) do /api/health.
         self.started_at = now_utc()
         self.next_reconcile = 0.0
         self.last_reconcile_error: str | None = None
+
+    def _check_quarantine(self) -> None:
+        """Kwarantanna wpisow iPhone'a (policy.load) przy starcie.
+
+        Etykieta zapisanego iPada w kwarantannie = start przerwany: iPad
+        stracilby wlasne ograniczenia wpisu. Inaczej serwer wstaje, a wlasciciel
+        dostaje alarm — raz na zmiane bledow, nie po kazdym restarcie poda.
+        """
+        rejected = self.policy.rejected
+        for device in self.store.devices():
+            if device["label"] in rejected and (device["product"] or "").startswith("iPad"):
+                raise PolicyError(
+                    f"polityka odrzucona: wpis {device['label']} (kind: iphone) ma bledy, "
+                    f"a pod ta etykieta jest zapisany iPad ({device['product']}) — "
+                    f"kwarantanna zdjelaby mu ograniczenia: " + "; ".join(rejected[device["label"]])
+                )
+        before = self.store.setting("policy_rejected") or {}
+        for label, errors in rejected.items():
+            log.error("polityka: wpis %s w kwarantannie: %s", label, "; ".join(errors))
+            if before.get(label) != errors:
+                self.store.event("policy_entry_rejected", detail={"label": label, "errors": errors})
+        if before != rejected:
+            self.store.set_setting("policy_rejected", rejected)
 
     # ================================================================ zapis
     def create_enrollment(self, label: str) -> dict[str, str]:
@@ -600,7 +619,11 @@ class MDMService:
         self.store.event(
             "kind_mismatch",
             device["udid"],
-            {"label": device["label"], "product": device["product"]},
+            {
+                "label": device["label"],
+                "product": device["product"],
+                "quarantined": device["label"] in self.policy.rejected,
+            },
         )
         self.store.set_setting(key, True)
 

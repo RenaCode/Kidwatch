@@ -23,6 +23,8 @@ const EVENT_LABELS = {
   enrollment_created: 'nowe zaproszenie',
   signature_rejected: 'odrzucony podpis',
   cert_mismatch: 'próba podszycia',
+  policy_entry_rejected: 'wpis polityki odrzucony',
+  kind_mismatch: 'pomyłka rodzaju w polityce',
 };
 
 function Action({ label, onRun, disabled, title }) {

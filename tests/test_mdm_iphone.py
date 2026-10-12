@@ -196,7 +196,11 @@ def test_walidacja_odrzuca_klucze_nadzoru_dla_iphone_a(tmp_path, dev, blad):
     errors = validate(policy, SCHEMA)
     assert any("iphone1" in e and blad in e for e in errors), errors
     path = tmp_path / "policy.yaml"
-    path.write_text(json.dumps(policy.model_dump()), encoding="utf-8")
+    raw = policy.model_dump()
+    # Wpis iPhone'a z dns_url przy bledzie zatrzymuje start (przeglad #53, B1);
+    # kwarantanna tylko dla wpisu bez dns_url, jak w docs/iphone.md.
+    raw["devices"]["iphone1"]["dns_url"] = None
+    path.write_text(json.dumps(raw), encoding="utf-8")
     # Po przegladzie E5 (U2): wpis iPhone'a w kwarantannie, start nie pada.
     loaded = load(path, SCHEMA)
     assert any(blad in e for e in loaded.rejected["iphone1"])
