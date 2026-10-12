@@ -659,3 +659,18 @@ def test_stary_obraz_E1_dopisuje_bez_domu_a_powrot_to_sprzata(tmp_path):
     raport = dm.RejestrDomow(path).migruj()
     assert raport.uzgodnione == ("konto-x",)
     assert dm.RejestrDomow(path).czlonkostwa(uid) == []
+
+
+def test_front_zna_te_same_trasy_domu_co_serwer():
+    """utils/domy.js dokleja prefiks domu WYLACZNIE trasom z zakresem `dom`.
+    Trasa domu nieznana frontowi szlaby aliasem (409 przy dwoch domach),
+    a trasa konta z prefiksem — w 404."""
+    import re  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    js = (Path(__file__).resolve().parents[1] / "web" / "src" / "utils" / "domy.js").read_text(
+        "utf-8")
+    blok = js[js.index("export const TRASY_DOMU"):js.index("];", js.index("TRASY_DOMU"))]
+    front = set(re.findall(r"'([^']+)'", blok))
+    serwer = {k.removeprefix(PREFIKS_DOMU + "/") for k in (*DOM_GET, *DOM_POST)}
+    assert front == serwer, (front ^ serwer)

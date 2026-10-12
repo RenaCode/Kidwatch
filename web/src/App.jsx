@@ -11,7 +11,8 @@ import Dashboard from './components/Dashboard';
 import Icon from './components/Icons';
 import ErrorBoundary from './components/ErrorBoundary';
 import { TvPauseBanner } from './components/TvPause';
-import { get, post, qs, useApi, setSessionExpiredHandler, setSsoMode } from './utils/api';
+import { get, post, qs, useApi, setHome, setSessionExpiredHandler, setSsoMode } from './utils/api';
+import { homeLabel, pickHome, roleLabel, showSwitcher, userInHome } from './utils/domy';
 import { signOutLabel, signOutTarget, ssoDenial } from './utils/sso';
 import { ALL, can, isViewer, sectionsFor } from './utils/uprawnienia';
 import { localToday } from './utils/format';
@@ -46,6 +47,16 @@ function saveChild(child) {
   } catch { /* bez pamieci wyboru - trudno */ }
 }
 
+/* Wybrany dom przezywa odswiezenie, jak dziecko. Konto, ktore domu juz nie
+   widzi, wraca do pierwszego (pickHome). */
+const HOME_KEY = 'kidwatch.dom';
+function readHome() {
+  try { return window.localStorage.getItem(HOME_KEY) || ''; } catch { return ''; }
+}
+function saveHome(id) {
+  try { window.localStorage.setItem(HOME_KEY, String(id)); } catch { /* trudno */ }
+}
+
 /* Podglad UI bez backendu - WYLACZNIE w `npm run dev` (import.meta.env.DEV).
    W buildzie produkcyjnym Vite podstawia false i caly kod podgladu znika:
    na produkcji nie ma przycisku, falszywego konta ani zmyslonych danych. */
@@ -78,7 +89,8 @@ export default function App() {
 
   const checkSession = useCallback(async () => {
     if (isPreview) {
-      setUser({ login: 'admin', rola: 'wlasciciel', uprawnienia: ALL, totp_enabled: true, backup_codes_left: 5 });
+      setUser({ login: 'admin', rola: 'wlasciciel', uprawnienia: ALL, totp_enabled: true, backup_codes_left: 5,
+        domy: [{ id: 1, nazwa: 'Dom 1', rola: 'wlasciciel-domu', administracja: false, uprawnienia: ALL }] });
       setAuthState('in');
       return;
     }
@@ -128,7 +140,50 @@ export default function App() {
   if (authState === 'out') {
     return <Login onSuccess={checkSession} />;
   }
-  return <Panel user={user} onSignOut={signOut} onUserChanged={checkSession} />;
+  return <Homes user={user} onSignOut={signOut} onUserChanged={checkSession} />;
+}
+
+/* Dom panelu. Prefiks tras domu ustawiany w trakcie renderu (setHome),
+   zanim dzieci wysla pierwsze zapytanie - efekty dzieci biegna przed
+   efektami rodzica. `key` montuje panel od nowa przy zmianie domu: stan,
+   filtry i odswiezanie poprzedniego domu znikaja razem z nim, bez
+   przeladowania strony. */
+function Homes({ user, onSignOut, onUserChanged }) {
+  const [saved, setSaved] = useState(readHome);
+  const domId = pickHome(user?.domy, saved);
+  setHome(domId);
+  const pick = (id) => { saveHome(id); setSaved(String(id)); };
+  if (domId == null) {
+    return (
+      <div className="login-shell">
+        <div className="login-card glass-card">
+          <div className="login-card-head">
+            <h1>Brak domu</h1>
+            <p>To konto nie należy do żadnego domu. Poproś osobę zarządzającą domem o dodanie.</p>
+          </div>
+          <button className="btn-primary" onClick={onSignOut}>{signOutLabel(user)}</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <Panel key={domId} user={userInHome(user, domId)} homes={user.domy} domId={domId}
+           onPickHome={pick} onSignOut={onSignOut} onUserChanged={onUserChanged} />
+  );
+}
+
+/* Przelacznik domu w naglowku - tylko przy wiecej niz jednym domu. */
+function HomeSwitcher({ homes, domId, onPick }) {
+  if (!showSwitcher(homes)) return null;
+  return (
+    <label className="home-switch">
+      <span className="sr-only">Dom</span>
+      <select className="input-field" value={domId} aria-label="Dom"
+              onChange={(e) => onPick(Number(e.target.value))}>
+        {homes.map((d) => <option key={d.id} value={d.id}>{homeLabel(d)}</option>)}
+      </select>
+    </label>
+  );
 }
 
 // Authelia wpuscila, ale panel nie zna tego konta (albo grupy). Haslo panelu
@@ -166,7 +221,8 @@ function AccountMenu({ user, onProfile, onSignOut }) {
         </span>
         <span className="account-id">
           <strong>{user?.login}</strong>
-          <span>{isViewer(user) ? 'podgląd' : ''}</span>
+          <span>{user?.dom?.administracja ? 'administracja' : isViewer(user) ? 'podgląd'
+            : user?.dom?.rola === 'zarzadca' ? roleLabel('zarzadca') : ''}</span>
         </span>
         <Icon name="chevron" size={16} className="account-chev" />
       </button>
@@ -276,7 +332,7 @@ function greeting(now = new Date()) {
 
 // Osobny komponent, zeby odswiezanie co 30 s startowalo dopiero po zalogowaniu
 // i znikalo razem z panelem - bez warunkow w hookach App.
-function Panel({ user, onSignOut, onUserChanged }) {
+function Panel({ user, homes, domId, onPickHome, onSignOut, onUserChanged }) {
   const [section, setSection] = useState('pulpit');
   const [profile, setProfile] = useState(false);
   const meta = useApi('/api/meta');
@@ -362,6 +418,7 @@ function Panel({ user, onSignOut, onUserChanged }) {
             <span className="crumb-meta hide-mid">{greeting()}, {user?.login}!</span>
           </div>
           <div className="top-actions">
+            <HomeSwitcher homes={homes} domId={domId} onPick={onPickHome} />
             <span className={`api-state ${apiState}`} role="status"
                   title={devices.error ? `Panel nie odpowiada: ${devices.error}` : 'Odświeżane co 30 s'}>
               <span className="api-dot" />
