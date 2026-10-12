@@ -18,7 +18,6 @@ Dane generyczne (publiczne repo): „Dziecko A”, domeny .invalid.
 from __future__ import annotations
 
 import os
-import plistlib
 import shutil
 import subprocess
 
@@ -27,6 +26,7 @@ import pytest
 from kidwatch_mdm import profiles
 from kidwatch_mdm.pki import CA
 from kidwatch_mdm.policy import Policy
+from kidwatch_mdm.service import payload_install_profile
 
 #: Job CI na macOS ustawia 1: tam brak plutil ma byc BLEDEM, nie pominieciem.
 WYMAGAJ_PLUTIL = os.environ.get("KIDWATCH_WYMAGAJ_PLUTIL") == "1"
@@ -74,8 +74,8 @@ def _enrollment(ca: CA, label: str) -> bytes:
 
 def _restrictions(label: str) -> bytes:
     profile, _ = profiles.restrictions_profile(Policy.model_validate(POLITYKA), label)
-    # Ta sama serializacja co w MDMService (InstallProfile, `Payload`).
-    return plistlib.dumps(profile, fmt=plistlib.FMT_XML, sort_keys=True)
+    # Te same bajty, ktore MDMService wklada do InstallProfile (`Payload`).
+    return payload_install_profile(profile)
 
 
 #: (nazwa, budowa) — wszystko, co serwer wysyla: zapis i ograniczenia,
