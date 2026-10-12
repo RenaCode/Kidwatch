@@ -607,15 +607,12 @@ class PanelAuth:
 
     @staticmethod
     def _uprawnienia(conn: sqlite3.Connection, uid: int, rola: str) -> frozenset[str]:
-        """Uprawnienia konta POZA domem: `konto.wlasne` i zakres instancji.
-        Instancji (bot WhatsApp) — z czlonkostwa w Domu 1, domu operatora;
-        rola administratora instalacji dochodzi w panelu (panel_domy.py)."""
-        del rola  # od E3a rola w `users` to tylko lustro Domu 1
-        stan = domy.czlonkostwo_conn(conn, uid, domy.DOM_1)
-        dom_1 = frozenset()
-        if stan is not None:
-            dom_1 = uprawnienia.efektywne(*stan, role=uprawnienia.ROLE_DOMU_UPRAWNIENIA)
-        return uprawnienia.STALE | (dom_1 & uprawnienia.UPRAWNIENIA_INSTANCJI)
+        """Uprawnienia konta POZA domem: tylko `konto.wlasne`. Zakres
+        instancji (bot WhatsApp) ma WYLACZNIE aktywny administrator instalacji
+        (decyzja wlasciciela 2026-10-12, §2.3) — dochodzi w panelu
+        (panel_domy.uprawnienia_sesji), nie z roli w zadnym domu."""
+        del conn, uid, rola
+        return uprawnienia.STALE
 
     def reset_user(self, login: str, password: str) -> int:
         """Nowe haslo, zdjeta blokada, WSZYSTKIE sesje i bilety uniewaznione.

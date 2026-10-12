@@ -177,14 +177,34 @@ def server(tmp_path, monkeypatch):
     auth.add_user("rodzic1", HASLO)
     auth.add_user("rodzic2", HASLO, panel_auth.ROLE_VIEWER)
     srv = start_panel(cfg)
+    srv.auth = auth
     yield srv, auth
     srv.shutdown()
 
 
-def naglowki(srv, login: str) -> dict[str, str]:
+def naglowki(srv, login: str, path: str | None = None) -> dict[str, str]:
+    """Sesja z hasla. Dla trasy z zakresem instancji (bot WhatsApp) jako
+    wlasciciel — aktywny administrator instalacji: flaga + grupa `admins`
+    przez Authelie (§2.3); sam `wlasciciel` Domu 1 tego zakresu nie ma."""
     c = panel_login(srv.server_address[1], login, HASLO)
     j = dict(x.split("=", 1) for x in c.split("; "))
-    return {"Cookie": c, "X-CSRF-Token": j["kidwatch_csrf"]}
+    h = {"Cookie": c, "X-CSRF-Token": j["kidwatch_csrf"]}
+    if path and login == "rodzic1" and _instancji(path):
+        from kidwatch.domy import RejestrDomow  # noqa: PLC0415
+
+        auth = srv.auth
+        RejestrDomow(auth.path).ustaw_admin_instancji(auth.user_id(login), True)
+        h |= {"Remote-User": login, "Remote-Groups": "admins"}
+    return h
+
+
+def _admin(srv, path: str) -> dict[str, str]:
+    return naglowki(srv, "rodzic1", path)
+
+
+def _instancji(path: str) -> bool:
+    t = trasa("POST", path) or trasa("GET", path)
+    return t is not None and t.zakres == uprawnienia.ZAKRES_INSTANCJA
 
 
 ZAMKNIETE_POST = sorted(_get_path(p) for p, (u, _, _) in POST_TRASY.items()
@@ -204,6 +224,9 @@ def test_podglad_403_na_kazda_zamknieta_trase_POST(server, path):
     status, _, payload = call(srv, "POST", path, {}, naglowki(srv, "rodzic2"))
     assert status == 403 and trasa("POST", path).uprawnienie in payload["error"], (path, payload)
     status, _, payload = call(srv, "POST", path, {}, naglowki(srv, "rodzic1"))
+    if _instancji(path):  # bez roli administratora — tak samo jak podglad
+        assert status == 403 and uprawnienia.WHATSAPP in payload["error"], (path, payload)
+        status, _, payload = call(srv, "POST", path, {}, _admin(srv, path))
     assert "nie ma uprawnienia" not in (payload or {}).get("error", ""), (path, payload)
 
 
@@ -213,6 +236,9 @@ def test_podglad_403_na_kazda_zamknieta_trase_GET(server, path):
     status, _, payload = call(srv, "GET", path, headers=naglowki(srv, "rodzic2"))
     assert status == 403 and "nie ma uprawnienia" in payload["error"], (path, payload)
     status, _, payload = call(srv, "GET", path, headers=naglowki(srv, "rodzic1"))
+    if _instancji(path):
+        assert status == 403 and "nie ma uprawnienia" in payload["error"], (path, payload)
+        status, _, payload = call(srv, "GET", path, headers=_admin(srv, path))
     assert "nie ma uprawnienia" not in (payload or {}).get("error", ""), (path, payload)
 
 

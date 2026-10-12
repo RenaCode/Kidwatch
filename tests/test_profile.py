@@ -122,7 +122,7 @@ def test_qr_bota_tylko_po_swiezym_potwierdzeniu(served):
     rozłączeniu), więc QR na samą sesję pozwalał przejętej sesji podpiąć
     obcy numer jako nadawcę. QR tylko po świeżym reauth tej sesji."""
     _, _, port, h, calls = served
-    cookie = {"Cookie": h["Cookie"]}
+    cookie = bez_csrf(h)
     # Sesja WAHA czeka na skan, ale ta sesja panelu niczego nie potwierdzała.
     calls_before = len(calls)
     status, data = call(port, "GET", "/api/profile/whatsapp/qr", headers=cookie)
@@ -133,7 +133,9 @@ def test_qr_bota_tylko_po_swiezym_potwierdzeniu(served):
     assert status == 200 and qr["data"] == "iVBOR"
     # Po wylogowaniu z panelu ta sama sesja nie przejdzie.
     assert call(port, "POST", "/api/auth/logout", {}, h)[0] == 200
-    assert call(port, "GET", "/api/profile/whatsapp/qr", headers=cookie)[0] == 401
+    # Sam stary token (bez naglowkow Authelii, ktore zalozylyby nowa sesje).
+    assert call(port, "GET", "/api/profile/whatsapp/qr",
+                headers={"Cookie": h["Cookie"]})[0] == 401
 
 
 def test_swiezosc_potwierdzenia_wygasa(tmp_path):
@@ -172,6 +174,21 @@ def call(port, method, path, body=None, headers=None):
     return r.status, data
 
 
+def bez_csrf(h: dict) -> dict:
+    return {k: v for k, v in h.items() if k != "X-CSRF-Token"}
+
+
+def admin_przez_sso(auth_path, login: str, monkeypatch) -> dict[str, str]:
+    """Bot WhatsApp ma zakres instancji: konfiguruje go WYLACZNIE aktywny
+    administrator instalacji (flaga + grupa `admins` z Authelii, §2.3).
+    Naglowki zadania przez Authelie do dolaczenia do sesji z hasla."""
+    from kidwatch.domy import RejestrDomow  # noqa: PLC0415
+
+    monkeypatch.setenv("SSO_NAGLOWKI", "1")
+    RejestrDomow(auth_path).ustaw_admin_instancji(PanelAuth(auth_path).user_id(login), True)
+    return {"Remote-User": login, "Remote-Groups": "admins"}
+
+
 @pytest.fixture
 def served(tmp_path, monkeypatch):
     cfg = make_config(panel=PanelConfig(enabled=True, port=0, static_dir=str(tmp_path),
@@ -181,11 +198,12 @@ def served(tmp_path, monkeypatch):
     calls: list = []
     monkeypatch.setattr(panel_mod, "_bramka_admin", lambda cfg: fake_bramka(calls))
     PanelAuth(cfg.panel_auth_path).add_user("rodzic", HASLO)
+    sso = admin_przez_sso(cfg.panel_auth_path, "rodzic", monkeypatch)
     server = start_panel(cfg)
     port = server.server_address[1]
     cookie = panel_login(port, "rodzic", HASLO)
     csrf = next(c.split("=", 1)[1] for c in cookie.split("; ") if c.startswith("kidwatch_csrf"))
-    yield cfg, store, port, {"Cookie": cookie, "X-CSRF-Token": csrf}, calls
+    yield cfg, store, port, {"Cookie": cookie, "X-CSRF-Token": csrf, **sso}, calls
     server.shutdown()
     store.close()
 
@@ -193,14 +211,14 @@ def served(tmp_path, monkeypatch):
 def test_whatsapp_z_profilu_przez_serwer(served):
     _, _, port, h, calls = served
     assert call(port, "GET", "/api/profile/notify")[0] == 401
-    status, data = call(port, "GET", "/api/profile/notify", headers={"Cookie": h["Cookie"]})
+    status, data = call(port, "GET", "/api/profile/notify", headers=bez_csrf(h))
     assert status == 200 and data["available"] and data["status"] == "BRAK_SESJI"
     # Zmiana stanu bez CSRF — nie.
     assert call(port, "POST", "/api/profile/whatsapp/start", {},
-                {"Cookie": h["Cookie"]})[0] == 403
+                bez_csrf(h))[0] == 403
     assert call(port, "POST", "/api/profile/whatsapp/start", {"confirm": HASLO},
                 h)[1]["status"] == "SCAN_QR_CODE"
-    status, qr = call(port, "GET", "/api/profile/whatsapp/qr", headers={"Cookie": h["Cookie"]})
+    status, qr = call(port, "GET", "/api/profile/whatsapp/qr", headers=bez_csrf(h))
     assert status == 200 and qr["data"] == "iVBOR"
     assert call(port, "POST", "/api/profile/whatsapp/recipient", {"number": "123"}, h)[0] == 400
     status, data = call(port, "POST", "/api/profile/whatsapp/recipient",
@@ -254,7 +272,7 @@ def test_zmiana_hasla_wylogowuje_inne_sesje(served):
     _, _, port, h, _ = served
     druga = panel_login(port, "rodzic", HASLO)
     assert call(port, "POST", "/api/auth/password", {"old": HASLO, "new": "nowe-haslo-123456"},
-                {"Cookie": h["Cookie"]})[0] == 403  # bez CSRF
+                bez_csrf(h))[0] == 403  # bez CSRF
     status, data = call(port, "POST", "/api/auth/password",
                         {"old": "zle-haslo-zle", "new": "nowe-haslo-123456"}, h)
     assert status == 401
@@ -263,7 +281,7 @@ def test_zmiana_hasla_wylogowuje_inne_sesje(served):
                         {"old": HASLO, "new": "nowe-haslo-123456"}, h)
     assert status == 200 and data["closed_sessions"] == 1
     # Biezaca sesja dziala, druga zostala wylogowana.
-    assert call(port, "GET", "/api/auth/me", headers={"Cookie": h["Cookie"]})[0] == 200
+    assert call(port, "GET", "/api/auth/me", headers=bez_csrf(h))[0] == 200
     assert call(port, "GET", "/api/auth/me", headers={"Cookie": druga})[0] == 401
     panel_login(port, "rodzic", "nowe-haslo-123456")
 
@@ -433,7 +451,7 @@ def test_zapis_listy_odbiorcow_wymaga_hasla(served, caplog):
     url = "/api/profile/whatsapp/recipients"
     # Bez CSRF, bez potwierdzenia, ze zlym haslem - bramka nic nie dostaje.
     assert call(port, "POST", url, {"recipients": LISTA, "confirm": HASLO},
-                {"Cookie": h["Cookie"]})[0] == 403
+                bez_csrf(h))[0] == 403
     for body in ({"recipients": LISTA}, {"recipients": LISTA, "confirm": "zle-haslo-zle-haslo"}):
         status, data = call(port, "POST", url, body, h)
         assert status == 401, data
@@ -455,7 +473,7 @@ def test_zapis_listy_odbiorcow_wymaga_hasla(served, caplog):
     assert all(n not in linie for n in (A, B, C))
 
     # Profil widzi liste z bramki (pelne numery - to wlasciciel konta).
-    status, data = call(port, "GET", "/api/profile/notify", headers={"Cookie": h["Cookie"]})
+    status, data = call(port, "GET", "/api/profile/notify", headers=bez_csrf(h))
     assert status == 200 and len(data["odbiorcy"]) == 3
 
     # Trasy z Profilu ida do bramki jako `zrodla`, a log pokazuje, kto co dostaje.

@@ -186,6 +186,17 @@ class DomyPanelu:
         return widoczne[0].dom.id
 
     # ------------------------------------------------------------- audyt
+    def audytuj_instancje(self, session: Session, klucz: str) -> None:
+        """Zmiana wspolna dla instalacji (bot WhatsApp) — wpis z `dom_id` NULL.
+        Robi ja tylko aktywny administrator; jak przy domu: bez wpisu nie ma
+        zmiany (503)."""
+        akcja = "instancja." + klucz.removeprefix("/api/").replace("/", ".")
+        try:
+            self.rejestr.zapisz_audyt(None, session.login, akcja, f"POST {klucz}")
+        except Exception as exc:
+            log.exception("panel: nie zapisano audytu zmiany instancji")
+            raise AuthError(503, "Nie udało się zapisać wpisu w dzienniku") from exc
+
     def audytuj(self, session: Session, ctx: KontekstDomu, metoda: str, klucz: str) -> None:
         """Wejscie administratora do domu bez czlonkostwa. Blad zapisu
         przerywa zadanie (fail-closed): wglad bez sladu w dzienniku nie

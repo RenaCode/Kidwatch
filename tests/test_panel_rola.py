@@ -64,6 +64,7 @@ def server(tmp_path, monkeypatch):
     auth.add_user("rodzic1", HASLO)
     auth.add_user("rodzic2", HASLO, panel_auth.ROLE_VIEWER)
     srv = start_panel(cfg)
+    srv.auth = auth
     yield srv
     srv.shutdown()
 
@@ -86,7 +87,19 @@ def test_wlasciciel_nie_jest_zatrzymany_rola(server, method, path, body):
     """Ta sama lista dla wlasciciela: inna odpowiedz (zwykle 404 — w tescie nie
     ma MDM, bramki ani TV; QR bota 403 za brak swiezego potwierdzenia), wiec
     odmowa wyzej pochodzi z roli, nie z czegos innego."""
-    status, _, payload = call(server, method, path, body, naglowki(server, "rodzic1"))
+    h = naglowki(server, "rodzic1")
+    if path.startswith("/api/profile/"):
+        # Bot WhatsApp (zakres instancji): wlasciciel Domu 1 bez roli
+        # administratora instalacji dostaje 403 jak podglad (decyzja 12.10)...
+        status, _, payload = call(server, method, path, body, h)
+        assert status == 403 and "whatsapp.konfiguracja" in payload["error"], (path, payload)
+        # ...a aktywny administrator (flaga + grupa `admins`) przechodzi.
+        from kidwatch.domy import RejestrDomow  # noqa: PLC0415
+
+        auth = server.auth
+        RejestrDomow(auth.path).ustaw_admin_instancji(auth.user_id("rodzic1"), True)
+        h = {**naglowki(server, "rodzic1"), "Remote-User": "rodzic1", "Remote-Groups": "admins"}
+    status, _, payload = call(server, method, path, body, h)
     assert "uprawnienia" not in (payload or {}).get("error", ""), (path, payload)
     assert status != 403 or path == "/api/profile/whatsapp/qr", (path, payload)
 
@@ -117,7 +130,8 @@ def test_me_podaje_role_i_uprawnienia(server):
     assert me["uprawnienia"] == ["konto.wlasne", "podglad.historia"]
     me = call(server, "GET", "/api/auth/me", headers=naglowki(server, "rodzic1"))[2]
     assert me["rola"] == "wlasciciel"
-    assert me["uprawnienia"] == sorted(uprawnienia.UPRAWNIENIA)
+    # Wszystko poza botem WhatsApp — ten ma tylko administrator instalacji.
+    assert me["uprawnienia"] == sorted(set(uprawnienia.UPRAWNIENIA) - {uprawnienia.WHATSAPP})
 
 
 @pytest.mark.parametrize(("login", "grupa", "rola"), [
@@ -156,8 +170,9 @@ def test_baza_sprzed_rol_istniejace_konta_to_wlasciciele(tmp_path):
     assert auth.list_users()[0]["rola"] == "wlasciciel"
     session = auth.login("rodzic1", HASLO).session
     assert session.rola == "wlasciciel"
-    # Od E3a sesja niesie uprawnienia poza domem; w Domu 1 — pelny zestaw.
-    assert session.uprawnienia == {uprawnienia.KONTO_WLASNE, uprawnienia.WHATSAPP}
+    # Od E3a sesja niesie tylko uprawnienia poza domem (bot WhatsApp — tylko
+    # administrator instalacji); w Domu 1 rola ma pelny zestaw.
+    assert session.uprawnienia == {uprawnienia.KONTO_WLASNE}
     from kidwatch.domy import DOM_1, RejestrDomow  # noqa: PLC0415
 
     assert RejestrDomow(path).uprawnienia(session.user_id, DOM_1) == frozenset(

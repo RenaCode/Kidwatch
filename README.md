@@ -426,8 +426,13 @@ set in the panel database **and** the request comes through Authelia with
 panel 2FA enabled). Every visit to a household it is not a member of is
 written to the household's audit log (Settings → Dziennik domu): one `GET`
 entry per session and household per 15 minutes, every `POST`. The WhatsApp
-bot is shared by the installation: only the administrator and the owner of
-Dom 1 (the operator's household) may configure it.
+bot is shared by the installation: **only the active installation
+administrator** may configure it (QR, sender, gateway recipients, test) —
+no household role grants it, and every change is logged as an installation
+event. Sending notifications through the gateway does not depend on it.
+Without SSO the administrator account logs in with its panel password and
+must enable panel 2FA first (the "no household" screen offers it); this
+needs `PANEL_TOTP_KEY` in the `kidwatch-secrets` Secret.
 
 Members can also be managed in the panel (Settings → **Konta**, permission
 `konta.zarzadzanie` in that household): add (random password shown once),
@@ -505,7 +510,7 @@ fails CI, and every route the `podglad` role lacks is checked for 403.
 | `mdm.podglad` | MDM section: iPads, UDIDs, events | yes | no (section hidden) |
 | `mdm.komendy` | MDM refresh/lock/restart, enrollment link, forced iPadOS update | yes | no |
 | `tv.aplikacja` | Kidwatch TV app (state, install, pairing) | yes | no |
-| `whatsapp.konfiguracja` | WhatsApp/notification channels, recipients, bot QR | yes | no |
+| `whatsapp.konfiguracja` | WhatsApp/notification channels, recipients, bot QR | only the active installation administrator (see Households) | no |
 
 In a household the same table applies per membership: `wlasciciel-domu`
 has everything `wlasciciel` had, `zarzadca` everything except account

@@ -322,21 +322,89 @@ def test_me_podaje_domy_i_uprawnienia_per_dom(domy):
                                                          (DOM_B, "wlasciciel-domu")]
     a, b = me["domy"]
     assert u.CZAS_GRY not in a["uprawnienia"] and u.CZAS_GRY in b["uprawnienia"]
-    # Bot WhatsApp to instancja: z Domu 1 (tu podglad) — nie z roli w B.
-    assert u.WHATSAPP not in b["uprawnienia"]
     assert me["rola"] is None and me["uprawnienia"] == [u.KONTO_WLASNE]
     me = call(domy, "GET", "/api/auth/me", headers=sso(domy, "czlonek-a"))[2]
-    assert me["rola"] == "wlasciciel" and me["uprawnienia"] == sorted(u.UPRAWNIENIA)
+    assert me["rola"] == "wlasciciel"
+    assert me["uprawnienia"] == sorted(set(u.UPRAWNIENIA) - {u.WHATSAPP})
 
 
-def test_bot_whatsapp_tylko_dla_domu_1_i_administratora(domy):
-    """Wlasciciel Domu B nie wyloguje bota Domu 1 (zakres instancji)."""
-    st, _, body = call(domy, "POST", "/api/profile/whatsapp/logout", {"confirm": HASLO},
-                       sso(domy, "czlonek-b"))
-    assert st == 403 and u.WHATSAPP in body["error"]
-    for login, grupy in (("czlonek-a", "wlasciciel"), ("admin", "admins")):
-        st, _, body = call(domy, "GET", "/api/profile/notify", headers=sso(domy, login, grupy))
-        assert st == 200, (login, body)
+#: Trasy z zakresem instancji (bot WhatsApp bramki) z tablic routera.
+INST_GET = sorted(k for k, (_, z) in GET_TRASY.items() if z == u.ZAKRES_INSTANCJA)
+INST_POST = sorted(k for k, (_, _, z) in POST_TRASY.items() if z == u.ZAKRES_INSTANCJA)
+
+
+def _instancja_403(srv, h: dict) -> list[str]:
+    """Trasy bota WhatsApp, ktore NIE odpowiedzialy 403 za brak uprawnienia."""
+    zle = []
+    for metoda, klucze in (("GET", INST_GET), ("POST", INST_POST)):
+        for k in klucze:
+            st, _, b = call(srv, metoda, k, {} if metoda == "POST" else None, h)
+            if st != 403 or u.WHATSAPP not in (_blad(b) or ""):
+                zle.append(f"{metoda} {k}: {st}")
+    return zle
+
+
+def test_bot_whatsapp_tylko_dla_aktywnego_administratora(domy):
+    """Decyzja wlasciciela 2026-10-12 (§2.3): konfiguracja bota WhatsApp
+    (zakres instancji) WYLACZNIE dla aktywnego administratora instalacji —
+    nie dla wlasciciela Domu 1 ani zadnego innego domu."""
+    assert INST_GET and INST_POST
+    for login in ("czlonek-a", "czlonek-b", "obu"):
+        assert _instancja_403(domy, sso(domy, login)) == [], login
+    # Flaga bez grupy `admins` (prywatne konto, inna grupa) — dalej 403.
+    domy.rejestr.ustaw_admin_instancji(domy.auth.user_id("czlonek-a"), True)
+    assert _instancja_403(domy, sso(domy, "czlonek-a", "wlasciciel")) == []
+    assert _instancja_403(domy, sso(domy, "admin", "rodzina")) == []
+    me = call(domy, "GET", "/api/auth/me", headers=sso(domy, "czlonek-a"))[2]
+    assert u.WHATSAPP not in me["uprawnienia"]
+    assert all(u.WHATSAPP not in d["uprawnienia"] for d in me["domy"])
+    with sqlite3.connect(domy.cfg.panel_auth_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM audyt WHERE akcja LIKE 'instancja.p%'"
+                            ).fetchone()[0] == 0
+    # Aktywny administrator: dostep (tu bramka wylaczona — 200/404, nie 403)
+    # i kazdy POST w dzienniku instancji (dom NULL).
+    h = sso(domy, "admin", "admins")
+    for k in INST_GET:
+        st, _, b = call(domy, "GET", k, headers=h)
+        # QR: 403 tylko za brak swiezego potwierdzenia haslem, nie za uprawnienie.
+        assert st != 403 or u.WHATSAPP not in (_blad(b) or ""), (k, b)
+    for k in INST_POST:
+        st, _, b = call(domy, "POST", k, {}, h)
+        assert st != 403 or u.WHATSAPP not in (_blad(b) or ""), (k, b)
+    with sqlite3.connect(domy.cfg.panel_auth_path) as conn:
+        wpisy = conn.execute("SELECT dom_id, login, akcja FROM audyt WHERE akcja LIKE "
+                             "'instancja.p%' ORDER BY id").fetchall()
+    assert wpisy == [(None, "admin", "instancja." + k.removeprefix("/api/").replace("/", "."))
+                     for k in INST_POST]
+    me = call(domy, "GET", "/api/auth/me", headers=h)[2]
+    assert u.WHATSAPP in me["uprawnienia"]
+
+
+async def test_wysylka_przez_bramke_nie_zalezy_od_prawa_do_bota(domy):
+    """Prawo do bota to tylko KONFIGURACJA. Powiadomienia Domu 1 ida przez
+    bramke jak dzis: w trybie tras (domyslnym) i w trybie kont do wlasciciela
+    Domu 1, ktory prawa do bota juz nie ma."""
+    note = Notification(kind=NotifyKind.NIGHT, title="t", text="x", dedup_key="n1",
+                        ts=datetime.now(UTC), priority=5)
+    konta = o.ProfilePowiadomien(domy.cfg.panel_auth_path)
+    assert u.WHATSAPP not in u.w_domu(konta.profil("czlonek-a").uprawnienia)
+    # Tryb tras (produkcja dzis): jedna wysylka do bramki, bez odbiorcy.
+    store = Store(":memory:")
+    bramka = Bramka(zna_odbiorce=True)
+    outbox = Outbox(Dispatcher([bramka], store=store), store, konta=konta, dom_id=DOM_A)
+    await outbox.send_all([note])
+    assert await outbox.flush() == 1 and bramka.wyslane == [("n1", None)]
+    store.close()
+    # Tryb kont: wlasciciel Domu 1 z kanalem dostaje notke.
+    konta.ustaw_kanaly("czlonek-a", whatsapp="48500100200", email=None)
+    konta.ustaw_tryb(o.TRYB_KONTA)
+    store = Store(":memory:")
+    bramka = Bramka(zna_odbiorce=True)
+    outbox = Outbox(Dispatcher([bramka], store=store), store, konta=konta, dom_id=DOM_A)
+    await outbox.send_all([note])
+    await outbox.flush()
+    assert [o_.get("whatsapp") for _, o_ in bramka.wyslane] == ["48500100200"]
+    store.close()
 
 
 # ===================================================== kolejki z domem

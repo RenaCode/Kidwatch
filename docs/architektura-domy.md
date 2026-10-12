@@ -793,10 +793,13 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
     `/api/domy/<id>/…` (`panel_domy.PREFIKS_DOMU`). `/api/konto/kanaly` —
     konto (kanały osoby), bot WhatsApp — instancja, reszta — dom (także
     `konto/powiadomienia`, `konta/*`, nowy `dziennik`).
-  - **`whatsapp.konfiguracja`** (zakres instancji) ma aktywny administrator
-    instalacji oraz konto z tym uprawnieniem **w Domu 1** (dom operatora,
-    którego to bot) — dzisiejsza produkcja bez konta administracyjnego
-    zachowuje ekran WhatsAppa; właściciel Domu 2 go nie ma.
+  - **`whatsapp.konfiguracja`** (zakres instancji) ma **wyłącznie aktywny
+    administrator instalacji** (decyzja właściciela 2026-10-12, zgodnie
+    z §2.3) — żadna rola w żadnym domu, także `wlasciciel-domu` Domu 1, go
+    nie daje. Każdy POST na trasach instancji to wpis w `audyt` z `dom_id`
+    NULL (`instancja.<trasa>`). Wysyłka powiadomień przez bramkę od tego
+    prawa nie zależy. Po wdrożeniu ekran WhatsAppa jest niedostępny, dopóki
+    właściciel nie założy konta administracyjnego (README).
   - **Administrator**: aktywny przy fladze + (`admins` w `Remote-Groups`
     przy żądaniu przez Authelię | TOTP przy haśle). `user-admin on` wypisuje
     konto ze wszystkich domów (odmowa, gdy to ostatni zarządzający), chyba że

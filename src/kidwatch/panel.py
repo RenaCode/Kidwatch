@@ -1238,6 +1238,8 @@ def make_handler(
             if ctx is not None:
                 domy.audytuj(session, ctx, self.command if self.command != "HEAD" else "GET",
                              t.klucz)
+            elif t.zakres == INSTANCJA and self.command == "POST":
+                domy.audytuj_instancje(session, t.klucz)
             return ctx
 
         def _deny(self, exc: AuthError) -> None:

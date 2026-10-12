@@ -103,10 +103,11 @@ def _opis_kanalow(p: o.Profil | None) -> str:
 
 
 def edytowalne(dom_id: int) -> list[str]:
-    """Uprawnienia, ktore w tym domu maja sens: zakres `dom` i `konto`,
-    a w Domu 1 takze bot WhatsApp (zakres instancji liczony z Domu 1)."""
-    return [k for k in u.UPRAWNIENIA
-            if u.ZAKRESY[k] != u.ZAKRES_INSTANCJA or dom_id == dm.DOM_1]
+    """Uprawnienia, ktore w domu maja sens: zakres `dom` i `konto`. Zakresu
+    instancji (bot WhatsApp) nie nadaje rola w zadnym domu — ma go tylko
+    administrator instalacji. `dom_id` zostaje dla czytelnosci wolajacych."""
+    del dom_id
+    return [k for k in u.UPRAWNIENIA if u.ZAKRESY[k] != u.ZAKRES_INSTANCJA]
 
 
 class PanelKonta:

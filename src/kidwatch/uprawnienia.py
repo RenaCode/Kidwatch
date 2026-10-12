@@ -74,9 +74,10 @@ UPRAWNIENIA_DOMU = frozenset(u for u, z in ZAKRESY.items() if z == ZAKRES_DOM)
 UPRAWNIENIA_INSTANCJI = frozenset(u for u, z in ZAKRESY.items() if z == ZAKRES_INSTANCJA)
 
 #: Role w DOMU (docs/architektura-domy.md §2.3, tabela `czlonkostwa`).
-#: `wlasciciel-domu` ma zbior roli konta `wlasciciel` (z `whatsapp.konfiguracja`,
-#: ale to uprawnienie ma zakres instancji: liczy sie WYLACZNIE z czlonkostwa
-#: w Domu 1, domu operatora i jego bota — panel_domy.py), `zarzadca` jak
+#: `wlasciciel-domu` ma zbior roli konta `wlasciciel` (takze
+#: `whatsapp.konfiguracja` — tylko dla lustra obrazu sprzed domow; w panelu
+#: to uprawnienie ma zakres instancji i daje je WYLACZNIE aktywny
+#: administrator instalacji, `w_domu` je odfiltrowuje), `zarzadca` jak
 #: w tabeli §2.3, `podglad` = `podglad`.
 ROLA_WLASCICIEL_DOMU = "wlasciciel-domu"
 ROLA_ZARZADCA = "zarzadca"
