@@ -165,6 +165,7 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
     zrodlo DNS i petle wlaczone w konfiguracji domu. Kolejnosc budowy jak
     przed domami — brak sekretu zrodla przerywa start, zanim ruszy panel."""
     from .domy import (  # noqa: PLC0415
+        DOM_1,
         HomeRuntime,
         katalog_domu,
         katalog_sekretow_domu,
@@ -225,6 +226,12 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
     # (zapisany przez konfiguracja_domu.zbuduj_dom), nie na wolumenie.
     katalog = (katalog_sekretow_domu(dom_id) if home.sekrety is not None
                else katalog_domu(dom_id, inst.store.path))
+    if dom_id == DOM_1:
+        from .sources import tv_app  # noqa: PLC0415
+
+        # Przeladowanie domu (domy.Nadzorca): aplikacja TV poprzedniego
+        # srodowiska nie moze zostac w panelu, gdy nowa konfiguracja jej nie ma.
+        tv_app.AKTYWNA = None
     tv = build_tv_watcher(home, store, katalog) if home.tv.enabled else None
     if tv is not None:
         log.info("czujnik TV wlaczony: %s (%s), co %.0f s",
@@ -286,8 +293,48 @@ def home_domu_z_bazy(rejestr, dom_id: int) -> HomeConfig:
     return zbuduj_dom(rejestr, dom_id, Sejf.z_srodowiska())
 
 
+def przeladowanie_domow(rejestr, inst: InstanceConfig, konfiguracje: dict, stany,
+                        domy_panelu=None):
+    """domy.Przeladowanie dla `run` (§5.1): wersja domu tylko, gdy nadal
+    jest w trybie `baza` (powrot do `yaml` wymaga restartu — jak dotad);
+    konfiguracja z sejfu jak przy starcie plus wymagane sekrety (brak klucza
+    NextDNS ma zostawic stary dom, a nie zatrzymac go); po zmianie panel
+    bierze nowa konfiguracje."""
+    from .domy import ZRODLO_BAZA, Przeladowanie  # noqa: PLC0415
+    from .konfiguracja_domu import sprawdz_wymagane_sekrety  # noqa: PLC0415
+
+    def wersja(dom_id: int) -> int | None:
+        dom = rejestr.dom(dom_id)
+        if dom is None or dom.zrodlo_konfiguracji != ZRODLO_BAZA:
+            return None
+        return dom.wersja
+
+    def konfiguracja(dom_id: int) -> HomeConfig:
+        home = home_domu_z_bazy(rejestr, dom_id)
+        sprawdz_wymagane_sekrety(home)
+        return home
+
+    def po_zmianie(dom_id: int, rt) -> None:
+        konfiguracje[dom_id] = rt.home
+        if domy_panelu is not None:
+            domy_panelu.zapomnij(dom_id)
+
+    return Przeladowanie(
+        wersja=wersja, konfiguracja=konfiguracja,
+        runtime=lambda dom_id, home: build_home_runtime(
+            dom_id, inst, home, Classifier(inst.app_map_path)),
+        po_zmianie=po_zmianie, stany=stany)
+
+
 async def cmd_run(args) -> int:
-    from .domy import DOM_1, ZRODLO_BAZA, ZRODLO_YAML, Nadzorca, RejestrDomow  # noqa: PLC0415
+    from .domy import (  # noqa: PLC0415
+        DOM_1,
+        ZRODLO_BAZA,
+        ZRODLO_YAML,
+        Nadzorca,
+        RejestrDomow,
+        StanyDomow,
+    )
     from .sejf import SejfError  # noqa: PLC0415
     from .straznik import OdmowaSieci  # noqa: PLC0415
 
@@ -348,6 +395,10 @@ async def cmd_run(args) -> int:
     if not runtime.outbox.notifiers:
         log.warning("zaden kanal powiadomien nie jest wlaczony — nic nie dotrze")
 
+    # Konfiguracja dzialajacego srodowiska domu — panel czyta stad, a
+    # przeladowanie (§5.1) podmienia wpis.
+    konfiguracje = {DOM_1: home}
+    stany = StanyDomow()
     panel = None
     if cfg.panel.enabled:
         from .panel import start_panel  # noqa: PLC0415
@@ -355,7 +406,8 @@ async def cmd_run(args) -> int:
         # Panel Domu 1 z TEJ SAMEJ konfiguracji co jego srodowisko — przy
         # `baza` (E2) nie z config.yaml, inaczej panel pokazalby pusty dom
         # (przeglad E3a, B-1). Kolejne domy: E3b.
-        panel = start_panel(cfg, konfiguracja_domu=lambda dom: home if dom.id == DOM_1 else None)
+        panel = start_panel(cfg, konfiguracja_domu=lambda dom: konfiguracje.get(dom.id),
+                            stany=stany)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -363,7 +415,16 @@ async def cmd_run(args) -> int:
         with contextlib.suppress(NotImplementedError):  # pragma: no cover
             loop.add_signal_handler(sig, stop.set)
 
-    nadzorca = Nadzorca([runtime])
+    przeladowanie = None
+    if DOM_1 in w_bazie:
+        # Zmiana integracji w panelu podnosi domy.wersja; nadzorca przebudowuje
+        # Dom 1 bez restartu poda. Dom 1 z config.yaml (takze wymuszony
+        # KIDWATCH_DOM_1_ZRODLO) — bez przeladowania, jak dotad.
+        przeladowanie = przeladowanie_domow(
+            rejestr, inst, konfiguracje, stany,
+            panel.domy_panelu if panel is not None else None)
+    nadzorca = Nadzorca([runtime], przeladowanie=przeladowanie,
+                        flush_seconds=OUTBOX_FLUSH_ON_STOP_SECONDS)
     rc = await nadzorca.run(stop)
     if panel is not None:
         panel.shutdown()

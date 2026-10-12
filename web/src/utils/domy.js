@@ -14,6 +14,7 @@ export const TRASY_DOMU = [
   'game', 'mdm', 'mdm/devices/', 'mdm/refresh', 'mdm/command', 'mdm/enroll', 'mdm/os-update',
   'konto/powiadomienia', 'konta', 'konta/dodaj', 'konta/usun', 'konta/rola',
   'konta/uprawnienia', 'konta/powiadomienia', 'konta/kanaly', 'konta/tryb', 'dziennik',
+  'integracje', 'integracje/zapisz', 'integracje/usun-sekret',
 ];
 
 function isHomeRoute(rest) {

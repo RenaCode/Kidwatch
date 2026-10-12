@@ -832,6 +832,19 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
   - **Grupy SSO**: `wlasciciel`, `rodzina`, `admins`; `kidwatch-goscie` — E4.
   - **Nie zrobione w E3a**: ekran integracji i urządzeń domu (zależy od API
     E2), zaproszenia (E4), `udid ∈ dom` (E3b).
+  - **Ekran integracji (2026-10-12, decyzja właściciela)**: integracje domu
+    i ich sekrety wpisuje w panelu **wyłącznie aktywny administrator
+    instalacji** — `dom.integracje` z roli w domu nie wystarcza (403).
+    Trasy `GET /api/domy/<id>/integracje`, `POST …/integracje/zapisz`,
+    `POST …/integracje/usun-sekret` (`panel_integracje.py`); dom `yaml` —
+    409. Zapis: potwierdzenie hasłem/2FA, walidacja modelem + strażnik
+    (§3.6), bezpiecznik „działający dom musi dalej startować” w tej samej
+    transakcji, audyt bez wartości. Przeładowanie z §5.1 zrobione dla
+    Domu 1 w trybie `baza`: `Nadzorca(…, przeladowanie=Przeladowanie(…))`
+    porównuje `domy.wersja` co 10 s i przebudowuje tylko ten
+    `HomeRuntime` (nieudana konfiguracja = stary dom chodzi dalej, stan
+    w `StanyDomow` dla panelu). Zapis tokenu aplikacji TV przez samo
+    środowisko domu nie podbija wersji. Ekran urządzeń domu — nadal nie.
 
 ### E3b — MDM per dom + izolacja awarii pętli
 

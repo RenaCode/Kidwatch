@@ -77,6 +77,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -827,11 +828,15 @@ def _sprawdz_pola(typ: str, pola: Sequence[str]) -> None:
 def zapisz_integracje_conn(conn: sqlite3.Connection, dom_id: int, typ: str, *, sejf: Sejf,
                            wlaczona: bool | None = None, ustawienia: dict | None = None,
                            sekrety: Mapping[str, str | None] | None = None,
-                           kto: str | None = None, teraz: float | None = None) -> None:
+                           kto: str | None = None, teraz: float | None = None,
+                           podbij_wersje: bool = True) -> None:
     """Upsert integracji w transakcji wolajacego. `sekrety`: pole -> wartosc
     (None = usun pole); pola nie wymienione zostaja. Bez walidacji ustawien
     i adresow — robi ja RejestrDomow.zapisz_integracje (panel) i porownanie
-    w dom-importuj. Audyt bez wartosci."""
+    w dom-importuj. Audyt bez wartosci: nazwy zmienionych ustawien i pol
+    sekretow. `podbij_wersje=False` — zapis srodowiska domu o sobie samym
+    (token aplikacji TV po sparowaniu): to, co juz ma w pamieci, nie jest
+    powodem do przeladowania (§5.1)."""
     sekrety = dict(sekrety or {})
     _sprawdz_pola(typ, list(sekrety))
     teraz = time.time() if teraz is None else teraz
@@ -865,10 +870,14 @@ def zapisz_integracje_conn(conn: sqlite3.Connection, dom_id: int, typ: str, *, s
                                                      sort_keys=True),
          blob, json.dumps(pola), kto, teraz),
     )
-    _podbij_wersje(conn, dom_id)
+    if podbij_wersje:
+        _podbij_wersje(conn, dom_id)
     opis = [f"integracja {typ}: {'wlaczona' if nowe_wlaczona else 'wylaczona'}"]
     if ustawienia is not None:
-        opis.append(f"ustawienia: {', '.join(sorted(ustawienia)) or '-'}")
+        przed = _json(stary["ustawienia"], {}) if stary else {}
+        zmienione = sorted(k for k in set(przed) | set(ustawienia)
+                           if przed.get(k, ...) != ustawienia.get(k, ...))
+        opis.append(f"ustawienia zmienione: {', '.join(zmienione) or '-'}")
     if sekrety:
         opis.append(f"sekrety zmienione: {', '.join(sorted(sekrety))}")
     _audyt(conn, teraz, dom_id, kto, "integracja.zapis", "; ".join(opis))
@@ -1158,11 +1167,19 @@ class RejestrDomow:
                           wlaczona: bool | None = None, ustawienia: dict | None = None,
                           sekrety: Mapping[str, str | None] | None = None,
                           kto: str | None = None,
-                          resolver: Callable[[str, int], list[str]] | None = None
+                          resolver: Callable[[str, int], list[str]] | None = None,
+                          sprawdz_dom: Callable[[sqlite3.Connection], str | None] | None = None,
                           ) -> Integracja:
         """Zapis integracji z panelu (E3a): walidacja ustawien modelem
         konfiguracji, adresy przez straznika sieci domu (odmowa = ValueError
-        z opisem, bez wartosci sekretow), sekrety tylko do zapisu."""
+        z opisem, bez wartosci sekretow), sekrety tylko do zapisu.
+
+        `sprawdz_dom(conn)` — opis, dlaczego dom nie wystartowalby na
+        konfiguracji widocznej na `conn`, albo None (konfiguracja_domu.
+        blad_startu_conn). Wolane przed i po zapisie w TEJ SAMEJ transakcji:
+        zmiana, po ktorej dzialajacy dom przestalby startowac, jest wycofywana
+        (ValueError). Dom juz niedzialajacy (np. swiezy, bez zrodla DNS) mozna
+        uzupelniac w dowolnej kolejnosci."""
         from .konfiguracja_domu import waliduj_integracje  # noqa: PLC0415
 
         _sprawdz_pola(typ, list(sekrety or {}))
@@ -1173,8 +1190,12 @@ class RejestrDomow:
         waliduj_integracje(typ, do_walidacji, self.straznik(dom_id, resolver),
                            wlaczona=skutecznie)
         with self._conn() as conn, _transakcja(conn):
+            przed = sprawdz_dom(conn) if sprawdz_dom is not None else None
             zapisz_integracje_conn(conn, dom_id, typ, sejf=sejf, wlaczona=wlaczona,
                                    ustawienia=ustawienia, sekrety=sekrety, kto=kto)
+            po = sprawdz_dom(conn) if sprawdz_dom is not None else None
+            if po is not None and przed is None:
+                raise ValueError(f"po tej zmianie dom nie wystartuje — {po}")
         wynik = self.integracja(dom_id, typ)
         assert wynik is not None
         return wynik
@@ -1186,9 +1207,12 @@ class RejestrDomow:
             wynik = sekrety_domu_conn(conn, dom_id, sejf)
 
         def zapisz(typ: str, sekrety: dict[str, str | None]) -> None:
+            # Srodowisko domu zapisuje to, co juz ma w pamieci — bez
+            # podbicia wersji, inaczej nadzorca przeladowalby dom po kazdym
+            # sparowaniu aplikacji TV.
             with self._conn() as conn, _transakcja(conn):
                 zapisz_integracje_conn(conn, dom_id, typ, sejf=sejf, sekrety=sekrety,
-                                       kto=f"dom-{dom_id}")
+                                       kto=f"dom-{dom_id}", podbij_wersje=False)
 
         return SekretyDomu(dom_id, {t: wynik.typu(t) for t in wynik.pola()}, zapisz)
 
@@ -1381,33 +1405,194 @@ class HomeRuntime:
         self.store.close()
 
 
+#: Co ile sekund nadzorca porownuje `domy.wersja` (§5.1).
+OKRES_PRZELADOWANIA = 10.0
+
+
+@dataclass(frozen=True, slots=True)
+class StanDomu:
+    """Na jakiej konfiguracji chodzi srodowisko domu — dla panelu."""
+
+    #: `domy.wersja`, z ktorej zbudowano dzialajace srodowisko.
+    wersja: int | None
+    #: Ostatnia wersja, ktorej NIE udalo sie uruchomic, i dlaczego (bez
+    #: wartosci sekretow: komunikaty sejfu, straznika i walidacji ich nie maja).
+    nieudana: int | None = None
+    blad: str | None = None
+    ts: float = field(default=0.0, compare=False)
+
+
+class StanyDomow:
+    """Wspolny dla watku panelu i petli nadzorcy: dom -> StanDomu. Brak
+    wpisu = dom bez automatycznego przeladowania (np. tryb `yaml`)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._stany: dict[int, StanDomu] = {}
+
+    def ustaw(self, dom_id: int, stan: StanDomu) -> None:
+        with self._lock:
+            self._stany[dom_id] = stan
+
+    def get(self, dom_id: int) -> StanDomu | None:
+        with self._lock:
+            return self._stany.get(dom_id)
+
+
+@dataclass
+class Przeladowanie:
+    """Jak nadzorca przebudowuje dom po zmianie `domy.wersja` (§5.1).
+
+    `wersja(dom_id)` — biezaca wersja domu, gdy dom ma byc przeladowywany,
+    inaczej None (tryb `yaml`, wymuszenie `KIDWATCH_DOM_1_ZRODLO`).
+    `konfiguracja(dom_id)` — HomeConfig z bazy (blokujace: baza, DNS — idzie
+    w watku). `runtime(dom_id, home)` — nowe HomeRuntime (w petli: Store
+    i polaczenia SQLite naleza do watku petli). `po_zmianie(dom_id, rt)` —
+    np. panel bierze konfiguracje nowego srodowiska."""
+
+    wersja: Callable[[int], int | None]
+    konfiguracja: Callable[[int], HomeConfig]
+    runtime: Callable[[int, HomeConfig], HomeRuntime]
+    po_zmianie: Callable[[int, HomeRuntime], None] = lambda dom_id, rt: None
+    stany: StanyDomow = field(default_factory=StanyDomow)
+    okres: float = OKRES_PRZELADOWANIA
+
+
 class Nadzorca:
     """Uruchamia srodowiska domow i czeka na koniec.
 
     E1 zachowuje regule sprzed domow: kazde zadanie domu jest nieskonczone,
     wiec jego koniec — z bledem czy bez — konczy proces kodem 1 (k8s
-    restartuje poda). Izolacja awarii miedzy domami to etap E3b."""
+    restartuje poda). Izolacja awarii miedzy domami to etap E3b.
 
-    def __init__(self, domy: Sequence[HomeRuntime]) -> None:
+    Z `przeladowanie` (§5.1) nadzorca co `okres` sekund porownuje
+    `domy.wersja` z wersja dzialajacego srodowiska i przy roznicy restartuje
+    TYLKO ten dom: najpierw buduje nowa konfiguracje (blad = stary dom
+    chodzi dalej, wpis w `stany`), potem zatrzymuje stare srodowisko
+    (z oproznieniem kolejki) i uruchamia nowe. Kursory, sesje i dedup sa
+    w bazie domu — jak przy restarcie poda. Nieudana wersja nie jest
+    ponawiana, az przyjdzie nastepna zmiana."""
+
+    def __init__(self, domy: Sequence[HomeRuntime],
+                 przeladowanie: Przeladowanie | None = None,
+                 flush_seconds: float = 10.0) -> None:
         self.domy = list(domy)
+        self.przeladowanie = przeladowanie
+        self.flush_seconds = flush_seconds
+        self._wersje: dict[int, int | None] = {}
+        self._nieudane: dict[int, int] = {}
+        self._zadania: dict[asyncio.Task, HomeRuntime] = {}
+        self._awaria = False
+
+    def _uruchom(self, rt: HomeRuntime) -> None:
+        for task in rt.start():
+            self._zadania[task] = rt
 
     async def run(self, stop: asyncio.Event) -> int:
-        tasks = [t for rt in self.domy for t in rt.start()]
-        tasks.append(asyncio.create_task(stop.wait(), name="stop"))
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        p = self.przeladowanie
+        if p is not None:
+            for rt in self.domy:
+                w = await asyncio.to_thread(p.wersja, rt.dom_id)
+                self._wersje[rt.dom_id] = w
+                if w is not None:
+                    p.stany.ustaw(rt.dom_id, StanDomu(w, ts=time.time()))
+        for rt in self.domy:
+            self._uruchom(rt)
+        stop_task = asyncio.create_task(stop.wait(), name="stop")
+        while True:
+            done, _ = await asyncio.wait(
+                {*self._zadania, stop_task}, timeout=p.okres if p is not None else None,
+                return_when=asyncio.FIRST_COMPLETED)
+            if done or self._awaria:
+                break
+            await self._sprawdz_wersje()
+            if self._awaria:
+                break
+        pending = [t for t in (*self._zadania, stop_task) if not t.done()]
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
         # Kod 0 udawal w k8s czyste zatrzymanie i ginal w statystyce restartow;
         # niezerowy widac w `kubectl describe` jako Error.
-        failed = [task for task in done if task.get_name() != "stop"]
+        failed = [task for task in done if task is not stop_task]
         for task in failed:
-            if task.exception() is not None:
+            if task.cancelled():
+                log.error("zadanie %s anulowane", task.get_name())
+            elif task.exception() is not None:
                 log.error("zadanie %s zakonczylo sie bledem", task.get_name(),
                           exc_info=task.exception())
             else:
                 log.error("zadanie %s zakonczylo sie bez bledu, a nie powinno", task.get_name())
-        return 1 if failed else 0
+        return 1 if failed or self._awaria else 0
+
+    async def _sprawdz_wersje(self) -> None:
+        p = self.przeladowanie
+        assert p is not None
+        for i, rt in enumerate(list(self.domy)):
+            try:
+                w = await asyncio.to_thread(p.wersja, rt.dom_id)
+            except Exception:
+                log.exception("dom %d: nie odczytano wersji konfiguracji", rt.dom_id)
+                continue
+            if w is None or w == self._wersje.get(rt.dom_id) \
+                    or w == self._nieudane.get(rt.dom_id):
+                continue
+            await self._przeladuj(i, rt, w)
+
+    async def _przeladuj(self, i: int, rt: HomeRuntime, w: int) -> None:
+        p = self.przeladowanie
+        assert p is not None
+        dom_id, stara = rt.dom_id, self._wersje.get(rt.dom_id)
+        log.info("dom %d: konfiguracja zmieniona (wersja %s -> %d), przeladowanie",
+                 dom_id, stara, w)
+        try:
+            home = await asyncio.to_thread(p.konfiguracja, dom_id)
+        except Exception as exc:
+            # Stary dom chodzi dalej na swojej konfiguracji.
+            log.error("dom %d: nowa konfiguracja (wersja %d) nie wystartuje — %s; "
+                      "dom dziala dalej na wersji %s", dom_id, w, exc, stara)
+            self._nieudane[dom_id] = w
+            p.stany.ustaw(dom_id, StanDomu(stara, w, str(exc), time.time()))
+            return
+        await self._zatrzymaj(rt)
+        try:
+            nowy = p.runtime(dom_id, home)
+        except Exception as exc:
+            log.error("dom %d: srodowisko z wersji %d nie wystartowalo — %s; powrot do "
+                      "poprzedniej konfiguracji", dom_id, w, exc)
+            self._nieudane[dom_id] = w
+            p.stany.ustaw(dom_id, StanDomu(stara, w, str(exc), time.time()))
+            try:
+                nowy = p.runtime(dom_id, rt.home)
+            except Exception:
+                log.exception("dom %d: powrot do poprzedniej konfiguracji nieudany — "
+                              "koniec procesu (k8s zrestartuje poda)", dom_id)
+                self._awaria = True
+                self.domy.pop(i)
+                return
+        else:
+            self._wersje[dom_id] = w
+            self._nieudane.pop(dom_id, None)
+            p.stany.ustaw(dom_id, StanDomu(w, ts=time.time()))
+            log.info("dom %d: dziala na konfiguracji w wersji %d", dom_id, w)
+        self.domy[i] = nowy
+        self._uruchom(nowy)
+        try:
+            p.po_zmianie(dom_id, nowy)
+        except Exception:
+            log.exception("dom %d: blad po przeladowaniu (panel)", dom_id)
+
+    async def _zatrzymaj(self, rt: HomeRuntime) -> None:
+        zadania = [t for t, r in self._zadania.items() if r is rt]
+        for t in zadania:
+            t.cancel()
+        await asyncio.gather(*zadania, return_exceptions=True)
+        for t in zadania:
+            self._zadania.pop(t, None)
+        try:
+            await rt.zamknij(self.flush_seconds)
+        except Exception:
+            log.exception("dom %d: blad przy zamykaniu starego srodowiska", rt.dom_id)
 
     async def zamknij(self, flush_seconds: float) -> None:
         for rt in self.domy:

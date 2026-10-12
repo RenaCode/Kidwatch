@@ -156,7 +156,11 @@ Uwagi:
   zmień `config.yaml` i zaimportuj ponownie (`dom-importuj 1 --zapisz`
   nadpisuje dzieci, urządzenia i integracje domu).
 - Token MDM Domu 1 to w E2 kopia `MDM_ADMIN_TOKEN`. Zmiana tokenu serwera
-  MDM = ponowny import (albo powrót do `yaml`).
+  MDM = wpis w panelu (pkt 10), ponowny import albo powrót do `yaml`.
+- **Ponowny `dom-importuj --zapisz` nadpisuje integracje** wartościami
+  z `config.yaml` i Sekretów — także te zmienione w panelu (pkt 10). Po
+  zmianach w panelu nie importuj ponownie bez przeniesienia ich do
+  `config.yaml`.
 - Token aplikacji Kidwatch TV: po imporcie plik leży w pamięci poda,
   a ponowne sparowanie z panelu zapisuje nowy token w bazie (plik na `/data`
   zostaje stary). Ponowny import zachowuje token z bazy, gdy plik na `/data`
@@ -348,3 +352,36 @@ zewnętrzne (klucz NextDNS itd.) zmienia się w ich usługach i w panelu.
 | `… nie odszyfrowuja sie (… z innego domu/typu)` | szyfrogram przeniesiony między wierszami albo uszkodzony | wpisz integrację od nowa |
 | `adres … jest poza siecią domu` | adres integracji spoza `dozwolone_sieci` | pkt 6, jeśli adres jest właściwy |
 | `ROZNICE config.yaml <-> baza` | import niezgodny pole w pole — nic nie zapisano | zgłoś listę ścieżek; nie przełączaj |
+| `po tej zmianie dom nie wystartuje — …` (panel) | zapis integracji wyłączyłby jedyne źródło DNS, usunął wymagany klucz itp. — nic nie zapisano | najpierw włącz/uzupełnij to, czego brakuje |
+| `Nowa konfiguracja (wersja N) nie wystartowała` (panel) albo `dom N: nowa konfiguracja (wersja N) nie wystartuje` (log) | nadzorca nie przebudował domu; dom działa dalej na poprzedniej wersji | popraw integrację w panelu (kolejny zapis = kolejna próba) |
+| `Ten dom ma konfigurację z config.yaml` (panel, 409) | ekran integracji dla domu w trybie `yaml` | zmiany w `config.yaml` albo najpierw pkt 3 |
+
+## 10. Integracje w panelu (administrator instalacji)
+
+Od 2026-10-12 sekrety i ustawienia integracji domu (NextDNS, AdGuard, UniFi,
+TV, MDM, ntfy, Home Assistant) wpisuje się w panelu: *Ustawienia →
+Integracje* w kontekście wybranego domu. Ekran widzi **tylko aktywny
+administrator instalacji** (flaga `user-admin` + grupa `admins` w Authelii
+albo hasło z TOTP); `wlasciciel-domu` dostaje 403, cudzy dom — 404.
+
+- Działa tylko dla domów w trybie `baza` (Dom 1 po pkt 3, każdy nowy dom).
+  Dom w trybie `yaml` — odmowa 409 z komunikatem.
+- Sekrety są **tylko do zapisu**: panel pokazuje maskę (`…a073` albo
+  długość), puste pole zostawia sekret bez zmian, usunięcie to osobny
+  przycisk. Każda zmiana wymaga hasła albo kodu 2FA i zostawia wpis
+  w dzienniku domu (`integracja.zapis`: kto, typ, nazwy zmienionych pól —
+  bez wartości; odczyt: `integracje.odczyt`; odrzucona: `integracja.odmowa`).
+- Adresy (`unifi.url`, `tv.host`, …) przechodzą przez strażnika sieci domu
+  (pkt 6). Odmowa w panelu wskazuje `dom-sieci` — sieci i hosty API dopuszcza
+  się wyłącznie z CLI.
+- Zapis, po którym działający dom by nie wystartował (wyłączone jedyne
+  źródło DNS, usunięty klucz NextDNS…), jest odrzucany w całości.
+- **Przełączenie bez restartu** (architektura §5.1): zapis podbija
+  `domy.wersja`, nadzorca co 10 s porównuje wersje i przebudowuje tylko ten
+  dom (kursory, sesje i dedup są w bazie domu — jak przy restarcie poda).
+  Ekran pokazuje, na której wersji dom działa. Jeśli nowa konfiguracja nie
+  wstaje, dom działa dalej na poprzedniej, a ekran i log mówią dlaczego.
+  Dom bez przeładowania (dziś: każdy dom poza Domem 1 — uruchamianie
+  kolejnych domów to E3b) — ekran mówi wprost „zmiana zadziała po restarcie
+  Kidwatcha”.
+- Powrót do `yaml` (`dom-zrodlo 1 yaml`) dalej wymaga restartu poda.
