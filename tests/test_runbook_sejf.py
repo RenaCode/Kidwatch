@@ -1,16 +1,22 @@
 """Runbook docs/sejf-domow.md wklejany do PRAWDZIWEGO interaktywnego zsh.
 
-Właściciel wkleja bloki do zsh bez `interactivecomments` (domyślnie): `#`
+Właściciel wkleja bloki do zsh, domyślnie bez `interactivecomments`: `#`
 nie jest wtedy komentarzem, a polecenie w odwrotnych apostrofach
 w „komentarzu” się wykonuje. Test bierze KAŻDY blok ```sh z runbooka
 i wkleja go (bracketed paste, jak terminal) do `zsh -f -i` na pty,
-z atrapami kubectl/pbcopy/openssl/uv. Sprawdza:
+z atrapami kubectl/pbcopy/openssl/uv — ZAWSZE po bloku definicji, tak
+jak właściciel, więc z `setopt interactivecomments` z tego bloku.
+Komentarzy w blokach pilnuje dlatego osobny test statyczny
+(`test_runbook_bez_komentarzy_w_blokach`). Sprawdza:
 
   * brak błędów powłoki (składnia, „command not found”);
   * brak niezamierzonych wywołań `kp` (tylko tam, gdzie blok go woła);
   * schowek: wrzut -> czekanie (`read`) -> czyszczenie, a Sekret dopiero
     po zapisaniu klucza w menedżerze;
-  * `kp && …`: dalsze polecenie tylko po POTWIERDZONO (kod 0).
+  * `kp && …`: dalsze polecenie tylko po POTWIERDZONO (kod 0);
+  * w bashu (`/bin/bash`: bez bracketed paste w 3.2, `read -rs '?…'` to
+    błąd) bloki ze schowkiem NIC nie robią, a `kp && …` nie wykonuje
+    dalszego polecenia.
 
 Bez sieci i bez prawdziwego kubectl/schowka. Bez zsh: w CI błąd, lokalnie
 pominięcie (jak test kp w test_domy_e2_uwagi.py)."""
@@ -38,6 +44,7 @@ ATRAPY = {
 echo "kubectl $*" >> "$ATRAPY_LOG"
 case "$*" in
   *klucze-potwierdz*) read -r linia; echo "kp-stdin:${#linia}" >> "$ATRAPY_LOG"
+                      [ -n "$linia" ] || exit 2
                       exit "${KP_RC:-0}";;
   *"--patch-file /dev/stdin"*) cat >/dev/null;;
   *" get pod "*) echo pod/kidwatch-atrapa;;
@@ -83,13 +90,14 @@ def oczekiwane_kp(blok: str) -> int:
 
 
 class Zsh:
-    def __init__(self, katalog: Path, env: dict[str, str]) -> None:
+    def __init__(self, katalog: Path, env: dict[str, str],
+                 argv: list[str] | None = None) -> None:
         # pty tworzy osobny, jednowątkowy proces (pty.spawn): fork w procesie
         # pytesta (wątki panelu z innych testów) grozi zakleszczeniem dziecka.
         # pty.spawn przekazuje nasze potoki do terminala zsh i z powrotem.
         self.proc = subprocess.Popen(
             [sys.executable, "-c", "import pty, sys; pty.spawn(sys.argv[1:])",
-             env["ZSH"], "-f", "-i"],
+             *(argv or [env["ZSH"], "-f", "-i"])],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             cwd=katalog, env=env, bufsize=0)
         self.fd = self.proc.stdout.fileno()
@@ -148,6 +156,25 @@ class Zsh:
             poczatek_wykonania = len(self.bufor)
         raise AssertionError(f"blok nie skończył się: {self.bufor[start:][-500:]!r}")
 
+    def wpisz(self, blok: str, proby: int = 6) -> str:
+        """Bez bracketed paste (bash 3.2): linie jak z terminala, potem
+        znacznik końca złożony z dwóch połówek (echo wpisu go nie zawiera).
+        `read` w bashu czeka na linię nawet z błędną nazwą zmiennej — wtedy
+        połyka znacznik, więc wysyłamy go ponownie."""
+        start = len(self.bufor)
+        self._wyslij(blok.replace("\n", "\r") + "\r")
+        for _ in range(proby):
+            # Po ciszy: readline basha potrafi skasować znaki wpisane
+            # z wyprzedzeniem, gdy przestawia terminal.
+            self._czekaj_cisza(0.8)
+            self._wyslij("printf '%s%s\\n' '@@KON' 'IEC@@'\r")
+            koniec = time.monotonic() + 2
+            while time.monotonic() < koniec:
+                if "@@KONIEC@@" in self.bufor[start:]:
+                    return self.bufor[start:]
+                self._czytaj(0.1)
+        raise AssertionError(f"bash nie skończył bloku: {self.bufor[start:][-500:]!r}")
+
     def zamknij(self) -> None:
         self.proc.kill()
         self.proc.wait(timeout=10)
@@ -186,6 +213,43 @@ def _uruchom(srodowisko, blok: str, *, kp_rc: int = 0, przy_read=None):
     finally:
         sesja.zamknij()
     return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", wyjscie), log.read_text().splitlines()
+
+
+def _uruchom_bash(srodowisko, blok: str, *, kp_rc: int = 0):
+    bash = "/bin/bash" if Path("/bin/bash").exists() else shutil.which("bash")
+    log = srodowisko["tmp"] / f"atrapy-bash-{time.monotonic_ns()}.log"
+    log.write_text("")
+    env = {"PATH": f"{srodowisko['bin']}:/usr/bin:/bin", "HOME": str(srodowisko["tmp"]),
+           "TERM": "xterm", "ATRAPY_LOG": str(log), "KP_RC": str(kp_rc),
+           "ZSH": srodowisko["zsh"], "LANG": "C.UTF-8"}
+    sesja = Zsh(srodowisko["tmp"], env, [bash, "--norc", "--noprofile", "-i"])
+    try:
+        wyjscie = sesja.wpisz(bloki(RUNBOOK.read_text())[0][1])
+        wyjscie += sesja.wpisz(blok)
+    finally:
+        sesja.zamknij()
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", wyjscie), log.read_text().splitlines()
+
+
+def test_bloki_ze_schowkiem_w_bashu_nic_nie_robia(srodowisko):
+    """W bashu `read -rs '?…'` nie czeka (błąd), a bash 3.2 nie ma bracketed
+    paste — blok musi to wykryć i nie wrzucać klucza do schowka ani do
+    Sekretu."""
+    ze_schowkiem = [(n, b) for n, b in bloki(RUNBOOK.read_text()) if "| pbcopy" in b]
+    assert len(ze_schowkiem) == 2
+    for linia, blok in ze_schowkiem:
+        wyjscie, log = _uruchom_bash(srodowisko, blok)
+        assert "tylko w zsh" in wyjscie, (linia, wyjscie[-400:])
+        assert not [w for w in log if w.startswith(("pbcopy", "kubectl"))], (linia, log)
+
+
+def test_kp_and_w_bashu_nie_wykonuje_dalszego(srodowisko):
+    for linia, blok in [(n, b) for n, b in bloki(RUNBOOK.read_text())
+                        if re.search(r"(?m)^kp &&", b)]:
+        polecenie = re.search(r"(?m)^kp && kubectl -n default (\w+)", blok).group(1)
+        _, log = _uruchom_bash(srodowisko, blok, kp_rc=0)
+        assert not [w for w in log if w.startswith(f"kubectl -n default {polecenie}")], (
+            linia, log)
 
 
 def _bez_bledow_powloki(wyjscie: str, gdzie: str) -> None:

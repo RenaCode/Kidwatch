@@ -206,7 +206,7 @@ def test_schowek_czyszczony_przed_kp():
     for start, kp in (("## 2. Klucz KEK", "## 3."), ("## 7. Rotacja KEK", "kp &&")):
         sekcja = tekst[tekst.index(start):]
         wrzut = sekcja.index("| pbcopy")
-        assert wrzut < sekcja.index("pbcopy </dev/null") < sekcja.index(kp), start
+        assert wrzut < sekcja.index("pbcopy </dev/null", wrzut) < sekcja.index(kp, wrzut), start
 
 
 def test_runbook_powloka_i_schowek():
