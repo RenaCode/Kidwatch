@@ -803,6 +803,13 @@ class PanelAuth:
             # Blokada konta obowiazuje TAKZE na bilecie juz wydanym — inaczej
             # bilet sprzed blokady pozwalalby dokonczyc serie prob.
             self._check_lock(t, now)
+            if domy.tryb_admina(conn, t["user_id"]) == domy.ADMIN_TYLKO_SSO:
+                # Bilet sprzed przejscia konta w tryb tylko-SSO (np. ze starego
+                # obrazu): jak przy hasle (login) — 403 PRZED kodem, wiec kod
+                # zapasowy nie przepada, a bilet znika (przeglad #56, N-1).
+                conn.execute("DELETE FROM tickets WHERE token_hash = ?", (t["token_hash"],))
+                log.warning("panel: bilet 2FA konta tylko-SSO %r odrzucony", t["login"])
+                raise AuthError(403, "To konto loguje się wyłącznie przez Authelię (SSO).")
 
             if not self._accept_code(conn, box, t, code, now):
                 # Dwie niezalezne bramki, jak w Traderze: bilet pada po
