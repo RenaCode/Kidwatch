@@ -277,6 +277,21 @@ kubectl -n default create secret generic kidwatch-pairing \
 Gdy `kubectl` działa tylko na VPS-ie, a pliki są na Macu, przekazuj je przez
 stdin, np. `... | ssh vps 'sudo kubectl ... --from-file=x.plist=/dev/stdin'`.
 
+**`KIDWATCH_KEK`** (sejf integracji domów, `docs/sejf-domow.md`) — opcjonalny
+na świeżej instalacji (Dom 1 z `config.yaml` działa bez niego). **Uwaga:**
+jeśli odtwarzasz Sekret instalacji, w której Dom 1 ma już konfigurację
+w bazie (`kidwatch domy` → „konfiguracja: baza”), klucz z menedżera haseł
+MUSI tu być — bez niego pod wpada w CrashLoop (wyjście bez exec:
+`KIDWATCH_DOM_1_ZRODLO=yaml`, `docs/sejf-domow.md` pkt 4):
+
+```bash
+read -rs 'KEK?KIDWATCH_KEK z menedżera haseł: '; echo
+kubectl -n default patch secret kidwatch-secrets --type merge --patch-file /dev/stdin <<EOF
+{"stringData": {"KIDWATCH_KEK": "$KEK"}}
+EOF
+unset KEK
+```
+
 Komplet: `kidwatch-secrets` i `kidwatch-config`; opcjonalnie `kidwatch-adb`
 (krok 10), `UNIFI_API_KEY` w `kidwatch-secrets` (krok 11) i `kidwatch-pairing`.
 Konto do panelu WWW zakładasz po wdrożeniu (krok 9).

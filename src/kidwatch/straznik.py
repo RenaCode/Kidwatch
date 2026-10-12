@@ -45,8 +45,11 @@ HOSTY_API: dict[str, frozenset[str]] = {
     "nextdns": frozenset({"api.nextdns.io"}),
     "ntfy": frozenset({"ntfy.sh"}),
 }
-#: NAT64 (RFC 6052, prefiks dobrze znany) — adres IPv4 w ostatnich 32 bitach.
-_NAT64 = ipaddress.IPv6Network("64:ff9b::/96")
+#: Prefiksy z adresem IPv4 w ostatnich 32 bitach: NAT64 (RFC 6052), IPv4-
+#: compatible (::/96, przestarzale) i SIIT/IPv4-translated (::ffff:0:0:0/96).
+#: `is_global` uznaje je za publiczne, wiec `::7f00:1` (127.0.0.1) przechodzil.
+_Z_IPV4 = (ipaddress.IPv6Network("64:ff9b::/96"), ipaddress.IPv6Network("::/96"),
+           ipaddress.IPv6Network("::ffff:0:0:0/96"))
 
 
 class OdmowaSieci(PermissionError):
@@ -81,7 +84,7 @@ def _zaszyte_ipv4(ip: IP) -> list[ipaddress.IPv4Address]:
         out.append(ip.sixtofour)
     if ip.teredo is not None:
         out.extend(ip.teredo)
-    if ip in _NAT64:
+    if any(ip in siec for siec in _Z_IPV4):
         out.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
     return out
 
@@ -128,9 +131,14 @@ class Straznik:
 
     def rozwiaz_sync(self, host: str, port: int) -> IP:
         """Adres, z którym WOLNO się połączyć — łączymy się z nim, nie z nazwą."""
+        return self.rozwiaz_wszystkie_sync(host, port)[0]
+
+    def rozwiaz_wszystkie_sync(self, host: str, port: int) -> list[IP]:
+        """Wszystkie adresy nazwy, każdy sprawdzony (choć jeden zabroniony =
+        odmowa w całości). Kolejne służą, gdy poprzedni nie odpowiada."""
         literal = adres_literalny(host)
         if literal is not None:
-            return self.sprawdz_ip(literal, host)
+            return [self.sprawdz_ip(literal, host)]
         try:
             adresy = self._resolver(host, port)
         except OSError as exc:
@@ -140,12 +148,15 @@ class Straznik:
             raise OdmowaSieci(f"dom {self.dom_id}: nazwa {host} nie rozwiązuje się")
         for ip in ips:
             self.sprawdz_ip(ip, host)
-        return ips[0]
+        return ips
 
     async def rozwiaz(self, host: str, port: int) -> IP:
+        return (await self.rozwiaz_wszystkie(host, port))[0]
+
+    async def rozwiaz_wszystkie(self, host: str, port: int) -> list[IP]:
         if adres_literalny(host) is not None:
-            return self.rozwiaz_sync(host, port)
-        return await asyncio.to_thread(self.rozwiaz_sync, host, port)
+            return self.rozwiaz_wszystkie_sync(host, port)
+        return await asyncio.to_thread(self.rozwiaz_wszystkie_sync, host, port)
 
     # ------------------------------------------------------------------ URL
     def sprawdz_url(self, url: str, *, pole: str, schematy: Iterable[str] = ("http", "https"),
@@ -194,14 +205,26 @@ class StraznikTransport(httpx.AsyncBaseTransport):
         host = url.host
         port = url.port or (443 if url.scheme == "https" else 80)
         try:
-            ip = await self.straznik.rozwiaz(host, port)
+            adresy = await self.straznik.rozwiaz_wszystkie(host, port)
         except OdmowaSieci as exc:
             raise httpx.ConnectError(str(exc), request=request) from exc
-        if adres_literalny(host) is None:
+        if adres_literalny(host) is not None:
+            # SNI tylko dla nazwy — nie po poprzednim żądaniu z tym obiektem.
+            request.extensions = {k: v for k, v in request.extensions.items()
+                                  if k != "sni_hostname"}
+            return await self._inner.handle_async_request(request)
+        if url.scheme == "https":
+            request.extensions = {**request.extensions, "sni_hostname": host}
+        # Jak httpx bez strażnika: kolejny adres, gdy poprzedni nie odpowiada —
+        # ale wyłącznie spośród sprawdzonych (nazwa nie jest pytana drugi raz).
+        for i, ip in enumerate(adresy):
             request.url = url.copy_with(host=str(ip))
-            if url.scheme == "https":
-                request.extensions = {**request.extensions, "sni_hostname": host}
-        return await self._inner.handle_async_request(request)
+            try:
+                return await self._inner.handle_async_request(request)
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                if i == len(adresy) - 1:
+                    raise
+        raise AssertionError("nieosiągalne")  # pragma: no cover
 
     async def aclose(self) -> None:
         await self._inner.aclose()

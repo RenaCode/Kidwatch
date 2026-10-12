@@ -851,11 +851,12 @@ restart needed. It is the only reliable way to get good game coverage.
 | `unifi [--fingerprint]` | who is on home Wi-Fi per UniFi; `--fingerprint` prints the controller's SHA-256 certificate fingerprint for `unifi.cert_sha256` |
 | `device`, `device-watch` | one-off / looping read of iPad state over lockdown (`device_read`, requires pairing and the same LAN) |
 | `user-add`, `user-reset`, `user-del`, `user-list`, `user-rola`, `user-uprawnienia` | panel accounts, roles and permissions |
-| `domy [--sprawdz] [--baza <copy>]` | households in `panel-auth.db` and their members (runs the idempotent migration to "Dom 1"; see `docs/architektura-domy.md`); `--sprawdz` decrypts every integration with `KIDWATCH_KEK` (backup restore test) |
+| `domy [--sprawdz] [--baza <copy>]` | households in `panel-auth.db` and their members (runs the idempotent migration to "Dom 1"; see `docs/architektura-domy.md`); `--sprawdz` decrypts every integration with `KIDWATCH_KEK` and prints how many keys/integrations it verified — zero is a failure (backup restore test) |
 | `dom-importuj 1 --podglad\|--zapisz` | move Dom 1 from `config.yaml` + env secrets into the encrypted database, after a field-by-field comparison (`docs/sejf-domow.md`) |
 | `dom-zrodlo <dom> yaml\|baza` | where a household takes its configuration from (rollback: `dom-zrodlo 1 yaml`) |
 | `dom-sieci <dom> [--dodaj CIDR] [--usun CIDR] [--host H]` | networks/API hosts a household's integrations may connect to (SSRF guard, instance admin only) |
 | `klucze-rotuj`, `dom-klucz-rotuj <dom>` | re-wrap household keys after a `KIDWATCH_KEK` rotation; new data key for one household |
+| `klucze-potwierdz [--baza <copy>]` | proves the key from your password manager (stdin) opens every household key; refuses otherwise — a precondition for removing an old key |
 
 Global options: `--config <path>` (default `$KIDWATCH_CONFIG` or
 `config.yaml`), `-v/--verbose`.

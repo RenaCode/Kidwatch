@@ -102,6 +102,15 @@ spec:
                   optional: true
             - name: KIDWATCH_KATALOG_SEKRETOW
               value: /run/kidwatch
+            # Droga powrotu bez `kubectl exec`: wartosc `yaml` wymusza dla Domu 1
+            # config.yaml mimo trybu `baza` w bazie (pod w CrashLoop, np. po
+            # utracie KIDWATCH_KEK). Patch Sekretu + restart, docs/sejf-domow.md.
+            - name: KIDWATCH_DOM_1_ZRODLO
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: KIDWATCH_DOM_1_ZRODLO
+                  optional: true
             {{- if and .Values.sso.enabled .Values.panel.enabled .Values.ingress.enabled }}
             # Zaufanie do naglowkow Authelii (Remote-User) — TEN SAM przelacznik,
             # ktory dopina middleware'y w ingress.yaml. Bez middleware'u Traefik

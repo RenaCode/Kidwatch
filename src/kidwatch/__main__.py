@@ -1,5 +1,6 @@
 """CLI: run | replay | test-notify | summary | weekly | tv | tv-pauza | user-add | domy |
-dom-importuj | dom-zrodlo | dom-sieci | klucze-rotuj | dom-klucz-rotuj | ..."""
+dom-importuj | dom-zrodlo | dom-sieci | klucze-rotuj | klucze-potwierdz | dom-klucz-rotuj |
+..."""
 
 from __future__ import annotations
 
@@ -271,6 +272,10 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
     return rt
 
 
+#: Klucz Sekretu wymuszajacy config.yaml dla Domu 1 (docs/sejf-domow.md, §4).
+WYMUSZENIE_DOMU_1_ENV = "KIDWATCH_DOM_1_ZRODLO"
+
+
 def home_domu_z_bazy(rejestr, dom_id: int) -> HomeConfig:
     """Konfiguracja domu w trybie `baza` (E2): sekrety z sejfu (KIDWATCH_KEK),
     straznik sieci, pliki z sekretow w pamieci poda."""
@@ -281,7 +286,7 @@ def home_domu_z_bazy(rejestr, dom_id: int) -> HomeConfig:
 
 
 async def cmd_run(args) -> int:
-    from .domy import DOM_1, ZRODLO_BAZA, Nadzorca, RejestrDomow  # noqa: PLC0415
+    from .domy import DOM_1, ZRODLO_BAZA, ZRODLO_YAML, Nadzorca, RejestrDomow  # noqa: PLC0415
     from .sejf import SejfError  # noqa: PLC0415
     from .straznik import OdmowaSieci  # noqa: PLC0415
 
@@ -301,6 +306,17 @@ async def cmd_run(args) -> int:
         w_bazie = [d.id for d in rejestr.domy() if d.zrodlo_konfiguracji == ZRODLO_BAZA]
     except sqlite3.Error:
         log.exception("domy: migracja panel-auth.db nie powiodla sie")
+    wymuszone = os.environ.get(WYMUSZENIE_DOMU_1_ENV, "")
+    if wymuszone.strip().lower() == ZRODLO_YAML:
+        # Droga powrotu BEZ `kubectl exec` (pod w CrashLoop nie przyjmie exec):
+        # klucz w Sekrecie + restart. Baza zostaje bez zmian.
+        if DOM_1 in w_bazie:
+            log.warning("%s=yaml: Dom 1 z config.yaml mimo trybu `baza` w panel-auth.db "
+                        "(wymuszenie z Sekretu; usun klucz po naprawie)", WYMUSZENIE_DOMU_1_ENV)
+            w_bazie.remove(DOM_1)
+    elif wymuszone.strip():
+        log.warning("%s=%r nieznane — jedyna wartosc to `yaml`; ignoruje",
+                    WYMUSZENIE_DOMU_1_ENV, wymuszone)
     inne = [d for d in w_bazie if d != DOM_1]
     if inne:
         # Kolejne domy wymagaja izolacji powiadomien i awarii (E3a/E3b).
@@ -314,7 +330,9 @@ async def cmd_run(args) -> int:
         except (SejfError, OdmowaSieci, ValueError, LookupError, OSError,
                 sqlite3.Error) as exc:
             log.error("Dom 1: konfiguracja z bazy nie wystartowala — %s. Powrot do "
-                      "config.yaml: kidwatch dom-zrodlo 1 yaml (docs/sejf-domow.md)", exc)
+                      "config.yaml bez exec: klucz %s=yaml w kidwatch-secrets + restart; "
+                      "z dzialajacym podem: kidwatch dom-zrodlo 1 yaml (docs/sejf-domow.md)",
+                      exc, WYMUSZENIE_DOMU_1_ENV)
             return 2
         log.info("Dom 1: konfiguracja z bazy (sekrety: %s, sieci: %s)",
                  home.sekrety, [str(n) for n in home.straznik.sieci])
@@ -1362,7 +1380,8 @@ async def cmd_domy(args) -> int:
         from .straznik import OdmowaSieci  # noqa: PLC0415
 
         sejf = _sejf()
-        bledy = rejestr.sprawdz(sejf)
+        raport = rejestr.sprawdz_raport(sejf)
+        bledy = raport.bledy
         for dom in rejestr.domy():
             if dom.zrodlo_konfiguracji == ZRODLO_YAML or any(b[0] == dom.id for b in bledy):
                 continue
@@ -1372,9 +1391,18 @@ async def cmd_domy(args) -> int:
                 bledy.append((dom.id, "konfiguracja", str(exc)))
         for dom_id, typ, blad in bledy:
             print(f"BLAD: Dom {dom_id} {typ or 'DEK'}: {blad}")
-        print(f"sprawdzenie kluczem {sejf.kek_id}: "
-              f"{'wszystko sie odszyfrowuje' if not bledy else f'{len(bledy)} bledow'}")
-        return 1 if bledy else 0
+        print(f"sprawdzono kluczem {sejf.kek_id}: kluczy domow: {raport.klucze_domow}, "
+              f"integracji: {raport.integracje}")
+        if bledy:
+            print(f"WYNIK: {len(bledy)} bledow")
+            return 1
+        if raport.klucze_domow == 0:
+            # Baza bez DEK „odszyfrowuje sie” kazdym kluczem — to nie jest dowod.
+            print("WYNIK: nic nie potwierdzono — w bazie nie ma zadnego klucza domu, wiec "
+                  "TO NIE JEST test KIDWATCH_KEK (kopia sprzed importu albo zly plik?)")
+            return 1
+        print("WYNIK: wszystko sie odszyfrowuje")
+        return 0
     return 0
 
 
@@ -1405,7 +1433,8 @@ async def cmd_dom_importuj(args) -> int:
     rejestr = _rejestr(cfg)
     sekrety = sekrety_z_yaml(home, katalog_domu(DOM_1, inst.store.path))
     raport = importuj(rejestr, DOM_1, home, sekrety, sejf=_sejf(), zapisz=args.zapisz,
-                      kto="cli")
+                      kto="cli",
+                      plik_tokenu_tv=katalog_domu(DOM_1, inst.store.path) / "tv-app" / "token")
     print(f"Dom {raport.dom_id}: strefa {raport.strefa}")
     print(f"  dzieci: {', '.join(raport.dzieci)}")
     print(f"  urzadzenia: {', '.join(raport.urzadzenia)}")
@@ -1488,6 +1517,52 @@ async def cmd_klucze_rotuj(args) -> int:
           f"{', '.join(f'Dom {d}' for d in zmienione) or 'brak (wszystkie juz na nim)'}")
     print(f"Teraz usun {KEK_POPRZEDNI_ENV} z Sekretu i zrestartuj poda "
           f"(docs/sejf-domow.md).")
+    return 0
+
+
+async def cmd_klucze_potwierdz(args) -> int:
+    """Dowod, ze klucz z menedzera hasel (stdin) jest BIEZACYM kluczem bazy:
+    otwiera kazdy klucz domu i kazda integracje. Bez tego dowodu polecenie
+    ODMAWIA — runbook nie pozwala wtedy usunac KIDWATCH_KEK_POPRZEDNI ani
+    starego wpisu w menedzerze hasel (docs/sejf-domow.md, §7)."""
+    from .domy import RejestrDomow  # noqa: PLC0415
+    from .sejf import BrakKek, Sejf, _klucz_z_base64  # noqa: PLC0415
+
+    klucz = Sejf(_klucz_z_base64(sys.stdin.readline(), "klucz z menedzera hasel"))
+    rejestr = RejestrDomow(args.baza) if args.baza else _rejestr(Config.load(args.config))
+    raport = rejestr.sprawdz_raport(klucz)
+    problemy = []
+    if raport.bledy:
+        problemy.append(f"{len(raport.bledy)} kluczy domow/integracji nie otwiera sie tym "
+                        f"kluczem (DEK-i na innym kluczu? najpierw kidwatch klucze-rotuj)")
+    if raport.klucze_domow == 0 and not raport.bledy:
+        problemy.append("w bazie nie ma zadnego klucza domu — nic nie potwierdzono")
+    if not args.baza:
+        try:
+            biezacy = Sejf.z_srodowiska()
+        except BrakKek:
+            biezacy = None
+        if biezacy is not None and biezacy.kek_id != klucz.kek_id:
+            problemy.append(f"to nie jest biezacy KIDWATCH_KEK procesu ({biezacy.kek_id})")
+    if problemy:
+        print(f"ODMOWA: klucz {klucz.kek_id} NIE jest potwierdzony:")
+        for p in problemy:
+            print(f"  - {p}")
+        print("NIE usuwaj KIDWATCH_KEK_POPRZEDNI z Sekretu ani zadnego klucza z menedzera "
+              "hasel.")
+        return 1
+    rotacje = rejestr.ostatnia_rotacja_kek()
+    if not args.baza:
+        rejestr.zapisz_potwierdzenie_kek(klucz.kek_id, raport.klucze_domow, raport.integracje,
+                                         kto="cli")
+    print(f"POTWIERDZONO: klucz {klucz.kek_id} z menedzera hasel otwiera "
+          f"{raport.klucze_domow} kluczy domow i {raport.integracje} integracji.")
+    print("Wolno usunac KIDWATCH_KEK_POPRZEDNI z Sekretu (jesli jest).")
+    if rotacje is not None:
+        print(f"Stary klucz w menedzerze hasel: NIE usuwaj, dopoki istnieja kopie bazy sprzed "
+              f"{rotacje} — kopie sprzed rotacji otwiera tylko stary klucz.")
+    else:
+        print("Brak rotacji w historii bazy — nie ma starszego klucza do przechowania.")
     return 0
 
 
@@ -1660,6 +1735,11 @@ def build_parser() -> argparse.ArgumentParser:
     sieci.add_argument("--wyczysc", action="store_true", help="usun wszystkie sieci i hosty")
     sub.add_parser("klucze-rotuj",
                    help="przepakuj klucze domow nowym KIDWATCH_KEK (po rotacji KEK)")
+    potw = sub.add_parser(
+        "klucze-potwierdz",
+        help="klucz z menedzera hasel (stdin) otwiera wszystko? warunek usuniecia starego")
+    potw.add_argument("--baza", metavar="PANEL_AUTH_DB",
+                      help="sprawdz kopie bazy zamiast biezacej (bez wpisu w audycie)")
     dkr = sub.add_parser("dom-klucz-rotuj",
                          help="nowy klucz danych domu i przeszyfrowanie jego integracji")
     dkr.add_argument("dom", type=int)
@@ -1701,6 +1781,7 @@ def main(argv: list[str] | None = None) -> int:
         "dom-zrodlo": cmd_dom_zrodlo,
         "dom-sieci": cmd_dom_sieci,
         "klucze-rotuj": cmd_klucze_rotuj,
+        "klucze-potwierdz": cmd_klucze_potwierdz,
         "dom-klucz-rotuj": cmd_dom_klucz_rotuj,
     }
     try:

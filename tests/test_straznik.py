@@ -188,6 +188,9 @@ def test_unifi_laczy_sie_ze_sprawdzonym_adresem(monkeypatch):
         def connect(self):
             raise ConnectionRefusedError("atrapa")
 
+        def close(self):
+            pass
+
     monkeypatch.setattr(unifi_mod.http.client, "HTTPSConnection", Polaczenie)
     straznik = Straznik(1, ["192.0.2.1/32"], resolver=Resolver(udm_example_invalid=[["192.0.2.1"]]))
     with pytest.raises(ConnectionRefusedError):

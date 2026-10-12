@@ -739,6 +739,14 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
   - Panel do E3a czyta urządzenia z `config.yaml` (jeden `PanelQueries`),
     `tv_app.AKTYWNA` zostaje globalne (E3b).
   - `ConnectGate.dla_klucza`: jedna bramka 429 na klucz API w procesie.
+  - Poprawki po przeglądzie (przed przełączeniem Domu 1 na bazę):
+    `KIDWATCH_DOM_1_ZRODLO=yaml` w `kidwatch-secrets` wymusza `config.yaml`
+    bez `kubectl exec` (pod w CrashLoop); `domy --sprawdz` liczy
+    odszyfrowane klucze domów i integracje, zero = kod 1 („nic nie
+    potwierdzono”); `klucze-potwierdz` (klucz z menedżera haseł na stdin)
+    jest warunkiem usunięcia klucza poprzedniego; ponowny import nie cofa
+    nowszego tokenu aplikacji TV; strażnik rozpoznaje IPv4 w `::/96`
+    i `::ffff:0:0:0/96` i próbuje kolejnych sprawdzonych adresów nazwy.
 
 ### E3a — izolacja panelu i API + przełącznik domu w UI
 

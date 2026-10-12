@@ -33,7 +33,7 @@ ROZSZERZENIA E2 (addytywne; nic z kontraktu E1 nie znika):
   Stale:     TYPY_INTEGRACJI, POLA_SEKRETOW
   Odczyt:    RejestrDomow.integracje(dom_id) / .integracja(dom_id, typ) /
              .sekrety_domu(dom_id, sejf) / .dane_domu(dom_id) /
-             .sprawdz(sejf) / .straznik(dom_id)
+             .sprawdz(sejf) / .sprawdz_raport(sejf) / .straznik(dom_id)
   Zapis:     RejestrDomow.zapisz_integracje(dom_id, typ, sejf=..., ...) (sekrety
              tylko do zapisu: panel nigdy ich nie odczytuje) / .ustaw_zrodlo /
              .ustaw_sieci / .dodaj_dom / .rotuj_kek / .rotuj_dek /
@@ -582,6 +582,22 @@ class PlanDomu:
 
 
 @dataclass
+class RaportSprawdzenia:
+    """Wynik testu odtworzenia: bledy oraz ile naprawde odszyfrowano."""
+
+    bledy: list[tuple[int, str | None, str]] = field(default_factory=list)
+    #: Domy, ktorych DEK sie odpakowal (dowod, ze klucz pasuje).
+    klucze_domow: int = 0
+    integracje: int = 0
+    #: dom -> kek_id, ktorym zapakowano jego DEK (tylko odpakowane).
+    kek_id_domow: dict[int, str | None] = field(default_factory=dict)
+
+    @property
+    def potwierdzone(self) -> bool:
+        return not self.bledy and self.klucze_domow > 0
+
+
+@dataclass
 class DaneDomu:
     """Wszystko z bazy panelu o jednym domu (bez odszyfrowania)."""
 
@@ -998,10 +1014,17 @@ class RejestrDomow:
 
     def sprawdz(self, sejf: Sejf) -> list[tuple[int, str | None, str]]:
         """Test odtworzenia (§3.3): odszyfrowanie DEK i KAZDEJ integracji
-        kazdego domu. Lista (dom, typ albo None dla DEK, opis bledu)."""
+        kazdego domu. Lista (dom, typ albo None dla DEK, opis bledu).
+        Pusta lista NIE znaczy, ze klucz jest dobry — patrz sprawdz_raport."""
+        return self.sprawdz_raport(sejf).bledy
+
+    def sprawdz_raport(self, sejf: Sejf) -> RaportSprawdzenia:
+        """Jak `sprawdz`, plus ile kluczy domow i integracji naprawde sie
+        odszyfrowalo. Zero = nic nie potwierdzono (baza bez DEK przechodzi
+        z KAZDYM kluczem)."""
         from .sejf import SejfError, odszyfruj_sekrety  # noqa: PLC0415
 
-        bledy: list[tuple[int, str | None, str]] = []
+        raport = RaportSprawdzenia()
         with self._conn() as conn:
             for dom in self.domy():
                 rows = conn.execute(
@@ -1012,16 +1035,37 @@ class RejestrDomow:
                 try:
                     dek = _dek_conn(conn, dom.id, sejf, utworz=False)
                 except SejfError as exc:
-                    bledy.append((dom.id, None, str(exc)))
+                    raport.bledy.append((dom.id, None, str(exc)))
                     continue
+                raport.klucze_domow += 1
+                raport.kek_id_domow[dom.id] = dom.kek_id
                 for r in rows:
                     try:
                         odszyfruj_sekrety(dek, dom.id, r["typ"], r["sekrety"])
                     except SejfError as exc:
-                        bledy.append((dom.id, r["typ"], str(exc)))
-        return bledy
+                        raport.bledy.append((dom.id, r["typ"], str(exc)))
+                    else:
+                        raport.integracje += 1
+        return raport
 
     # ---------------------------------------------------------- E2: klucze
+    def ostatnia_rotacja_kek(self) -> str | None:
+        """Data (UTC) ostatniego `klucze-rotuj` albo None. Kopie bazy sprzed
+        niej otwiera tylko poprzedni klucz."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT MAX(ts) FROM audyt WHERE akcja = 'klucze.rotacja'"
+                               ).fetchone()
+        if not row or row[0] is None:
+            return None
+        return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(row[0]))
+
+    def zapisz_potwierdzenie_kek(self, kid: str, klucze_domow: int, integracje: int, *,
+                                 kto: str | None = None) -> None:
+        with self._conn() as conn, _transakcja(conn):
+            _audyt(conn, time.time(), None, kto, "klucze.potwierdzenie",
+                   f"klucz {kid} z menedzera hasel otwiera {klucze_domow} kluczy domow "
+                   f"i {integracje} integracji")
+
     def rotuj_kek(self, sejf: Sejf, *, kto: str | None = None) -> list[int]:
         """Przepakowanie DEK-ow biezacym KEK (sekrety integracji bez zmian).
         Wszystko albo nic. Zwraca domy, ktorych DEK przepakowano."""
