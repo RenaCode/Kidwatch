@@ -435,6 +435,14 @@ bot is shared by the installation: **only the active installation
 administrator** may configure it (QR, sender, gateway recipients, test) —
 no household role grants it, and every change is logged as an installation
 event. Sending notifications through the gateway does not depend on it.
+The same applies to a household's **integrations** (NextDNS, AdGuard, UniFi,
+TV, MDM, ntfy, Home Assistant): only the active installation administrator
+sees Settings → Integracje, for households whose configuration lives in the
+database (`docs/sejf-domow.md` §10). Secrets are write-only (the screen shows
+masks), every change needs the password or a 2FA code and is logged without
+values, and the household switches to the new configuration within ~10 s
+without a pod restart (or the screen says the change takes effect after a
+restart).
 Without SSO the administrator account logs in with its panel password and
 must enable panel 2FA first (the "no household" screen offers it); this
 needs `PANEL_TOTP_KEY` in the `kidwatch-secrets` Secret.

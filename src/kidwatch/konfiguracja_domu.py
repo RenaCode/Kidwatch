@@ -46,7 +46,7 @@ from .domy import (
     sekrety_domu_conn,
     zapisz_dane_domu_conn,
 )
-from .sejf import Sejf, maska
+from .sejf import Sejf, SejfError, maska
 from .straznik import HOSTY_API, OdmowaSieci, Straznik, adres_literalny, rozwiaz_systemowo
 
 #: Pola HomeConfig niesione przez integracje albo kolumny — reszta idzie
@@ -227,8 +227,14 @@ def zbuduj_dom(rejestr: RejestrDomow, dom_id: int, sejf: Sejf, *,
     dostawca sekretow, straznik sieci, pliki z sekretow w pamieci poda.
     Kazdy blad (brak KEK, zly szyfrogram, adres spoza sieci) = wyjatek:
     dom nie startuje z polowa konfiguracji."""
-    dane = rejestr.dane_domu(dom_id)
-    sekrety = rejestr.sekrety_domu(dom_id, sejf)
+    return _home_domu(rejestr.dane_domu(dom_id), rejestr.sekrety_domu(dom_id, sejf),
+                      resolver=resolver, katalog=katalog, materializuj=materializuj)
+
+
+def _home_domu(dane: DaneDomu, sekrety: SekretyDomu, *,
+               resolver: Callable[[str, int], list[str]] | None,
+               katalog: str | Path | None, materializuj: bool) -> HomeConfig:
+    dom_id = dane.dom.id
     kat = katalog_sekretow_domu(dom_id, katalog)
     home = home_z_danych(dane, sekrety, katalog_plikow=kat)
     straznik = Straznik(dom_id, dane.dom.dozwolone_sieci, dane.dom.dozwolone_hosty,
@@ -239,7 +245,64 @@ def zbuduj_dom(rejestr: RejestrDomow, dom_id: int, sejf: Sejf, *,
     return home.ustaw_srodowisko(sekrety, straznik)
 
 
+def zbuduj_dom_z_kopii(rejestr: RejestrDomow, dom_id: int, sejf: Sejf, *,
+                       resolver: Callable[[str, int], list[str]] | None = None,
+                       katalog: str | Path | None = None,
+                       materializuj: bool = False) -> tuple[int, HomeConfig] | None:
+    """Ostatnia konfiguracja, na ktorej dom WSTAL (RejestrDomow.zapamietaj_dobra):
+    (wersja, HomeConfig) albo None, gdy kopii nie ma. Te same kontrole co
+    `zbuduj_dom` plus wymagane sekrety."""
+    kopia = rejestr.kopia_domu(dom_id, sejf)
+    if kopia is None:
+        return None
+    wersja, dane, sekrety = kopia
+    home = _home_domu(dane, sekrety, resolver=resolver, katalog=katalog,
+                      materializuj=materializuj)
+    sprawdz_wymagane_sekrety(home)
+    return wersja, home
+
+
+def sprawdz_wymagane_sekrety(home: HomeConfig) -> None:
+    """Sekrety, bez ktorych dom nie wystartuje (zrodlo DNS, wlaczony
+    webhook HA) — MissingSecretError z nazwa pola, bez wartosci. Temat ntfy
+    sprawdza juz model (NtfyConfig)."""
+    if home.source.kind == "nextdns" and home.source.nextdns is not None:
+        home.source.nextdns.api_key()
+    if home.source.kind == "adguard" and home.source.adguard is not None:
+        home.source.adguard.password()
+    ha = home.notifiers.homeassistant
+    if ha is not None and ha.enabled:
+        ha.webhook_id()
+
+
+def blad_startu_conn(conn, dom_id: int, sejf: Sejf) -> str | None:
+    """Dlaczego dom NIE wystartowalby na konfiguracji widocznej na `conn`
+    (takze niezatwierdzonej — panel pyta w transakcji zapisu), albo None.
+    To samo co `zbuduj_dom` bez sieci i bez plikow: model, szyfrogramy,
+    hosty API, wymagane sekrety. Komunikat bez wartosci sekretow."""
+    try:
+        dane = dane_domu_conn(conn, dom_id)
+        sekrety = sekrety_domu_conn(conn, dom_id, sejf)
+        home = home_z_danych(dane, sekrety, katalog_plikow=_ADB)
+        straznik = Straznik(dom_id, dane.dom.dozwolone_sieci, dane.dom.dozwolone_hosty)
+        sprawdz_hosty_api(home, straznik)
+        home.ustaw_srodowisko(sekrety, straznik)
+        sprawdz_wymagane_sekrety(home)
+    except (SejfError, OdmowaSieci, ValueError, LookupError, cfgmod.MissingSecretError) as exc:
+        return str(exc)
+    return None
+
+
 # ================================================================ walidacja
+#: Model konfiguracji kazdej integracji — te same walidatory co config.yaml
+#: (panel buduje z nich tez formularz: panel_integracje.pola_ustawien).
+MODELE_INTEGRACJI: dict[str, type[cfgmod._ZSekretami]] = {
+    "nextdns": cfgmod.NextDnsConfig, "adguard": cfgmod.AdGuardConfig,
+    "unifi": cfgmod.UnifiConfig, "tv": cfgmod.TvConfig, "mdm": cfgmod.HomeMdmConfig,
+    "ntfy": cfgmod.NtfyConfig, "homeassistant": cfgmod.HomeAssistantConfig,
+}
+
+
 def waliduj_integracje(typ: str, ustawienia: dict, straznik: Straznik, *,
                        wlaczona: bool = True) -> None:
     """Zapis integracji z panelu: model konfiguracji (te same walidatory co
@@ -249,11 +312,7 @@ def waliduj_integracje(typ: str, ustawienia: dict, straznik: Straznik, *,
     jawne_sekrety = sorted(set(ustawienia) & set(POLA_SEKRETOW[typ]))
     if jawne_sekrety:
         raise ValueError(f"integracja {typ}: {jawne_sekrety} to sekrety — nie w ustawieniach")
-    modele = {
-        "nextdns": cfgmod.NextDnsConfig, "adguard": cfgmod.AdGuardConfig,
-        "unifi": cfgmod.UnifiConfig, "tv": cfgmod.TvConfig, "mdm": cfgmod.HomeMdmConfig,
-        "ntfy": cfgmod.NtfyConfig, "homeassistant": cfgmod.HomeAssistantConfig,
-    }
+    modele = MODELE_INTEGRACJI
     dane = dict(ustawienia)
     if typ in ("unifi", "tv", "mdm", "homeassistant"):
         dane["enabled"] = wlaczona

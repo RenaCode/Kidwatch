@@ -147,6 +147,12 @@ class DomyPanelu:
                 q = self._queries[dom.id] = self._queries_domu(dom)
             return q
 
+    def zapomnij(self, dom_id: int) -> None:
+        """Po przeladowaniu domu (domy.Nadzorca): nastepne zadanie zbuduje
+        PanelQueries z konfiguracji nowego srodowiska."""
+        with self._lock:
+            self._queries.pop(dom_id, None)
+
     def widoczne(self, session: Session, admin: bool) -> list[WidokDomu]:
         """Domy sesji: jej czlonkostwa, a aktywnemu administratorowi takze
         reszta (oznaczona `administracja`). Kolejnosc: po id."""

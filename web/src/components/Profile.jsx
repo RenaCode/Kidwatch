@@ -14,6 +14,8 @@ import {
 } from '../utils/recipients';
 import TwoFactor from './TwoFactor';
 import { Accounts, AuditLog, MyNotifications } from './Konta';
+import Integrations from './Integracje';
+import { canEditIntegrations } from '../utils/integracje';
 
 const STATUS = {
   WORKING: { label: 'połączony', badge: 'ok' },
@@ -449,6 +451,14 @@ export default function Profile({ user, onChanged, onClose, tvPause, onTvPauseCh
           <Accounts />
           <div className="stat-label">Dziennik domu</div>
           <AuditLog />
+        </>
+      )}
+      {/* Integracje domu i ich sekrety: tylko aktywny administrator instalacji
+          (decyzja 2026-10-12); serwer odmawia innym niezaleznie od frontu. */}
+      {canEditIntegrations(user) && (
+        <>
+          <div className="stat-label">Integracje{user?.dom ? ` — ${user.dom.nazwa}` : ''}</div>
+          <Integrations />
         </>
       )}
       {/* Bot WhatsApp (nadawca) i lista odbiorcow bramki sa wspolne dla calej

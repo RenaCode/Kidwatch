@@ -81,6 +81,14 @@ class MdmApi:
         self._client.close()
 
 
+def config_domu(home_mdm, url: str) -> MdmConfig:
+    """MdmConfig domu: ustawienia i dostawca sekretow z konfiguracji domu
+    (tryb `baza`: token z sejfu), adres serwera z instancji."""
+    cfg = MdmConfig.model_validate({**home_mdm.model_dump(), "url": url})
+    cfg._sekrety = home_mdm._sekrety
+    return cfg
+
+
 def build_api(cfg: MdmConfig) -> MdmApi | None:
     if not cfg.enabled:
         return None

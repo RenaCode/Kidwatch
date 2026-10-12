@@ -13,6 +13,7 @@ import os
 import signal
 import sqlite3
 import sys
+import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -165,6 +166,7 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
     zrodlo DNS i petle wlaczone w konfiguracji domu. Kolejnosc budowy jak
     przed domami — brak sekretu zrodla przerywa start, zanim ruszy panel."""
     from .domy import (  # noqa: PLC0415
+        DOM_1,
         HomeRuntime,
         katalog_domu,
         katalog_sekretow_domu,
@@ -225,6 +227,12 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
     # (zapisany przez konfiguracja_domu.zbuduj_dom), nie na wolumenie.
     katalog = (katalog_sekretow_domu(dom_id) if home.sekrety is not None
                else katalog_domu(dom_id, inst.store.path))
+    if dom_id == DOM_1:
+        from .sources import tv_app  # noqa: PLC0415
+
+        # Przeladowanie domu (domy.Nadzorca): aplikacja TV poprzedniego
+        # srodowiska nie moze zostac w panelu, gdy nowa konfiguracja jej nie ma.
+        tv_app.AKTYWNA = None
     tv = build_tv_watcher(home, store, katalog) if home.tv.enabled else None
     if tv is not None:
         log.info("czujnik TV wlaczony: %s (%s), co %.0f s",
@@ -248,11 +256,9 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
         rt.dodaj_petle("unifi", lambda: unifi_loop(unifi, dispatcher, home.unifi.poll_seconds))
 
     # Serwer MDM to osobny pod z wlasna baza — tu tylko czujka po jego API.
-    from .config import MdmConfig  # noqa: PLC0415
-    from .mdm import MdmWatcher, build_api, mdm_loop  # noqa: PLC0415
+    from .mdm import MdmWatcher, build_api, config_domu, mdm_loop  # noqa: PLC0415
 
-    mdm_cfg = MdmConfig.model_validate({**home.mdm.model_dump(), "url": inst.mdm.url})
-    mdm_cfg._sekrety = home.mdm._sekrety  # token z sekretow domu (tryb `baza`)
+    mdm_cfg = config_domu(home.mdm, inst.mdm.url)  # token z sekretow domu (tryb `baza`)
     mdm_api = build_api(mdm_cfg)
     if mdm_api is not None:
         log.info("czujka MDM wlaczona: %s, co %.0f s", mdm_cfg.url, mdm_cfg.poll_seconds)
@@ -286,11 +292,166 @@ def home_domu_z_bazy(rejestr, dom_id: int) -> HomeConfig:
     return zbuduj_dom(rejestr, dom_id, Sejf.z_srodowiska())
 
 
-async def cmd_run(args) -> int:
-    from .domy import DOM_1, ZRODLO_BAZA, ZRODLO_YAML, Nadzorca, RejestrDomow  # noqa: PLC0415
-    from .sejf import SejfError  # noqa: PLC0415
-    from .straznik import OdmowaSieci  # noqa: PLC0415
+#: Alarm instancji nie moze trzymac nadzorcy dluzej niz tyle (bramka ponawia).
+ALARM_TIMEOUT_SECONDS = 60.0
 
+
+def alarm_instancji(inst: InstanceConfig):
+    """Alarm instalacji (nie domu) przez wspolna bramke: `await alarm(tytul,
+    tresc)`. Zawsze tez log ERROR. Bez bramki albo klucza — sam log (i None
+    zamiast funkcji, gdy nie ma czym wyslac). Tresc bez wartosci sekretow:
+    dostaje opisy bledow sejfu, straznika i walidacji."""
+    bc = inst.notifiers.bramka
+    if bc is None or not bc.enabled:
+        log.warning("alarmy instancji tylko w logu — bramka wylaczona")
+        return None
+    try:
+        klucz = bc.key()
+    except MissingSecretError as exc:
+        log.warning("alarmy instancji tylko w logu — %s", exc)
+        return None
+
+    async def alarm(tytul: str, tresc: str) -> None:
+        log.error("ALARM INSTANCJI: %s — %s", tytul, tresc)
+        teraz = datetime.now(UTC)
+        note = Notification(kind=NotifyKind.WATCHDOG, title=tytul, text=tresc,
+                            dedup_key=f"instancja:{tytul}:{teraz.isoformat()}", ts=teraz,
+                            priority=5)
+        kanal = BramkaNotifier(bc, key=klucz)
+        try:
+            await asyncio.wait_for(kanal.send(note), timeout=ALARM_TIMEOUT_SECONDS)
+        finally:
+            await kanal.aclose()
+
+    return alarm
+
+
+def przeladowanie_domow(rejestr, inst: InstanceConfig, konfiguracje: dict, stany,
+                        domy_panelu=None, *, alarm=None):
+    """domy.Przeladowanie dla `run` (§5.1): wersja domu tylko, gdy nadal
+    jest w trybie `baza` (powrot do `yaml` wymaga restartu — jak dotad);
+    konfiguracja z sejfu jak przy starcie plus wymagane sekrety (brak klucza
+    NextDNS ma zostawic stary dom, a nie zatrzymac go), pliki z sekretow
+    dopiero po zatrzymaniu starego srodowiska; kopia ostatniej dobrej
+    wersji, dziennik i alarm instancji; po zmianie panel bierze nowa
+    konfiguracje."""
+    from .domy import ZRODLO_BAZA, Przeladowanie, katalog_sekretow_domu  # noqa: PLC0415
+    from .konfiguracja_domu import (  # noqa: PLC0415
+        materializuj_pliki,
+        sprawdz_wymagane_sekrety,
+        zbuduj_dom,
+        zbuduj_dom_z_kopii,
+    )
+    from .sejf import Sejf  # noqa: PLC0415
+
+    def wersja(dom_id: int) -> int | None:
+        dom = rejestr.dom(dom_id)
+        if dom is None or dom.zrodlo_konfiguracji != ZRODLO_BAZA:
+            return None
+        return dom.wersja
+
+    def konfiguracja(dom_id: int) -> HomeConfig:
+        home = zbuduj_dom(rejestr, dom_id, Sejf.z_srodowiska(), materializuj=False)
+        sprawdz_wymagane_sekrety(home)
+        return home
+
+    def materializuj(dom_id: int, home: HomeConfig) -> None:
+        if home.sekrety is not None:
+            materializuj_pliki(home.sekrety, katalog_sekretow_domu(dom_id))
+
+    def po_zmianie(dom_id: int, rt) -> None:
+        konfiguracje[dom_id] = rt.home
+        if domy_panelu is not None:
+            domy_panelu.zapomnij(dom_id)
+
+    return Przeladowanie(
+        wersja=wersja, konfiguracja=konfiguracja,
+        runtime=lambda dom_id, home: build_home_runtime(
+            dom_id, inst, home, Classifier(inst.app_map_path)),
+        po_zmianie=po_zmianie, stany=stany, materializuj=materializuj,
+        zapamietaj=rejestr.zapamietaj_dobra, zapisz_blad=rejestr.zapisz_blad_przeladowania,
+        ostatnia_dobra=lambda dom_id: zbuduj_dom_z_kopii(rejestr, dom_id, Sejf.z_srodowiska()),
+        alarm=alarm)
+
+
+async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id: int = 1):
+    """Srodowisko domu w trybie `baza` przy starcie `run` albo None (kod 2).
+
+    Wersje czytamy PRZED budowa: zmiana w trakcie startu da najwyzej jedno
+    zbedne przeladowanie, nigdy zgubiona zmiane. Biezaca wersja nie wstaje
+    (zla zmiana w panelu, brak sekretu) — start na ostatniej dobrej kopii
+    (`domy_kopia`), wpis w dzienniku, alarm instancji i stan dla panelu:
+    proces zyje, panel dziala, a nadzorca przeladuje dom po poprawce. Bez
+    kopii (albo gdy i ona nie wstaje) — jak przed E3a: log, alarm, kod 2
+    (droga powrotu do config.yaml: docs/sejf-domow.md pkt 4)."""
+    from .domy import StanDomu, blad_przejsciowy  # noqa: PLC0415
+    from .konfiguracja_domu import zbuduj_dom_z_kopii  # noqa: PLC0415
+    from .sejf import Sejf  # noqa: PLC0415
+
+    wersja = None
+    try:
+        dom = rejestr.dom(dom_id)
+        wersja = dom.wersja if dom is not None else None
+        home = home_domu_z_bazy(rejestr, dom_id)
+        runtime = build_home_runtime(dom_id, inst, home, Classifier(inst.app_map_path))
+    except Exception as exc:  # noqa: BLE001 — kazdy blad startu domu: kopia albo kod 2
+        blad_startu, blad = exc, str(exc) or type(exc).__name__
+        log.error("Dom %d: konfiguracja z bazy (wersja %s) nie wystartowala — %s", dom_id,
+                  wersja, blad)
+    else:
+        runtime.wersja = wersja
+        log.info("Dom %d: konfiguracja z bazy, wersja %s (sekrety: %s, sieci: %s)", dom_id,
+                 wersja, home.sekrety, [str(n) for n in home.straznik.sieci])
+        if wersja is not None:
+            stany.ustaw(dom_id, StanDomu(wersja))
+            try:
+                rejestr.zapamietaj_dobra(dom_id, wersja)
+            except Exception:
+                log.exception("Dom %d: nie zapisano kopii dzialajacej konfiguracji", dom_id)
+        return runtime
+
+    kopia_blad = None
+    try:
+        kopia = zbuduj_dom_z_kopii(rejestr, dom_id, Sejf.z_srodowiska(), materializuj=True)
+        if kopia is not None:
+            runtime = build_home_runtime(dom_id, inst, kopia[1], Classifier(inst.app_map_path))
+    except Exception as exc2:  # noqa: BLE001
+        kopia, kopia_blad = None, str(exc2) or type(exc2).__name__
+    if kopia is None:
+        log.error("Dom %d: brak dzialajacej kopii konfiguracji%s. Powrot do config.yaml bez "
+                  "exec: klucz %s=yaml w kidwatch-secrets + restart; z dzialajacym podem: "
+                  "kidwatch dom-zrodlo %d yaml (docs/sejf-domow.md)", dom_id,
+                  f" ({kopia_blad})" if kopia_blad else "", WYMUSZENIE_DOMU_1_ENV, dom_id)
+        if alarm is not None:
+            await alarm(f"Dom {dom_id}: Kidwatch nie wystartowal",
+                        f"Konfiguracja z bazy (wersja {wersja}) nie wstaje: {blad}. Brak "
+                        "dzialajacej kopii — proces konczy sie (docs/sejf-domow.md pkt 4).")
+        return None
+    runtime.wersja = kopia[0]
+    przejsciowy = blad_przejsciowy(blad_startu)
+    stany.ustaw(dom_id, StanDomu(kopia[0], wersja, blad, time.time(), przejsciowy))
+    log.warning("Dom %d: dziala na ostatniej dobrej konfiguracji (wersja %d) zamiast %s",
+                dom_id, kopia[0], wersja)
+    if wersja is not None and rejestr.blad_przeladowania(dom_id, wersja) is None:
+        with contextlib.suppress(Exception):
+            rejestr.zapisz_blad_przeladowania(dom_id, wersja, blad)
+    if alarm is not None:
+        with contextlib.suppress(Exception):
+            await alarm(f"Dom {dom_id}: start na ostatniej dobrej konfiguracji",
+                        f"Wersja {wersja} nie wstaje: {blad}. Dom dziala na wersji {kopia[0]}. "
+                        "Popraw integracje w panelu (Ustawienia -> Integracje).")
+    return runtime
+
+
+async def cmd_run(args) -> int:
+    from .domy import (  # noqa: PLC0415
+        DOM_1,
+        ZRODLO_BAZA,
+        ZRODLO_YAML,
+        Nadzorca,
+        RejestrDomow,
+        StanyDomow,
+    )
     cfg = Config.load(args.config)
     inst, home = cfg.split()
     rejestr = RejestrDomow(inst.panel_auth_path)
@@ -323,21 +484,27 @@ async def cmd_run(args) -> int:
         # Kolejne domy wymagaja izolacji powiadomien i awarii (E3a/E3b).
         log.warning("domy %s maja konfiguracje w bazie — ich uruchamianie to etap E3b, "
                     "na razie chodzi tylko Dom 1", inne)
+    alarm = alarm_instancji(inst)
+    stany = StanyDomow()
     if DOM_1 in w_bazie:
         # KEK, szyfrogram albo adres spoza sieci domu — Dom 1 nie startuje
-        # z polowa konfiguracji. Brak KEK nie dotyczy trybu `yaml`.
-        try:
-            home = home_domu_z_bazy(rejestr, DOM_1)
-        except (SejfError, OdmowaSieci, ValueError, LookupError, OSError,
-                sqlite3.Error) as exc:
-            log.error("Dom 1: konfiguracja z bazy nie wystartowala — %s. Powrot do "
-                      "config.yaml bez exec: klucz %s=yaml w kidwatch-secrets + restart; "
-                      "z dzialajacym podem: kidwatch dom-zrodlo 1 yaml (docs/sejf-domow.md)",
-                      exc, WYMUSZENIE_DOMU_1_ENV)
+        # z polowa konfiguracji. Brak KEK nie dotyczy trybu `yaml`. Biezaca
+        # wersja, ktora nie wstaje (zla zmiana w panelu) — start na ostatniej
+        # dobrej, zeby CrashLoop nie zabral tez panelu, w ktorym da sie ja
+        # poprawic (start_domu_z_bazy).
+        runtime = await start_domu_z_bazy(rejestr, inst, stany, alarm)
+        if runtime is None:
             return 2
-        log.info("Dom 1: konfiguracja z bazy (sekrety: %s, sieci: %s)",
-                 home.sekrety, [str(n) for n in home.straznik.sieci])
-    runtime = build_home_runtime(DOM_1, inst, home, Classifier(inst.app_map_path))
+        home = runtime.home
+    else:
+        try:
+            runtime = build_home_runtime(DOM_1, inst, home, Classifier(inst.app_map_path))
+        except Exception as exc:
+            log.error("Dom 1 (config.yaml) nie wystartowal — %s", exc)
+            if alarm is not None:
+                await alarm("Dom 1: monitoring nie wystartowal",
+                            f"Konfiguracja z config.yaml: {type(exc).__name__}. Sprawdz log.")
+            raise
 
     log.info(
         "start: zrodlo=%s urzadzenia=%s kanaly=%s",
@@ -348,6 +515,9 @@ async def cmd_run(args) -> int:
     if not runtime.outbox.notifiers:
         log.warning("zaden kanal powiadomien nie jest wlaczony — nic nie dotrze")
 
+    # Konfiguracja dzialajacego srodowiska domu — panel czyta stad, a
+    # przeladowanie (§5.1) podmienia wpis.
+    konfiguracje = {DOM_1: home}
     panel = None
     if cfg.panel.enabled:
         from .panel import start_panel  # noqa: PLC0415
@@ -355,7 +525,8 @@ async def cmd_run(args) -> int:
         # Panel Domu 1 z TEJ SAMEJ konfiguracji co jego srodowisko — przy
         # `baza` (E2) nie z config.yaml, inaczej panel pokazalby pusty dom
         # (przeglad E3a, B-1). Kolejne domy: E3b.
-        panel = start_panel(cfg, konfiguracja_domu=lambda dom: home if dom.id == DOM_1 else None)
+        panel = start_panel(cfg, konfiguracja_domu=lambda dom: konfiguracje.get(dom.id),
+                            stany=stany)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -363,7 +534,16 @@ async def cmd_run(args) -> int:
         with contextlib.suppress(NotImplementedError):  # pragma: no cover
             loop.add_signal_handler(sig, stop.set)
 
-    nadzorca = Nadzorca([runtime])
+    przeladowanie = None
+    if DOM_1 in w_bazie:
+        # Zmiana integracji w panelu podnosi domy.wersja; nadzorca przebudowuje
+        # Dom 1 bez restartu poda. Dom 1 z config.yaml (takze wymuszony
+        # KIDWATCH_DOM_1_ZRODLO) — bez przeladowania, jak dotad.
+        przeladowanie = przeladowanie_domow(
+            rejestr, inst, konfiguracje, stany,
+            panel.domy_panelu if panel is not None else None, alarm=alarm)
+    nadzorca = Nadzorca([runtime], przeladowanie=przeladowanie,
+                        flush_seconds=OUTBOX_FLUSH_ON_STOP_SECONDS)
     rc = await nadzorca.run(stop)
     if panel is not None:
         panel.shutdown()

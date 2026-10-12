@@ -58,7 +58,7 @@ from .bramka_admin import (
 )
 from .config import Config, HomeConfig, MissingSecretError, WatchedDevice
 from .gametime import ACTIONS, GameRequests, TooManyRequests
-from .mdm import MdmApi, MdmError, build_api
+from .mdm import MdmApi, MdmError, build_api, config_domu
 from .odbiorcy import ProfilePowiadomien
 from .panel_auth import (
     CSRF_COOKIE,
@@ -78,6 +78,7 @@ from .panel_domy import (
     admin_aktywny,
     uprawnienia_sesji,
 )
+from .panel_integracje import PanelIntegracje
 from .panel_konta import PanelKonta, WDomu
 from .panel_sso import SsoConfig
 from .panel_sso import config_from_env as sso_from_env
@@ -86,6 +87,7 @@ from .tvpause import MAX_PAUSE_DAYS, TvPauseRequests, parse_until
 from .tvpause import TooManyRequests as TooManyPauseRequests
 from .uprawnienia import (
     CZAS_GRY,
+    DOM_INTEGRACJE,
     KONTA,
     KONTO_WLASNE,
     MDM_KOMENDY,
@@ -120,6 +122,8 @@ EXPORT_DEFAULT_DAYS = 30
 EXPORT_MAX_DAYS = 3660
 #: Cialo POST to login i haslo w JSON-ie. Wiecej nie ma po co czytac.
 MAX_BODY = 4096
+#: Zapis integracji niesie klucz ADB (PEM, 2-3 kB przed escapowaniem JSON).
+MAX_BODY_INTEGRACJI = 32 * 1024
 
 #: Te same naglowki co w nginx pozostalych aplikacji RenaCode.
 SECURITY_HEADERS = {
@@ -161,6 +165,11 @@ class PanelQueries:
         self.requests = requests
         #: Kolejka zadan pauzy TV (panel-auth.db) — None, gdy czujnik TV wylaczony.
         self.tv_requests = tv_requests
+        #: Dom z konfiguracja w bazie: posrednik MDM z tokenem z sejfu domu
+        #: (`mdm` — None, gdy integracja wylaczona albo bez tokenu). Dla domu
+        #: z config.yaml `mdm_z_bazy` jest False i panel bierze MDM instancji.
+        self.mdm_z_bazy = False
+        self.mdm: MdmApi | None = None
 
     def connect(self) -> sqlite3.Connection:
         if self.db_path == ":memory:":
@@ -1000,6 +1009,10 @@ POST_TRASY: dict[str, tuple[str, str, str]] = {
     f"{_D}/konta/powiadomienia": (KONTA, "_konta_post", DOM),
     f"{_D}/konta/kanaly": (KONTA, "_konta_post", DOM),
     f"{_D}/konta/tryb": (KONTA, "_konta_post", DOM),
+    # Integracje domu (panel_integracje.py): uprawnienie `dom.integracje`
+    # w domu ORAZ aktywny administrator instalacji (decyzja 2026-10-12).
+    f"{_D}/integracje/zapisz": (DOM_INTEGRACJE, "_integracje_post", DOM),
+    f"{_D}/integracje/usun-sekret": (DOM_INTEGRACJE, "_integracje_post", DOM),
 }
 
 #: GET /api/*: sciezka -> (uprawnienie, zakres); klucz z "/" na koncu to
@@ -1026,6 +1039,10 @@ GET_TRASY: dict[str, tuple[str, str]] = {
     f"{_D}/konta": (KONTA, DOM),
     # Dom -> Dziennik: zmiany w domu i wejscia administratora (§2.3).
     f"{_D}/dziennik": (KONTA, DOM),
+    # Integracje domu: ustawienia i maski sekretow — tylko administrator.
+    f"{_D}/integracje": (DOM_INTEGRACJE, DOM),
+    # Odswiezanie ekranu po zapisie: tylko wersja i stan przeladowania.
+    f"{_D}/integracje/stan": (DOM_INTEGRACJE, DOM),
 }
 
 _SCIEZKA_DOMU = re.compile(r"/api/domy/([1-9][0-9]{0,8})(/.+)")
@@ -1105,9 +1122,11 @@ def make_handler(
     mdm: MdmApi | None = None,
     sso: SsoConfig | None = None,
     konta: PanelKonta | None = None,
+    integracje: PanelIntegracje | None = None,
 ):
     """`sso` = None: naglowki `Remote-*` ignorowane w calosci (panel_sso.py).
-    `domy`: domy panelu z `PanelQueries` kazdego domu (panel_domy.py)."""
+    `domy`: domy panelu z `PanelQueries` kazdego domu (panel_domy.py).
+    `integracje`: ekran integracji domu (panel_integracje.py); None = 503."""
     static_root = static_dir.resolve()
 
     def session_cookies(token: str, session: Session, max_age: int) -> list[str]:
@@ -1260,7 +1279,7 @@ def make_handler(
         def _unauthorized(self) -> None:
             self._json(401, {"error": "Wymagane zalogowanie"}, cleared_cookies())
 
-        def _read_json(self) -> dict:
+        def _read_json(self, limit: int = MAX_BODY) -> dict:
             # Tylko application/json. Formularz albo text/plain z obcej strony
             # przechodzi bez preflightu CORS; JSON wymusza preflight, ktorego
             # ten serwer nie obsluguje, wiec przegladarka zadania nie wysle.
@@ -1275,7 +1294,7 @@ def make_handler(
             # polaczenia — klient trzymalby watek panelu, ile chce.
             if length < 0:
                 raise AuthError(400, "Zły Content-Length")
-            if length > MAX_BODY:
+            if length > limit:
                 raise AuthError(413, "Za duże zapytanie")
             try:
                 data = json.loads(self.rfile.read(length) or b"{}")
@@ -1566,15 +1585,46 @@ def make_handler(
             self._json(200, akcje[path.removeprefix(PREFIKS_DOMU)](
                 session, data, self._w_domu(ctx)))
 
+        # ----------------------------------------------------- integracje domu
+        def _integracje(self) -> PanelIntegracje:
+            if integracje is None:
+                raise AuthError(503, "Ekran integracji jest niedostępny")
+            return integracje
+
+        def _integracje_post(self, path: str, session: Session, ctx: KontekstDomu) -> None:
+            p = self._integracje()
+            data = self._read_json(MAX_BODY_INTEGRACJI)
+            akcja = {"/integracje/zapisz": p.zapisz, "/integracje/usun-sekret": p.usun_sekret}
+            try:
+                wynik = akcja[path.removeprefix(PREFIKS_DOMU)](session, data, ctx)
+            except AuthError:
+                raise
+            except Exception as exc:
+                # Bez log.exception: cialo zadania niesie sekrety, a tresc
+                # nieprzewidzianego wyjatku moglaby je powtorzyc. Sam typ.
+                log.error("panel: blad zapisu integracji domu %d: %s", ctx.dom_id,
+                          type(exc).__name__)
+                raise AuthError(500, "blad serwera") from None
+            self._json(200, wynik)
+
         # ---------------------------------------------------------------- MDM
         # Panel jest posrednikiem: token API serwera MDM zostaje w backendzie,
         # a przegladarka widzi tylko zalogowana sesje panelu (+ CSRF przy akcjach).
-        def _mdm_api(self, ctx: KontekstDomu) -> MdmApi:
-            # Token MDM jest dzis jeden, Domu 1 (instancja); tokeny domow i
+        def _mdm_domu(self, ctx: KontekstDomu) -> MdmApi | None:
+            # Token MDM jest dzis jeden, Domu 1; tokeny innych domow i
             # sprawdzenie `udid ∈ dom` to etap E3b. Inny dom nie ma MDM.
-            if mdm is None or ctx.dom_id != dm.DOM_1:
-                raise MdmError(404, "integracja MDM wylaczona (mdm.enabled albo MDM_ADMIN_TOKEN)")
-            return mdm
+            # Dom 1 w trybie `baza`: token z sejfu domu (ekran integracji),
+            # nie z MDM_ADMIN_TOKEN — zmiana tokenu w panelu dziala tez tutaj.
+            if ctx.dom_id != dm.DOM_1:
+                return None
+            q = ctx.queries
+            return q.mdm if getattr(q, "mdm_z_bazy", False) else mdm
+
+        def _mdm_api(self, ctx: KontekstDomu) -> MdmApi:
+            api = self._mdm_domu(ctx)
+            if api is None:
+                raise MdmError(404, "integracja MDM wylaczona (mdm.enabled albo token MDM)")
+            return api
 
         def _mdm_get(self, path: str, ctx: KontekstDomu) -> None:
             try:
@@ -1592,7 +1642,7 @@ def make_handler(
                 else:
                     self._json(404, {"error": "nie ma takiego endpointu"})
             except MdmError as exc:
-                if mdm is None or ctx.dom_id != dm.DOM_1:
+                if self._mdm_domu(ctx) is None:
                     self._json(200, {"available": False, "error": str(exc)})
                 else:
                     self._json(_mdm_status(exc.status), {"error": str(exc)})
@@ -1764,6 +1814,14 @@ def make_handler(
             if rest == "/export.csv":
                 self._export(queries, params)
                 return
+            if rest in ("/integracje", "/integracje/stan"):
+                try:
+                    p = self._integracje()
+                    akcja = p.lista if rest == "/integracje" else p.stan
+                    self._json(200, akcja(session, ctx))
+                except AuthError as exc:
+                    self._json(exc.status, {"error": exc.message})
+                return
             if rest == "/tv/aplikacja":
                 self._json(200, stan_aplikacji(ctx.dom_id))
                 return
@@ -1914,15 +1972,30 @@ def queries_domow(cfg: Config, konfiguracja_domu: KonfiguracjaDomu | None = None
                     if home.game_time.enabled else None)
         tv_requests = (TvPauseRequests(cfg.panel_auth_path, dom_id=dom.id)
                        if home.tv.enabled else None)
-        return PanelQueries(home, str(dm.sciezka_bazy_domu(dom.id, cfg.store.path)),
-                            requests, tv_requests)
+        q = PanelQueries(home, str(dm.sciezka_bazy_domu(dom.id, cfg.store.path)),
+                         requests, tv_requests)
+        if getattr(home, "sekrety", None) is not None and hasattr(home, "mdm"):
+            q.mdm_z_bazy = True
+            q.mdm = build_api(config_domu(home.mdm, cfg.mdm.url))
+        return q
 
     return zbuduj
 
 
+def _sejf_procesu():
+    """KEK procesu dla ekranu integracji — czytany przy kazdym zadaniu: brak
+    klucza (BrakKek) to 503 na tym ekranie, nie blad startu panelu."""
+    from .sejf import Sejf  # noqa: PLC0415
+
+    return Sejf.z_srodowiska()
+
+
 def start_panel(cfg: Config, *, konfiguracja_domu: KonfiguracjaDomu | None = None,
-                ) -> ThreadingHTTPServer:
-    """Startuje serwer panelu w watku demona i zwraca go (do `shutdown()`)."""
+                stany: dm.StanyDomow | None = None) -> ThreadingHTTPServer:
+    """Startuje serwer panelu w watku demona i zwraca go (do `shutdown()`).
+    `stany`: stan przeladowan domow od nadzorcy (domy.Nadzorca); None = ekran
+    integracji mowi, ze zmiana zadziala po restarcie. Zwrocony serwer ma
+    `domy_panelu` — `run` uniewaznia nim PanelQueries domu po przeladowaniu."""
     auth = PanelAuth(
         cfg.panel_auth_path, box=box_from_env(), session_seconds=cfg.panel.session_hours * 3600
     )
@@ -1942,8 +2015,10 @@ def start_panel(cfg: Config, *, konfiguracja_domu: KonfiguracjaDomu | None = Non
             domy_panelu, Path(cfg.panel.static_dir), auth, cookie_secure=cfg.panel.cookie_secure,
             bramka=_bramka_admin(cfg), mdm=build_api(cfg.mdm), sso=sso,
             konta=PanelKonta(auth, ProfilePowiadomien(cfg.panel_auth_path)),
+            integracje=PanelIntegracje(auth, _sejf_procesu, stany=stany),
         ),
     )
+    server.domy_panelu = domy_panelu
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, name="panel", daemon=True)
     thread.start()
