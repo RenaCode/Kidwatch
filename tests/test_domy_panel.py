@@ -271,6 +271,28 @@ def test_administrator_czlonek_dziala_jak_czlonek_bez_wpisow(domy):
     assert _audyt(domy, DOM_B) == []
 
 
+def test_podglad_w_domu_bez_pauzy_TV_chyba_ze_jawnie_nadana(domy):
+    """Pauza TV to zmiana nadzoru, nie podglad (decyzja wlasciciela,
+    2026-10-12): rola `podglad` w domu jej nie ma, jawne nadanie w
+    czlonkostwie zostaje. Wlasciciel dostaje 404 tylko dlatego, ze
+    w tescie czujnik TV jest wylaczony."""
+    trasy = ((f"/api/domy/{DOM_A}/tv/pause", {"until": None}),
+             (f"/api/domy/{DOM_A}/tv/resume", {}))
+    h = sso(domy, "obu")
+    for path, body in trasy:
+        status, _, payload = call(domy, "POST", path, body, h)
+        assert status == 403 and u.TV_PAUZA in payload["error"], (path, payload)
+        assert call(domy, "POST", path, body, sso(domy, "czlonek-a"))[0] == 404
+    me = call(domy, "GET", "/api/auth/me", headers=h)[2]
+    assert u.TV_PAUZA not in {d["id"]: d for d in me["domy"]}[DOM_A]["uprawnienia"]
+
+    domy.rejestr.ustaw_czlonkostwo(DOM_A, domy.auth.user_id("obu"), "podglad",
+                                   nadane=frozenset({u.TV_PAUZA}))
+    h = sso(domy, "obu")  # zmiana czlonkostwa wylogowuje
+    for path, body in trasy:
+        assert call(domy, "POST", path, body, h)[0] == 404, path
+
+
 def test_administrator_z_haslem_tylko_z_wlaczonym_TOTP(tmp_path, monkeypatch):
     """Droga awaryjna (port-forward, bez naglowka SSO): flaga dziala tylko
     przy koncie z 2FA."""
