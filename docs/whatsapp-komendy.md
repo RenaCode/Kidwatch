@@ -105,7 +105,13 @@ Bez zapisu na telewizor, bez głośności, bez restartu i wyłączania iPada.
   - **429 = chwilowa niedostępność**: bez alarmu, czytelna odpowiedź
     („Nie rozumiem teraz swobodnego tekstu, napisz np. …”) i przerwa
     `llm.przerwa_po_429_seconds` (domyślnie 15 min), w której Gemini nie
-    jest wołany wcale.
+    jest wołany wcale;
+  - **ciągłe 429 nie jest ciche:** gdy od pierwszego 429 nie było ani
+    jednego udanego wywołania przez `llm.alarm_429_po_godzinach`
+    (domyślnie 6 h), idzie alarm instancji („Gemini odpowiada 429 od X h”)
+    z tym samym rosnącym odstępem; udane wywołanie zeruje licznik;
+  - dobowy limit wywołań wyczerpany **drugą dobę z rzędu** — alarm
+    (spam w dzienniku albo za niski limit).
 - Inna awaria wszystkich dostawców (zły klucz, brak środków, 5xx, timeout):
   ta sama odpowiedź plus alarm instancji — od razu, potem po 1 h, 2 h,
   4 h… najwyżej raz na dobę. Dokładne komendy działają zawsze.

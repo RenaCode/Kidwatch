@@ -47,7 +47,7 @@ from . import komendy_baza as kb
 from . import uprawnienia as upr
 from .bramka_admin import mask, normalize_number
 from .config import BramkaConfig, DeviceConfig, HomeConfig, WhatsappKomendyConfig
-from .komendy_llm import AWARIA, OK, Rozpoznawacz
+from .komendy_llm import AWARIA, CHWILOWO, OK, Rozpoznawacz
 from .notifiers.base import with_retry
 from .notifiers.bramka import BramkaNotifier
 
@@ -225,6 +225,8 @@ class BotKomend:
         self.clock = clock
         self.sleep = sleep
         self._alarm_llm: tuple[float, float] | None = None
+        #: Pierwsze CHWILOWO (429) bez pozniejszego sukcesu; zeruje `_alarm_llm_ok`.
+        self._chwilowo_od: float | None = None
         self._gotowy_log: bool | None = None
         #: obcy numer -> ostatni wpis w dzienniku (w pamieci: limit wierszy).
         self._obcy: dict[str, float] = {}
@@ -438,10 +440,15 @@ class BotKomend:
             raise Odpowiedz(bez, kb.BEZ_LLM, dom_id=dom.dom_id, szczegol="brak kluczy LLM")
         wynik = await self.llm.rozpoznaj(tekst, dom.dzieci, dom.urzadzenia)
         if wynik.status != OK:
-            # CHWILOWO (429 wspolnego klucza) i BRAK (limit, brak kluczy):
-            # czytelna odpowiedz, bez alarmu. Alarm tylko przy AWARII.
+            # Zawsze czytelna odpowiedz. Alarm: AWARIA od razu; CHWILOWO (429
+            # wspolnego klucza) dopiero po `alarm_429_po_godzinach` bez
+            # sukcesu; wyczerpany limit dobowy — gdy druga doba z rzedu.
             if wynik.status == AWARIA:
                 await self._alarm_llm_awaria(wynik.bledy)
+            elif wynik.status == CHWILOWO:
+                await self._alarm_429()
+            elif wynik.limit:
+                await self._alarm_limitu()
             raise Odpowiedz(bez, kb.BEZ_LLM, dom_id=dom.dom_id,
                             szczegol="; ".join(wynik.bledy) or "limit wywolan")
         self._alarm_llm_ok()
@@ -752,17 +759,53 @@ class BotKomend:
 
     # -------------------------------------------------------- alarm LLM
     async def _alarm_llm_awaria(self, bledy: Sequence[str]) -> None:
+        await self._alarm_llm_z_odstepem(
+            "Kidwatch: komendy z WhatsAppa bez LLM",
+            "Żaden dostawca LLM nie odpowiada (" + "; ".join(bledy) + "). Dokładne "
+            "komendy działają; wolny tekst dostaje prośbę o dokładną komendę. "
+            "Sprawdź klucz KIDWATCH_LLM_GEMINI_KEY (wspólny z innymi aplikacjami) "
+            "i ewentualnie KIDWATCH_LLM_ANTHROPIC_KEY.")
+
+    async def _alarm_429(self) -> None:
+        """Ciagle 429 bez sukcesu: po progu alarm z rosnacym odstepem (ta sama
+        klasa bledu co Gemini 429 tygodniami u tradera)."""
+        teraz = self.clock()
+        if self._chwilowo_od is None:
+            self._chwilowo_od = teraz
+        godziny = (teraz - self._chwilowo_od) / 3600
+        if godziny < self.llm.cfg.alarm_429_po_godzinach:
+            return
+        await self._alarm_llm_z_odstepem(
+            "Kidwatch: Gemini odpowiada 429",
+            f"Gemini odpowiada 429 od {godziny:.0f} h — klucz wspólny z Traderem i "
+            "Dietetykiem. Swobodny tekst nie działa, dokładne komendy działają. "
+            "Docelowo osobny klucz dla Kidwatcha.")
+
+    async def _alarm_limitu(self) -> None:
+        """Dobowy limit wywolan wyczerpany druga dobe z rzedu (wczoraj tez)."""
+        limit = self.llm.cfg.wywolan_na_dobe
+        try:
+            wczoraj = await asyncio.to_thread(self.baza.wywolania_llm, 1)
+        except Exception:
+            log.exception("komendy: nie odczytalem licznika LLM")
+            return
+        if wczoraj < limit:
+            return
+        await self._alarm_llm_z_odstepem(
+            "Kidwatch: limit wywołań LLM wyczerpany kolejną dobę",
+            f"Komendy z WhatsAppa zużyły dzienny limit {limit} wywołań LLM wczoraj i dziś. "
+            "Swobodny tekst nie działa do końca doby, dokładne komendy działają. Sprawdź "
+            "dziennik komend (spam?) albo podnieś llm.wywolan_na_dobe.")
+
+    async def _alarm_llm_z_odstepem(self, tytul: str, tresc: str) -> None:
+        """Wspolny rosnacy odstep alarmow o LLM: od razu, potem 1 h, 2 h, 4 h...
+        najwyzej co dobe; zeruje go pierwsze udane wywolanie."""
         teraz = self.clock()
         if self._alarm_llm is not None and teraz < self._alarm_llm[0]:
             return
         odstep = ALARM_PIERWSZY_ODSTEP if self._alarm_llm is None else \
             min(self._alarm_llm[1] * 2, ALARM_MAX_ODSTEP)
         self._alarm_llm = (teraz + odstep, odstep)
-        tytul = "Kidwatch: komendy z WhatsAppa bez LLM"
-        tresc = ("Żaden dostawca LLM nie odpowiada (" + "; ".join(bledy) + "). Dokładne "
-                 "komendy działają; wolny tekst dostaje prośbę o dokładną komendę. "
-                 "Sprawdź klucz KIDWATCH_LLM_GEMINI_KEY (wspólny z innymi aplikacjami) "
-                 "i ewentualnie KIDWATCH_LLM_ANTHROPIC_KEY.")
         log.error("komendy: %s — %s", tytul, tresc)
         if self.alarm is None:
             return
@@ -772,6 +815,7 @@ class BotKomend:
             log.exception("komendy: alarm o LLM nie wyszedl")
 
     def _alarm_llm_ok(self) -> None:
+        self._chwilowo_od = None
         if self._alarm_llm is not None:
             log.info("komendy: LLM znowu odpowiada")
             self._alarm_llm = None

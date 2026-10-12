@@ -430,10 +430,11 @@ class BazaKomend:
                 raise
         return True
 
-    def wywolania_llm(self) -> int:
+    def wywolania_llm(self, dni_temu: int = 0) -> int:
+        """Wywolania LLM w dobie UTC sprzed `dni_temu` dni (0 = dzis)."""
         with self._conn() as conn:
             row = conn.execute("SELECT wywolania FROM whatsapp_llm_licznik WHERE dzien = ?",
-                               (dzien_utc(self.clock()),)).fetchone()
+                               (dzien_utc(self.clock() - dni_temu * 86400),)).fetchone()
         return int(row["wywolania"]) if row else 0
 
     # ----------------------------------------------------------- wylacznik

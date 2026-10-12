@@ -246,6 +246,7 @@ whatsapp_komendy:
   #   timeout_seconds: 6
   #   wywolan_na_dobe: 100
   #   przerwa_po_429_seconds: 900
+  #   alarm_429_po_godzinach: 6    # ciagle 429 dluzej = alarm instancji
 
 notifiers:
   ntfy:

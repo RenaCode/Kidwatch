@@ -510,6 +510,9 @@ class LlmKomendConfig(_Base):
     wywolan_na_dobe: int = Field(default=100, ge=0, le=10000)
     #: Po 429 dostawca nie jest wolany przez tyle sekund.
     przerwa_po_429_seconds: float = Field(default=900.0, ge=0, le=24 * 3600)
+    #: Ciagle 429 (bez udanego wywolania) dluzej niz tyle = alarm instancji
+    #: z rosnacym odstepem — inaczej tygodnie 429 bylyby calkiem ciche.
+    alarm_429_po_godzinach: float = Field(default=6.0, ge=0.5, le=24 * 7)
 
     def klucz(self, dostawca: str) -> str | None:
         env = {"gemini": "KIDWATCH_LLM_GEMINI_KEY",

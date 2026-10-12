@@ -798,3 +798,64 @@ async def test_obcy_numer_jeden_wpis_na_godzine(swiat):
     await swiat.pisz(NR_OBCY, "koniec")
     assert swiat.wyniki() == [kb.NIEZNANY_NUMER] * 2
     assert swiat.kanal.wyslane == []
+
+
+# ================================================= ciagle 429 i limit (przeglad)
+def _blad_429():
+    return httpx.HTTPStatusError("429", request=httpx.Request("POST", "http://x"),
+                                 response=httpx.Response(429))
+
+
+async def test_ciagle_429_przez_72h_daje_alarmy_z_rosnacym_odstepem(tmp_path):
+    g = Dostawca("gemini", blad=_blad_429())
+    s = Swiat(tmp_path, dostawcy=[g])
+    momenty = []
+    for pol_h in range(144):                        # co 30 min przez 72 h
+        przed = len(s.alarmy)
+        odp = await s.pisz(NR_A, "niech koncza")
+        assert "Nie rozumiem teraz swobodnego tekstu" in odp[0]
+        if len(s.alarmy) > przed:
+            momenty.append(pol_h / 2)
+        s.zegar.plus(1800)
+    # Pierwszy po 6 h, potem odstep 1, 2, 4, 8, 16, 24 h.
+    assert momenty == [6.0, 7.0, 9.0, 13.0, 21.0, 37.0, 61.0], momenty
+    assert "429 od 6 h" in s.alarmy[0][1] and "Traderem" in s.alarmy[0][1]
+    # Dokladne komendy przez caly czas dzialaja.
+    assert "Zrozumiałem" in (await s.pisz(NR_A, "koniec Dziecko A"))[0]
+
+
+async def test_sukces_zeruje_licznik_429(tmp_path):
+    g = Dostawca("gemini", blad=_blad_429())
+    s = Swiat(tmp_path, dostawcy=[g])
+    for _ in range(10):                              # 5 h ciaglego 429
+        await s.pisz(NR_A, "niech koncza")
+        s.zegar.plus(1800)
+    assert s.alarmy == []
+    s.llm._przerwa.clear()
+    g.blad, g.wynik = None, {"akcja": "pomoc", "dziecko": None, "urzadzenie": None,
+                             "minuty": None, "godziny": None}
+    assert "Komendy Kidwatcha" in (await s.pisz(NR_A, "co umiesz"))[0]
+    g.blad = _blad_429()
+    for _ in range(10):                              # znowu 5 h: od nowa, bez alarmu
+        await s.pisz(NR_A, "niech koncza")
+        s.zegar.plus(1800)
+    assert s.alarmy == []                            # licznik od nowego 429, nie od pierwszego
+    for _ in range(2):                               # 5 h i 5,5 h
+        await s.pisz(NR_A, "niech koncza")
+        s.zegar.plus(1800)
+    assert s.alarmy == []
+    await s.pisz(NR_A, "niech koncza")              # 6 h od pierwszego 429 po sukcesie
+    assert len(s.alarmy) == 1
+
+
+async def test_limit_wywolan_druga_doba_z_rzedu_alarmuje(tmp_path):
+    g = Dostawca("gemini", {"akcja": "pomoc", "dziecko": None, "urzadzenie": None,
+                            "minuty": None, "godziny": None})
+    s = Swiat(tmp_path, cfg=WhatsappKomendyConfig(enabled=True, na_godzine=50), dostawcy=[g])
+    for _ in range(6):                               # doba 1: limit 5 wyczerpany
+        await s.pisz(NR_A, "co umiesz")
+    assert s.alarmy == []
+    s.zegar.plus(24 * 3600)
+    for _ in range(6):                               # doba 2: znowu
+        await s.pisz(NR_A, "co umiesz")
+    assert len(s.alarmy) == 1 and "kolejną dobę" in s.alarmy[0][0]

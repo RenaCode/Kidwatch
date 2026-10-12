@@ -80,6 +80,8 @@ class WynikLlm:
     dostawca: str | None = None
     #: Bledy dostawcow (do logu i alarmu) — bez kluczy i bez tresci wiadomosci.
     bledy: tuple[str, ...] = ()
+    #: BRAK z powodu wyczerpanego dobowego limitu wywolan (nie braku kluczy).
+    limit: bool = False
 
 
 def wiadomosc_uzytkownika(tekst: str, dzieci: list[str],
@@ -244,6 +246,7 @@ class Rozpoznawacz:
         bledy: list[str] = []
         proby = 0
         limitowane = 0
+        limit = False
         for d in self.dostawcy:
             if self._przerwa.get(d.nazwa, 0) > self.zegar():
                 # Po 429 nie dokladamy zapytan do wspolnego limitu klucza.
@@ -252,6 +255,7 @@ class Rozpoznawacz:
                 continue
             if not self.rezerwuj():
                 log.warning("komendy: dobowy limit wywolan LLM wyczerpany")
+                limit = True
                 break
             proby += 1
             try:
@@ -272,7 +276,7 @@ class Rozpoznawacz:
             log.warning("komendy: LLM %s", bledy[-1])
         if proby:
             return WynikLlm(AWARIA, bledy=tuple(bledy))
-        return WynikLlm(CHWILOWO if limitowane else BRAK, bledy=tuple(bledy))
+        return WynikLlm(CHWILOWO if limitowane else BRAK, bledy=tuple(bledy), limit=limit)
 
     async def aclose(self) -> None:
         if self._owns_client:
