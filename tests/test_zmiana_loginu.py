@@ -295,3 +295,49 @@ def test_kanarek_bez_dokonczenia_slady_zostaja(inst, monkeypatch):
     with pytest.raises(zl.BladZmiany):
         zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy=_bazy(inst), zapisz=True)
     assert _slady_starego(inst)
+
+
+# ============================= dokonczenie tylko z dowodem przemianowania
+def _migawka(inst):
+    return (_wszystkie_teksty(inst["cfg"].panel_auth_path),
+            _wszystkie_teksty(inst["cfg"].store.path))
+
+
+@pytest.mark.parametrize("dokoncz", [False, True])
+@pytest.mark.parametrize("zapisz", [False, True])
+def test_usuniete_konto_nie_dokancza_sie_na_cudze(inst, dokoncz, zapisz):
+    """Przypadek z przegladu: STARY usuniety, NOWY to inna osoba. Bez dowodu
+    zmiany (konto.login STARY -> NOWY) odmowa — takze z --dokoncz i w podgladzie —
+    i zero zmian: slady usunietego konta nie trafiaja do cudzego."""
+    inst["auth"].delete_user(STARY)
+    przed = _migawka(inst)
+    with pytest.raises(zl.BladZmiany, match="nie powstalo przez zmiane"):
+        zl.zmien_login(inst["cfg"].panel_auth_path, STARY, "konto-inne-b", bazy=_bazy(inst),
+                       zapisz=zapisz, dokoncz=dokoncz)
+    assert _migawka(inst) == przed
+
+
+def test_login_uzyty_ponownie_po_zmianie_nie_jest_dowodem(inst):
+    """STARY -> NOWY, potem NOWY usuniete i zalozone od nowa (inna osoba):
+    stary wpis konto.login jest starszy niz nowe konto — odmowa."""
+    import time  # noqa: PLC0415
+
+    zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy={}, zapisz=True)
+    inst["auth"].delete_user(NOWY)
+    inst["clock"].t = time.time() + 60
+    inst["auth"].add_user(NOWY, HASLO)
+    przed = _migawka(inst)
+    with pytest.raises(zl.BladZmiany, match="nie powstalo przez zmiane"):
+        zl.zmien_login(inst["cfg"].panel_auth_path, STARY, NOWY, bazy=_bazy(inst), zapisz=True)
+    assert _migawka(inst) == przed
+
+
+def test_kanarek_bez_dowodu_dokonczenie_przepisuje_cudze(inst, monkeypatch):
+    """Bez sprawdzenia dowodu (stare zachowanie) slady usunietego konta
+    laduja na cudzym — test wyzej musi to wylapac."""
+    monkeypatch.setattr(zl, "_przemianowane", lambda *a, **k: True)
+    inst["auth"].delete_user(STARY)
+    przed = _migawka(inst)
+    plan = zl.zmien_login(inst["cfg"].panel_auth_path, STARY, "konto-inne-b",
+                          bazy=_bazy(inst), zapisz=True)
+    assert plan.dokonczenie and _migawka(inst) != przed

@@ -33,7 +33,9 @@ kto to zrobil — idzie za kontem.
 Domyslnie na sucho: te same zmiany w transakcji wycofanej na koncu, wiec
 liczby w podgladzie sa prawdziwe, nie szacowane.
 
-DOKONCZENIE. Gdy STAREGO konta juz nie ma, a NOWE jest (przerwany albo
+DOKONCZENIE. Gdy STAREGO konta juz nie ma, a NOWE jest i POWSTALO z tej
+zmiany (dowod: wpis `konto.login` „STARY -> NOWY” w audycie, nowszy niz
+zalozenie konta NOWY — _przemianowane) (przerwany albo
 czesciowy przebieg: przy WAL panel-auth.db moze byc po zmianie, a baza domu
 jeszcze nie; wpis kolejki rozdzielony przez zywy proces tuz po zmianie),
 ponowne uruchomienie tego samego polecenia przepisuje same slady tekstowe —
@@ -96,6 +98,25 @@ def _kolumna(conn: sqlite3.Connection, schemat: str, tabela: str, kolumna: str) 
         r[1] for r in conn.execute(f"PRAGMA {schemat}.table_info({tabela})")}
 
 
+def opis_zmiany(stary: str, nowy: str) -> str:
+    return f"login konta zmieniony: {stary} -> {nowy}"
+
+
+def _przemianowane(conn: sqlite3.Connection, stary: str, nowy: str,
+                   utworzone: float | None) -> bool:
+    """Dowod, ze konto NOWY to przemianowane STARE: wpis `konto.login`
+    (instancji, zapisany w tej samej transakcji co `users.login` przy
+    pierwszym etapie) z dokladnie ta para loginow, NOWSZY niz zalozenie
+    obecnego konta NOWY. Konto zalozone pod tym loginem po zmianie (stare
+    usuniete, login uzyty ponownie) dowodu nie ma."""
+    if not _tabela(conn, "main", "audyt"):
+        return False
+    row = conn.execute(
+        "SELECT MAX(ts) FROM audyt WHERE akcja = 'konto.login' AND dom_id IS NULL "
+        "AND login = ? AND opis = ?", (nowy, opis_zmiany(stary, nowy))).fetchone()
+    return bool(row and row[0] is not None and row[0] >= (utworzone or 0))
+
+
 def _waliduj(conn: sqlite3.Connection, stary: str, nowy: str,
              dokoncz: bool = False) -> tuple[int, bool]:
     """(id konta, czy tryb dokonczenia)."""
@@ -107,10 +128,17 @@ def _waliduj(conn: sqlite3.Connection, stary: str, nowy: str,
         raise BladZmiany("nowy login jest taki sam jak obecny")
     row = conn.execute("SELECT id FROM users WHERE login = ?", (stary,)).fetchone()
     if row is None:
-        juz = conn.execute("SELECT id FROM users WHERE login = ?", (nowy,)).fetchone()
-        if juz is not None:
-            return int(juz[0]), True
-        raise BladZmiany(f"nie ma konta {stary!r} (ani {nowy!r} — nie ma czego dokonczyc)")
+        juz = conn.execute("SELECT id, created_at FROM users WHERE login = ?",
+                           (nowy,)).fetchone()
+        if juz is None:
+            raise BladZmiany(f"nie ma konta {stary!r} (ani {nowy!r} — nie ma czego dokonczyc)")
+        if not _przemianowane(conn, stary, nowy, juz[1]):
+            # Konto NOWY istnieje, ale nie z tej zmiany (np. STARY usunieto,
+            # a NOWY to inna osoba): dokonczenie przepisaloby jej slady
+            # cudzego, usunietego konta — audyt, kolejke, dedup, historie.
+            raise BladZmiany(f"konto {nowy!r} istnieje, ale nie powstalo przez zmiane "
+                             f"z {stary!r} — brak wpisu konto.login w audycie")
+        return int(juz[0]), True
     if dokoncz:
         raise BladZmiany(f"konto {stary!r} nadal istnieje — to zwykla zmiana, bez --dokoncz")
     zajety = conn.execute("SELECT login FROM users WHERE lower(login) = lower(?) AND id != ?",
@@ -163,7 +191,7 @@ def _panel(conn: sqlite3.Connection, stary: str, nowy: str, uid: int,
         plan.domy = [r[0] for r in conn.execute(
             "SELECT dom_id FROM czlonkostwa WHERE user_id = ? ORDER BY dom_id", (uid,))]
     if _tabela(conn, "main", "audyt"):
-        opis = f"login konta zmieniony: {stary} -> {nowy}"
+        opis = opis_zmiany(stary, nowy)
         for dom_id in [None, *plan.domy]:
             dm.zapisz_audyt(conn, dom_id, nowy, "konto.login", opis, teraz)
 

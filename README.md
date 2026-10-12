@@ -485,8 +485,12 @@ renacode-infra) in front of the panel **and** the same switch sets
   login are merged into the account (the stricter lock wins) — if it shows
   as locked, `user-reset`; (4) running the same command again is safe and
   finishes anything left after an interrupted run (the old account no
-  longer exists, the new one does → only the text traces are rewritten;
-  `--dokoncz` forces this). With SSO the Authelia login is the target —
+  longer exists, the new one does AND the audit log has the `konto.login`
+  "old -> new" entry newer than the new account → only the text traces are
+  rewritten; `--dokoncz` forces this). Without that proof — e.g. the old
+  account was deleted and the new login belongs to someone else — it
+  refuses, even with `--dokoncz`, so a deleted person's traces never land
+  on another account. With SSO the Authelia login is the target —
   change only Kidwatch, never the Authelia account, to match.
 - `Remote-Groups` must contain `wlasciciel`, `rodzina` or `admins` (chart
   `sso.grupy` → `SSO_GRUPY`; must match the Authelia rule for this host).
