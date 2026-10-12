@@ -226,6 +226,8 @@ class BotKomend:
         self.sleep = sleep
         self._alarm_llm: tuple[float, float] | None = None
         self._gotowy_log: bool | None = None
+        #: obcy numer -> ostatni wpis w dzienniku (w pamieci: limit wierszy).
+        self._obcy: dict[str, float] = {}
 
     # ---------------------------------------------------------- petla
     async def krok(self) -> int:
@@ -273,10 +275,13 @@ class BotKomend:
             return
         konto = self.baza.konto_po_numerze(numer)
         if not isinstance(konto, kb.Konto):
-            # CISZA: obcy numer nie dostaje zadnej odpowiedzi.
-            self.baza.zapisz(numer=numer, wynik=kb.NIEZNANY_NUMER, wiadomosc_id=wid,
-                             szczegol=None if konto is None else "numer przy kilku kontach")
-            log.info("komendy: wiadomosc z nieznanego numeru %s - bez odpowiedzi", mask(numer))
+            # CISZA: obcy numer nie dostaje zadnej odpowiedzi. W dzienniku
+            # jeden wpis na numer na godzine — spam nie zaleje bazy.
+            if self._obcy_do_dziennika(numer):
+                self.baza.zapisz(numer=numer, wynik=kb.NIEZNANY_NUMER, wiadomosc_id=wid,
+                                 szczegol=None if konto is None else "numer przy kilku kontach")
+                log.info("komendy: wiadomosc z nieznanego numeru %s - bez odpowiedzi",
+                         mask(numer))
             return
         ctx = Kontekst(wid, numer, konto)
         try:
@@ -289,6 +294,16 @@ class BotKomend:
                 dom_id=o.dom_id, akcja=k_.akcja if k_ else None,
                 cel=(k_.urzadzenie or k_.dziecko) if k_ else None,
                 minuty=k_.minuty if k_ else None, szczegol=o.szczegol, llm=o.llm)
+
+    def _obcy_do_dziennika(self, numer: str) -> bool:
+        teraz = self.clock()
+        if len(self._obcy) > 1000:
+            self._obcy = {n: t for n, t in self._obcy.items() if teraz - t < kb.OKNO}
+        ostatni = self._obcy.get(numer)
+        if ostatni is not None and teraz - ostatni < kb.OKNO:
+            return False
+        self._obcy[numer] = teraz
+        return True
 
     async def _obsluz_konto(self, ctx: Kontekst, w: dict, tekst: str) -> None:
         p = k.parsuj(tekst)
@@ -459,8 +474,14 @@ class BotKomend:
                     kb.DOPYTANIE, dom_id=dom.dom_id, komenda=km, llm=llm)
         return km
 
+    def _adresaci_kopii(self, dom: DomKomend, login: str) -> list:
+        """Kopia idzie do WSZYSTKICH pozostalych czlonkow domu z kanalem
+        powiadomien — takze w roli podgladu (typowo drugi rodzic) i niezaleznie
+        od ich ciszy, kategorii i `aktywne` (decyzja 2026-10-12)."""
+        return [p for p in self.profile(dom.dom_id) if p.login != login and p.ma_kanal]
+
     def _sprawdz(self, dom: DomKomend, uprawnienia: frozenset[str], km: k.Komenda,
-                 llm: bool) -> list[DeviceConfig]:
+                 llm: bool, login: str) -> list[DeviceConfig]:
         """Uprawnienie, dostepnosc i limity — przed pytaniem o kod i drugi raz
         przed wykonaniem. Zwraca urzadzenia do blokady ekranu."""
         def nie(tekst: str, wynik: str = kb.ODMOWA) -> Odpowiedz:
@@ -506,6 +527,11 @@ class BotKomend:
                       f"Napisz „koniec {km.dziecko}”, żeby zablokować gry.")
         if km.akcja == k.CISZA and (km.godziny or 0) > self.cfg.cisza_max_godzin:
             raise nie(f"Najdłuższa cisza to {self.cfg.cisza_max_godzin} h.")
+        if km.akcja in k.LUZUJACE and not self._adresaci_kopii(dom, login):
+            # Luzowanie bez jawnosci wobec drugiego rodzica to dokladnie to,
+            # przed czym chroni kopia (dziecko z telefonem rodzica).
+            raise nie("Luzowanie z WhatsAppa wymaga drugiego członka domu z kanałem "
+                      "powiadomień — użyj panelu.")
         return ekrany
 
     async def _przyjmij(self, ctx: Kontekst, dom: DomKomend | None, km: k.Komenda,
@@ -517,14 +543,16 @@ class BotKomend:
                             kb.ODPOWIEDZ, dom_id=dom.dom_id, komenda=km, llm=llm)
         _, uprawnienia = ctx.dom(dom.dom_id)
         km = self._uzupelnij(dom, km, cytat, llm)
-        ekrany = self._sprawdz(dom, uprawnienia, km, llm)
+        ekrany = self._sprawdz(dom, uprawnienia, km, llm, ctx.konto.login)
         if km.akcja == k.STAN:
             tekst = await asyncio.to_thread(self._stan, dom, km.dziecko)
             raise Odpowiedz(tekst, kb.ODPOWIEDZ, dom_id=dom.dom_id, komenda=km, llm=llm)
         kod = self.baza.nowy_kod(ctx.numer, ctx.konto, dom.dom_id, km, llm=llm,
                                  wiadomosc_id=ctx.wiadomosc_id, waznosc=self.cfg.kod_sekundy)
         gdzie = f" ({dom.nazwa})" if len(ctx.domy) > 1 else ""
-        dopisek = " Kopię dostanie drugi opiekun." if km.akcja in k.LUZUJACE else ""
+        # Obietnica kopii tylko, gdy jest komu ja wyslac.
+        dopisek = (" Kopię dostanie drugi członek domu."
+                   if self._adresaci_kopii(dom, ctx.konto.login) else "")
         minuty = max(1, self.cfg.kod_sekundy // 60)
         raise Odpowiedz(
             f"Zrozumiałem: {k.opis(km, [e.display_name for e in ekrany])}{gdzie}? "
@@ -552,9 +580,17 @@ class BotKomend:
             raise Odpowiedz("Nie możesz już wydawać komend w tym domu.", kb.ODMOWA,
                             dom_id=o.dom_id, komenda=km, llm=o.llm)
         dom, uprawnienia = para
-        ekrany = self._sprawdz(dom, uprawnienia, km, o.llm)
+        ekrany = self._sprawdz(dom, uprawnienia, km, o.llm, ctx.konto.login)
         ok, tekst = await self._wykonaj(ctx, dom, uprawnienia, km, ekrany)
-        await self._odpowiedz(ctx, tekst)
+        if not await self._odpowiedz(ctx, tekst) and self.alarm is not None:
+            # Akcja poszla, a rodzic o tym nie wie (i moze ja powtorzyc).
+            try:
+                await self.alarm("Kidwatch: komenda z WhatsAppa wykonana bez odpowiedzi",
+                                 f"Komenda od {ctx.konto.login} (dom {dom.dom_id}): "
+                                 f"{k.opis(km)}. {tekst} Odpowiedź do nadawcy nie wyszła "
+                                 "— sprawdź bramkę.")
+            except Exception:
+                log.exception("komendy: alarm o niewyslanej odpowiedzi nie wyszedl")
         self.baza.zapisz(numer=ctx.numer, wynik=kb.WYKONANE if ok else kb.BLAD,
                          wiadomosc_id=ctx.wiadomosc_id, login=ctx.konto.login, dom_id=dom.dom_id,
                          akcja=km.akcja, cel=km.dziecko or km.urzadzenie, minuty=km.minuty,
@@ -690,27 +726,26 @@ class BotKomend:
         return opis + (" — ponawiam zapis" if g.get("retrying") else "")
 
     # ------------------------------------------------- odpowiedzi i kopie
-    async def _odpowiedz(self, ctx: Kontekst, tekst: str) -> None:
+    async def _odpowiedz(self, ctx: Kontekst, tekst: str) -> bool:
         if not await self.kanal.wyslij({"kanal": "whatsapp", "whatsapp": ctx.numer}, tekst):
             log.error("komendy: odpowiedz do %s nie wyszla", mask(ctx.numer))
+            return False
+        return True
 
     async def _kopia(self, ctx: Kontekst, dom: DomKomend, km: k.Komenda,
                      ekrany: list[DeviceConfig], wynik: str) -> None:
-        """Kopia KAZDEJ wykonanej komendy do pozostalych opiekunow domu
-        (konta z `whatsapp.komendy`), ich kanalem, niezaleznie od ich ciszy
-        i kategorii — to zabezpieczenie, nie informacja."""
+        """Kopia KAZDEJ wykonanej komendy do pozostalych czlonkow domu z kanalem
+        (`_adresaci_kopii`) — to zabezpieczenie, nie informacja."""
         try:
-            profile = await asyncio.to_thread(self.profile, dom.dom_id)
+            adresaci = await asyncio.to_thread(self._adresaci_kopii, dom, ctx.konto.login)
         except Exception:
             log.exception("komendy: nie odczytalem opiekunow domu %d do kopii", dom.dom_id)
             return
         naglowek = "LUZOWANIE z WhatsAppa" if km.akcja in k.LUZUJACE else "Komenda z WhatsAppa"
         tekst = (f"Kidwatch — {naglowek} od {ctx.konto.login}: "
                  f"{k.opis(km, [e.display_name for e in ekrany])}.\n{wynik}")
-        adresaci = [p for p in profile if p.login != ctx.konto.login and p.ma_kanal
-                    and upr.WHATSAPP_KOMENDY in p.uprawnienia]
         if not adresaci:
-            log.info("komendy: dom %d bez drugiego opiekuna z kanalem - kopii brak", dom.dom_id)
+            log.info("komendy: dom %d bez drugiego czlonka z kanalem - kopii brak", dom.dom_id)
         for p in adresaci:
             if not await self.kanal.wyslij(p.adres(), tekst):
                 log.error("komendy: kopia do %s nie wyszla", p.login)

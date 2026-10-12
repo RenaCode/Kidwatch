@@ -457,8 +457,9 @@ writes to the bot: `stan`, `koniec`, `zablokuj ipad`, `+15`, `-15`,
 treated as temporary unavailability; Anthropic optional) strictly into that
 closed list. Every change
 needs a one-time 4-digit code (`TAK 1234`, 2 min); relaxing actions have a
-daily per-child limit, every executed command is copied to the other
-guardians, unknown numbers get no reply. Log and an emergency switch for the
+daily per-child limit and need another household member with a
+notification channel; every executed command is copied to all other members
+with a channel (viewers too), unknown numbers get no reply. Log and an emergency switch for the
 installation administrator: Settings → "Komendy z WhatsAppa".
 
 Members can also be managed in the panel (Settings → **Konta**, permission

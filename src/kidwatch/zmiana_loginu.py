@@ -62,6 +62,8 @@ MIEJSCA = (
     ("panel-auth.db", "game_requests.login", "kto zlecil czas gry z panelu"),
     ("panel-auth.db", "tv_pause_requests.login", "kto zlecil pauze TV z panelu"),
     ("panel-auth.db", "integracje.zmienione_przez", "kto ostatnio zmienil integracje"),
+    ("panel-auth.db", "game_requests.login", "czas gry z WhatsAppa: 'whatsapp:<login>'"),
+    ("panel-auth.db", "whatsapp_komendy_dziennik.login", "kto wydal komende z WhatsAppa"),
     ("baza domu", "outbox.odbiorca", "kolejka powiadomien konta"),
     ("baza domu", "sent.dedup_key", "dedup per konto: klucz '<zdarzenie>@<login>'"),
     ("baza domu", "notifications.channels", "historia: kanaly '<kanal>:<login>' (JSON)"),
@@ -180,6 +182,7 @@ def _panel(conn: sqlite3.Connection, stary: str, nowy: str, uid: int,
             ile(f"{tabela}.{kolumna}", conn.execute(
                 f"UPDATE {tabela} SET {kolumna} = ? WHERE {kolumna} = ?",  # noqa: S608
                 (nowy, stary)))
+    _whatsapp(conn, stary, nowy, ile)
     if plan.dokonczenie:
         # Konto juz dziala pod nowym loginem: bez wylogowania i drugiego wpisu.
         return
@@ -194,6 +197,20 @@ def _panel(conn: sqlite3.Connection, stary: str, nowy: str, uid: int,
         opis = opis_zmiany(stary, nowy)
         for dom_id in [None, *plan.domy]:
             dm.zapisz_audyt(conn, dom_id, nowy, "konto.login", opis, teraz)
+
+
+def _whatsapp(conn: sqlite3.Connection, stary: str, nowy: str, ile) -> None:
+    """Slady komend z WhatsAppa (komendy_bot.py). Kody, limity i cisza
+    trzymaja numer albo `user_id`, nie login — zostaja same."""
+    if _kolumna(conn, "main", "game_requests", "login"):
+        from .gametime import WHATSAPP_PREFIKS  # noqa: PLC0415
+
+        ile("game_requests.login (WhatsApp)", conn.execute(
+            "UPDATE game_requests SET login = ? WHERE login = ?",
+            (WHATSAPP_PREFIKS + nowy, WHATSAPP_PREFIKS + stary)))
+    if _kolumna(conn, "main", "whatsapp_komendy_dziennik", "login"):
+        ile("whatsapp_komendy_dziennik.login", conn.execute(
+            "UPDATE whatsapp_komendy_dziennik SET login = ? WHERE login = ?", (nowy, stary)))
 
 
 def _baza_domu(conn: sqlite3.Connection, s: str, dom_id: int, stary: str, nowy: str,

@@ -12,7 +12,7 @@ bot:     Zrozumiałem: zakończyć: zablokować gry — Dziecko A i ekran (iPad 
          Odpowiedz TAK 4821 (ważne 2 min).
 rodzic:  TAK 4821
 bot:     Zrobione: Dziecko A: gry zablokowane; iPad A: ekran zablokowany.
-drugi opiekun dostaje kopię.
+drugi rodzic (każdy inny członek domu z kanałem) dostaje kopię.
 ```
 
 Można też odpowiedzieć (cytatem) na powiadomienie Kidwatcha — wtedy dom,
@@ -44,6 +44,14 @@ Bez zapisu na telewizor, bez głośności, bez restartu i wyłączania iPada.
   i **1 odblokowanie** gier (oba konfigurowalne, 0 = wyłączone).
 - `zarzadca` **nie ma** komend domyślnie — tylko po pojedynczym nadaniu
   `whatsapp.komendy`; `wlasciciel-domu` ma je z roli, `podglad` nigdy.
+- **Kopia każdej wykonanej komendy** idzie do WSZYSTKICH pozostałych
+  członków domu z kanałem powiadomień — także w roli podglądu (typowo drugi
+  rodzic) — niezależnie od ich ciszy. Luzowanie bez żadnego takiego
+  adresata jest odrzucane („użyj panelu”); komendy zaostrzające przechodzą,
+  ale bot nie obiecuje wtedy kopii.
+- **Prywatność:** do LLM (Gemini) trafiają imiona dzieci i nazwy urządzeń
+  domu z konfiguracji (oraz treść wiadomości) — za zgodą właściciela.
+  Bez numerów telefonów, loginów i nazwy domu.
 
 ## Bezpieczeństwo
 
@@ -57,10 +65,15 @@ Bez zapisu na telewizor, bez głośności, bez restartu i wyłączania iPada.
   limity — odebrane w ciągu tych 2 minut prawo działa od razu.
 - **Luzowanie** (`+N`, `odblokuj`): dzienny limit z WhatsAppa na dziecko
   (domyślnie 30 min i 1 odblokowanie, liczone po wszystkich opiekunach),
-  zawsze kopia do drugiego opiekuna. Kod nie zatrzyma dziecka z
+  zawsze kopia do drugiego rodzica. Kod nie zatrzyma dziecka z
   odblokowanym telefonem rodzica — zatrzymuje je limit i jawność.
-- **Kopia każdej wykonanej komendy** idzie do pozostałych opiekunów domu
-  (konta z `whatsapp.komendy`) ich kanałem, niezależnie od ich ciszy.
+- **Kopia każdej wykonanej komendy** idzie do pozostałych członków domu
+  z kanałem (także podglądu) ich kanałem, niezależnie od ich ciszy.
+- Gdy odpowiedź o **wykonanej** komendzie nie dojdzie do nadawcy — alarm
+  instancji (rodzic nie wie, że akcja poszła).
+- **Obce numery w dzienniku:** najwyżej jeden wpis na numer na godzinę.
+- **Błędy dostawcy LLM** w dzienniku i alarmie: tylko kod HTTP albo typ
+  błędu, bez treści odpowiedzi.
 - **Limit komend:** 10 na godzinę z jednego numeru (potwierdzenia `TAK`
   się nie liczą); po przekroczeniu jedna odpowiedź, potem cisza.
 - **Stare wiadomości** (ponad 10 min od wysłania) nie są wykonywane.

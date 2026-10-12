@@ -49,7 +49,7 @@ def test_cisza_tak_i_dom():
 
 @pytest.mark.parametrize("tekst", [
     "", "dodaj trochę czasu", "TAK", "TAK 12345", "tak 12", "co robi dziecko?",
-    "koniecznie zadzwon", "+1500", "x" * 400, "usun wszystko",
+    "koniecznie zadzwon", "+1500", "+181", "+0", "-0", "x" * 400, "usun wszystko",
 ])
 def test_nie_dokladne_ida_do_llm(tekst):
     assert k.parsuj(tekst) is None
@@ -198,6 +198,8 @@ async def test_brak_srodkow_u_obu_to_awaria():
                      dostawcy=[Gemini("g", "m", klient(pada)), Anthropic("a", "m", klient(pada))])
     w = await r.rozpoznaj("x", DZIECI, URZADZENIA)
     assert w.status == AWARIA and len(w.bledy) == 2
+    # Do dziennika i alarmu sam kod — bez tresci odpowiedzi dostawcy.
+    assert w.bledy == ("gemini: HTTP 400", "anthropic: HTTP 400")
 
 
 async def test_timeout_dostawcy():

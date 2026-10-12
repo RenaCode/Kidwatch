@@ -118,6 +118,7 @@ class Zapytania:
 class Kanal:
     def __init__(self) -> None:
         self.gotowosc = True
+        self.nie_dochodzi: set[str] = set()
         self.skrzynka: list[dict] = []
         self.wyslane: list[tuple[dict, str]] = []
         self.potwierdzone: list[str] = []
@@ -136,7 +137,7 @@ class Kanal:
 
     async def wyslij(self, odbiorca, tekst):
         self.wyslane.append((odbiorca, tekst))
-        return True
+        return odbiorca.get("whatsapp") not in self.nie_dochodzi
 
     def do(self, numer: str) -> list[str]:
         return [t for o, t in self.wyslane if o.get("whatsapp") == cyfry(numer)]
@@ -276,10 +277,11 @@ async def test_koniec_z_kodem_blokuje_gry_i_ekran_i_wysyla_kopie(swiat):
     assert swiat.mdm.komendy == [("POST", "/api/devices/UDID-A-000001/commands",
                                   {"request_type": "DeviceLock",
                                    "Message": "Blokada od rodzica (Kidwatch)"})]
-    kopie = swiat.kanal.do(NR_B)
-    assert len(kopie) == 1 and "opiekun-a" in kopie[0] and "Komenda z WhatsAppa" in kopie[0]
-    # Ani podglad, ani zarzadca bez uprawnienia nie sa "drugim opiekunem".
-    assert swiat.kanal.do(NR_P) == [] and swiat.kanal.do(NR_Z) == []
+    # Kopia do WSZYSTKICH pozostalych czlonkow domu z kanalem, takze podgladu.
+    for nr in (NR_B, NR_P, NR_Z):
+        kopie = swiat.kanal.do(nr)
+        assert len(kopie) == 1 and "opiekun-a" in kopie[0] and "Komenda z WhatsAppa" in kopie[0]
+    assert "Kopię dostanie drugi członek domu" in odp[0]
     assert swiat.wyniki() == [kb.POTWIERDZENIE, kb.WYKONANE]
 
 
@@ -509,8 +511,10 @@ async def test_wiele_domow(swiat):
     await swiat.potwierdz(NR_A, odp)
     assert gry2.zadania[0][0] == "Dziecko C" and swiat.gry.zadania == []
     # Jedyne dziecko domu wskazanego dopiskiem.
-    odp = await swiat.pisz(NR_A, f"+10 dom {d2}")
+    odp = await swiat.pisz(NR_A, f"koniec dom {d2}")
     assert "Dziecko C" in odp[0]
+    # Dom 2 bez drugiego czlonka z kanalem: luzowanie odmowione.
+    assert "wymaga drugiego członka" in (await swiat.pisz(NR_A, f"+10 dom {d2}"))[0]
     # Dom 2 bez MDM: blokada ekranu niedostepna.
     assert "MDM w tym domu jest wyłączony" in (await swiat.pisz(NR_A, "zablokuj Dziecko C"))[0]
     # Kopia z Domu 2 nie idzie do opiekuna Domu 1, ktory w Domu 2 nie jest.
@@ -738,3 +742,59 @@ async def test_bramka_bez_id_w_odpowiedzi_dziala_jak_dotad():
     note = Notification(kind=NotifyKind.GAME, title="t", text="", dedup_key="d", ts=START)
     assert await n.send(note)
     assert zapisy == []
+
+
+# ====================================================== kopia (przeglad)
+def _typowy_dom(swiat):
+    """Drugi rodzic w roli PODGLADU; drugi opiekun i zarzadca bez kanalu."""
+    swiat.konta.ustaw_kanaly("opiekun-b", whatsapp="", email=None)
+    swiat.konta.ustaw_kanaly("zarzadca", whatsapp="", email=None)
+
+
+async def test_kopia_luzowania_do_drugiego_rodzica_w_roli_podgladu(swiat):
+    _typowy_dom(swiat)
+    odp = await swiat.pisz(NR_A, "+15 Dziecko A")
+    assert "Kopię dostanie drugi członek domu" in odp[0]
+    await swiat.potwierdz(NR_A, odp)
+    kopie = swiat.kanal.do(NR_P)
+    assert len(kopie) == 1 and kopie[0].startswith("Kidwatch — LUZOWANIE z WhatsAppa")
+
+
+async def test_luzowanie_bez_adresata_kopii_odmowa_zaostrzenie_bez_obietnicy(swiat):
+    _typowy_dom(swiat)
+    swiat.konta.ustaw_kanaly("domownik", whatsapp="", email=None)
+    for tekst in ("+15 Dziecko A", "odblokuj Dziecko A"):
+        odp = await swiat.pisz(NR_A, tekst)
+        assert "wymaga drugiego członka domu z kanałem" in odp[0], tekst
+        assert "TAK" not in odp[0]
+    odp = await swiat.pisz(NR_A, "koniec Dziecko A")
+    assert "Zrozumiałem" in odp[0] and "Kopię" not in odp[0]
+    await swiat.potwierdz(NR_A, odp)
+    assert swiat.gry.zadania[0][1] == "block"
+    assert [o for o, _ in swiat.kanal.wyslane if o.get("whatsapp") != cyfry(NR_A)] == []
+
+
+async def test_luzowanie_odmowa_tez_przy_kodzie(swiat):
+    _typowy_dom(swiat)
+    odp = await swiat.pisz(NR_A, "+15 Dziecko A")
+    swiat.konta.ustaw_kanaly("domownik", whatsapp="", email=None)
+    assert "wymaga drugiego członka" in (await swiat.potwierdz(NR_A, odp))[0]
+    assert swiat.gry.zadania == []
+
+
+async def test_alarm_gdy_odpowiedz_o_wykonaniu_nie_wyszla(swiat):
+    odp = await swiat.pisz(NR_A, "koniec Dziecko A")
+    swiat.kanal.nie_dochodzi.add(cyfry(NR_A))
+    await swiat.potwierdz(NR_A, odp)
+    assert len(swiat.gry.zadania) == 1
+    assert len(swiat.alarmy) == 1 and "bez odpowiedzi" in swiat.alarmy[0][0]
+
+
+async def test_obcy_numer_jeden_wpis_na_godzine(swiat):
+    for _ in range(5):
+        await swiat.pisz(NR_OBCY, "koniec")
+    assert swiat.wyniki() == [kb.NIEZNANY_NUMER]
+    swiat.zegar.plus(3601)
+    await swiat.pisz(NR_OBCY, "koniec")
+    assert swiat.wyniki() == [kb.NIEZNANY_NUMER] * 2
+    assert swiat.kanal.wyslane == []

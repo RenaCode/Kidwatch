@@ -123,8 +123,8 @@ class BladDostawcy(RuntimeError):
 
 def _status(r: httpx.Response, kto: str) -> None:
     if r.status_code >= 400:
-        # Tresc bledu dostawcy bywa dluga; kod i poczatek wystarcza.
-        raise BladDostawcy(f"{kto}: HTTP {r.status_code} {r.text[:120]!r}", r.status_code)
+        # Sam kod: tresc odpowiedzi dostawcy nie idzie do dziennika ani alarmu.
+        raise BladDostawcy(f"{kto}: HTTP {r.status_code}", r.status_code)
 
 
 def _status_bledu(exc: Exception) -> int | None:
@@ -133,6 +133,12 @@ def _status_bledu(exc: Exception) -> int | None:
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code
     return None
+
+
+def _opis_bledu(exc: Exception) -> str:
+    """Typ i ewentualnie kod HTTP — bez tresci (moze cytowac zapytanie)."""
+    kod = _status_bledu(exc)
+    return f"HTTP {kod}" if kod is not None else type(exc).__name__
 
 
 class Gemini:
@@ -254,7 +260,7 @@ class Rozpoznawacz:
                 bledy.append(f"{d.nazwa}: przekroczony czas")
             except (httpx.HTTPError, BladDostawcy) as exc:
                 bledy.append(str(exc) if isinstance(exc, BladDostawcy)
-                             else f"{d.nazwa}: {type(exc).__name__}")
+                             else f"{d.nazwa}: {_opis_bledu(exc)}")
                 if _status_bledu(exc) == 429:
                     limitowane += 1
                     proby -= 1

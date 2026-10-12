@@ -82,6 +82,9 @@ async def _zasiej_kodem(cfg, auth, rejestr, k):
     await outbox._rozdziel()               # wpis czeka w kolejce konta
     store.start_tv_pause(store_now(), None, STARY)
     store.close()
+    # Komenda z WhatsAppa przez bota: dziennik komend i game_requests
+    # z loginem 'whatsapp:<login>'.
+    await _komenda_whatsapp(cfg)
     # Zlecenia z panelu.
     GameRequests(cfg.panel_auth_path, dom_id=dm.DOM_1).submit("Dziecko A", "block", None, STARY)
     TvPauseRequests(cfg.panel_auth_path, dom_id=dm.DOM_1).submit("pause", None, STARY)
@@ -105,6 +108,40 @@ async def _zasiej_kodem(cfg, auth, rejestr, k):
         srv.shutdown()
 
 
+class _GryOdRazu(GameRequests):
+    """Prawdziwa kolejka; wynik od razu (bez petli czasu gry w tescie)."""
+
+    def result(self, request_id):
+        return True, None
+
+
+async def _komenda_whatsapp(cfg):
+    from kidwatch import komendy_baza as kb  # noqa: PLC0415
+    from kidwatch.config import LlmKomendConfig, WhatsappKomendyConfig  # noqa: PLC0415
+    from kidwatch.komendy_bot import BotKomend, DomKomend  # noqa: PLC0415
+    from kidwatch.komendy_llm import Rozpoznawacz  # noqa: PLC0415
+    from test_komendy_bot import Kanal, Zapytania, home, kod_z, nic  # noqa: PLC0415
+
+    path = cfg.panel_auth_path
+    baza = kb.BazaKomend(path)
+    kanal = Kanal()
+    dom = DomKomend(dm.DOM_1, "Dom 1", home(), Zapytania(),
+                    _GryOdRazu(path, dom_id=dm.DOM_1), None)
+    rejestr = dm.RejestrDomow(path)
+    profile = o.ProfilePowiadomien(path)
+    bot = BotKomend(WhatsappKomendyConfig(enabled=True), baza, kanal,
+                    Rozpoznawacz(LlmKomendConfig(), lambda: False, dostawcy=[]),
+                    czlonkostwa=rejestr.czlonkostwa, dom={dm.DOM_1: dom}.get,
+                    profile=lambda d: profile.dla_domu(d).profile(), sleep=nic)
+    for i, tekst in enumerate(("koniec Dziecko A", None)):
+        if tekst is None:
+            tekst = "TAK " + kod_z(kanal.do(NR_A))
+        kanal.skrzynka.append({"id": f"wa-{i}", "numer": NR_A, "tekst": tekst,
+                               "ts": store_now().isoformat(), "odpowiedz_na": None})
+        await bot.krok()
+    assert kanal.do(NR_A)[-1].startswith("Zrobione"), kanal.do(NR_A)
+
+
 def store_now():
     from datetime import UTC, datetime  # noqa: PLC0415
 
@@ -118,7 +155,11 @@ async def test_zasiew_przez_kod_i_zero_sladow_po_zmianie(tmp_path, monkeypatch):
     # Kontrola pozytywna: kod naprawde zapisal login w tych miejscach.
     assert przed >= {"users.login", "audyt.login", "integracje.zmienione_przez",
                      "game_requests.login", "tv_pause_requests.login", "outbox.odbiorca",
-                     "sent.dedup_key", "notifications.channels", "tv_pause.started_by"}, przed
+                     "sent.dedup_key", "notifications.channels", "tv_pause.started_by",
+                     "whatsapp_komendy_dziennik.login"}, przed
+    with sqlite3.connect(cfg.panel_auth_path) as conn:
+        assert conn.execute("SELECT count(*) FROM game_requests WHERE login = ?",
+                            (f"whatsapp:{STARY}",)).fetchone()[0] == 1
     zl.zmien_login(cfg.panel_auth_path, STARY, NOWY,
                    bazy=zl.bazy_domow(cfg.panel_auth_path, cfg.store.path), zapisz=True)
     assert _slady(cfg) == []
@@ -132,6 +173,16 @@ async def test_kanarek_zasiew_przez_kod_widzi_pominiety_krok(tmp_path, monkeypat
                    bazy=zl.bazy_domow(cfg.panel_auth_path, cfg.store.path), zapisz=True)
     assert {"kidwatch.db:outbox.odbiorca", "kidwatch.db:sent.dedup_key",
             "kidwatch.db:notifications.channels"} <= set(_slady(cfg))
+
+
+async def test_kanarek_zasiew_widzi_pominiete_slady_whatsappa(tmp_path, monkeypatch):
+    cfg, auth, rejestr, k = _przygotuj(tmp_path, monkeypatch)
+    await _zasiej_kodem(cfg, auth, rejestr, k)
+    monkeypatch.setattr(zl, "_whatsapp", lambda *a, **kw: None)
+    zl.zmien_login(cfg.panel_auth_path, STARY, NOWY,
+                   bazy=zl.bazy_domow(cfg.panel_auth_path, cfg.store.path), zapisz=True)
+    assert {"panel-auth.db:game_requests.login",
+            "panel-auth.db:whatsapp_komendy_dziennik.login"} <= set(_slady(cfg))
 
 
 # ================================================================ wyscig

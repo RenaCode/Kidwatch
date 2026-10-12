@@ -145,6 +145,8 @@ def parsuj(tekst: str) -> Surowa | Potwierdzenie | None:
     if m := _CISZA.fullmatch(t):
         return Surowa(CISZA, godziny=int(m["n"]), dom=dom)
     if m := _MINUTY.fullmatch(t):
+        if not 1 <= int(m["n"]) <= MAX_MINUT:
+            return None   # ta sama granica co dla wyniku LLM
         akcja = DODAJ if m["znak"] == "+" else ODEJMIJ
         return Surowa(akcja, cel=_cel(m["reszta"]), minuty=int(m["n"]), dom=dom)
     for slowo, akcja in sorted(_SLOWA.items(), key=lambda kv: -len(kv[0])):
