@@ -94,6 +94,14 @@ const PATHS = {
       <circle cx="16" cy="12" r=".8" fill="currentColor" stroke="none" />
     </>
   ),
+  // Siatka 3x3 - przelacznik aplikacji (jak w Jirze).
+  apps: (
+    <>
+      {[5, 12, 19].flatMap((y) => [5, 12, 19].map((x) => (
+        <circle key={`${x}-${y}`} cx={x} cy={y} r="1.6" fill="currentColor" stroke="none" />
+      )))}
+    </>
+  ),
   home: <path d="M3.5 11 12 4l8.5 7M6 9.5V20h12V9.5" />,
 };
 

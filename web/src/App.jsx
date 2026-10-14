@@ -17,6 +17,7 @@ import {
 } from './utils/domy';
 import TwoFactor from './components/TwoFactor';
 import { signOutLabel, signOutTarget, ssoDenial } from './utils/sso';
+import { appItems } from './utils/aplikacje';
 import { ALL, can, isViewer, sectionsFor } from './utils/uprawnienia';
 import { localToday } from './utils/format';
 import { isCriticalNote } from './utils/mdm';
@@ -70,6 +71,13 @@ function readPreview() {
       || window.localStorage.getItem('kidwatch_preview') === 'true';
   } catch { return false; }
 }
+// `?preview&domy=3`: podglad z kilkoma domami (przelacznik domu w pasku).
+function previewHomes() {
+  let n = 1;
+  try { n = Math.min(5, Math.max(1, Number(new URLSearchParams(window.location.search).get('domy')) || 1)); } catch { /* 1 */ }
+  return Array.from({ length: n }, (_, i) => (
+    { id: i + 1, nazwa: `Dom ${i + 1}`, rola: 'wlasciciel-domu', administracja: false, uprawnienia: ALL }));
+}
 const PREVIEW_META = {
   children: ['Jan', 'Anna'],
   devices: [
@@ -93,7 +101,7 @@ export default function App() {
   const checkSession = useCallback(async () => {
     if (isPreview) {
       setUser({ login: 'admin', rola: 'wlasciciel', uprawnienia: ALL, totp_enabled: true, backup_codes_left: 5,
-        domy: [{ id: 1, nazwa: 'Dom 1', rola: 'wlasciciel-domu', administracja: false, uprawnienia: ALL }] });
+        domy: previewHomes() });
       setAuthState('in');
       return;
     }
@@ -252,6 +260,69 @@ function AccountMenu({ user, onProfile, onSignOut }) {
           </div>
           <button role="menuitem" onClick={() => { setOpen(false); onProfile(); }}>Ustawienia</button>
           <button role="menuitem" onClick={() => { setOpen(false); onSignOut(); }}>{signOutLabel(user)}</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Przelacznik aplikacji RenaCode (siatka 3x3 jak w Jirze). Okienko z lista
+// linkow: Tab przechodzi po nich naturalnie, Escape i klik poza zamykaja.
+// Linki w tej samej karcie - Authelia trzyma jedna sesje dla wszystkich.
+function AppSwitcher() {
+  const [open, setOpen] = useState(false);
+  const close = useCallback(() => setOpen(false), []);
+  const ref = useDismiss(open, close);
+  const btn = useRef(null);
+  const panel = useRef(null);
+  const items = appItems();
+  // Po otwarciu fokus na pierwszej pozycji, zeby klawiatura nie musiala
+  // szukac okienka; Escape oddaje go przyciskowi.
+  useEffect(() => {
+    if (open) panel.current?.querySelector('a')?.focus();
+  }, [open]);
+  const onKeyDown = (e) => {
+    if (e.key === 'Escape' && open) { e.stopPropagation(); close(); btn.current?.focus(); }
+  };
+  // Tab poza przelacznik zamyka okienko - inaczej wisialoby nad strona,
+  // a fokus bylby juz gdzie indziej. relatedTarget null (klik w tlo,
+  // zmiana okna) obsluguje useDismiss albo nie wymaga zamkniecia.
+  const onBlur = (e) => {
+    if (open && e.relatedTarget && !e.currentTarget.contains(e.relatedTarget)) close();
+  };
+  return (
+    <div className="app-switch" ref={ref} onKeyDown={onKeyDown} onBlur={onBlur}>
+      <button ref={btn} className="icon-btn app-switch-btn" aria-label="Przełącz aplikację"
+              aria-haspopup="dialog" aria-expanded={open}
+              aria-controls={open ? 'app-switch-panel' : undefined}
+              onClick={() => setOpen((v) => !v)}>
+        <Icon name="apps" />
+      </button>
+      {open && (
+        <div id="app-switch-panel" className="app-switch-panel" role="dialog"
+             aria-labelledby="app-switch-title" ref={panel}>
+          <div id="app-switch-title" className="app-switch-title">Aplikacje RenaCode</div>
+          <ul className="app-switch-list">
+            {items.map((a) => {
+              const body = (
+                <>
+                  <span className="app-tile" style={{ background: a.color }} aria-hidden="true">{a.initial}</span>
+                  <span className="app-text">
+                    <strong>{a.name}</strong>
+                    <span>{a.desc}</span>
+                  </span>
+                  {a.current && <span className="badge info">ta aplikacja</span>}
+                </>
+              );
+              return (
+                <li key={a.key}>
+                  {a.current
+                    ? <div className="app-item current" aria-current="page">{body}</div>
+                    : <a className="app-item" href={a.href}>{body}</a>}
+                </li>
+              );
+            })}
+          </ul>
         </div>
       )}
     </div>
@@ -421,7 +492,8 @@ function Panel({ user, homes, domId, onPickHome, onSignOut, onUserChanged }) {
       </aside>
 
       <div className="main">
-        <header className="topbar">
+        <header className={`topbar ${showSwitcher(homes) ? 'with-homes' : ''}`}>
+          <AppSwitcher />
           <span className="brand-mark mobile-only"><Icon name="logo" size={22} /></span>
           <div className="crumbs">
             <span className="crumb-brand hide-narrow">Kidwatch</span>
