@@ -32,7 +32,9 @@ UDID = "00008030-000A1B2C3D4E5F6A"
 WEB = Path(__file__).resolve().parents[1] / "web" / "src"
 
 #: Jedyne trasy bez sesji. Kazda nowa PUBLICZNA wymaga swiadomego dopisania.
-PUBLICZNE_POST = {"/api/auth/login", "/api/auth/mfa", "/api/auth/logout"}
+PUBLICZNE_POST = {"/api/auth/login", "/api/auth/mfa", "/api/auth/logout",
+                  # E4: zaproszony moze nie miec jeszcze konta (zaproszenia.py).
+                  "/api/zaproszenia/sprawdz", "/api/zaproszenia/przyjmij"}
 PUBLICZNE_GET = {"/api/health"}
 PODGLAD = ROLE_UPRAWNIENIA[ROLE_VIEWER]
 

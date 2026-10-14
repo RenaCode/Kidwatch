@@ -91,7 +91,7 @@ from .panel_domy import (
 from .panel_integracje import PanelIntegracje
 from .panel_komendy import KomendyPanelu
 from .panel_konta import PanelKonta, WDomu
-from .panel_sso import SsoConfig
+from .panel_sso import SsoConfig, login_ok
 from .panel_sso import config_from_env as sso_from_env
 from .store import from_iso, to_iso
 from .tvpause import MAX_PAUSE_DAYS, TvPauseRequests, parse_until
@@ -99,6 +99,7 @@ from .tvpause import TooManyRequests as TooManyPauseRequests
 from .uprawnienia import (
     CZAS_GRY,
     DOM_INTEGRACJE,
+    DOM_ZAPROSZENIA,
     KONTA,
     KONTO_WLASNE,
     MDM_KOMENDY,
@@ -113,6 +114,7 @@ from .uprawnienia import (
     ZAKRES_KONTO,
     nazwa_roli,
 )
+from .zaproszenia import PanelZaproszenia, Zaproszenia, powiadamiacz
 
 log = logging.getLogger(__name__)
 
@@ -156,6 +158,13 @@ SECURITY_HEADERS = {
 
 class BadRequest(ValueError):
     pass
+
+
+#: Konto z czlonkostwem z zaproszenia, zalogowane haslem panelu bez TOTP
+#: (§7 E4 p. 4: zaproszony bez SSO wlacza 2FA przed pierwszym dostepem do
+#: danych domu). Konto i 2FA dzialaja — tylko trasy domu odmawiaja.
+WYMAGA_2FA = ("Włącz weryfikację dwuetapową (Ustawienia → Bezpieczeństwo), zanim "
+              "zobaczysz dane domu, do którego cię zaproszono.")
 
 
 # ====================================================================== zapytania
@@ -989,6 +998,12 @@ POST_TRASY: dict[str, tuple[str, str, str]] = {
     "/api/auth/login": (PUBLICZNA, "_login", KONTO),
     "/api/auth/mfa": (PUBLICZNA, "_mfa", KONTO),
     "/api/auth/logout": (PUBLICZNA, "_logout", KONTO),
+    # Zaproszenie do domu (E4, zaproszenia.py): bez sesji panelu — zaproszony
+    # moze jeszcze nie miec konta. Uprawnieniem jest token w CIELE zadania
+    # (limit prob na token i adres), tozsamoscia `Remote-User` z Authelii,
+    # zwykla sesja (+ CSRF) albo nowe haslo (tylko bez SSO).
+    "/api/zaproszenia/sprawdz": (PUBLICZNA, "_sprawdz_zaproszenie", KONTO),
+    "/api/zaproszenia/przyjmij": (PUBLICZNA, "_przyjmij_zaproszenie", KONTO),
     "/api/auth/totp/setup": (KONTO_WLASNE, "_totp_setup", KONTO),
     "/api/auth/totp/confirm": (KONTO_WLASNE, "_totp_confirm", KONTO),
     "/api/auth/totp/disable": (KONTO_WLASNE, "_totp_disable", KONTO),
@@ -1026,6 +1041,9 @@ POST_TRASY: dict[str, tuple[str, str, str]] = {
     # w domu ORAZ aktywny administrator instalacji (decyzja 2026-10-12).
     f"{_D}/integracje/zapisz": (DOM_INTEGRACJE, "_integracje_post", DOM),
     f"{_D}/integracje/usun-sekret": (DOM_INTEGRACJE, "_integracje_post", DOM),
+    # Zaproszenia do domu (E4): tworzenie z potwierdzeniem haslem/2FA.
+    f"{_D}/zaproszenia/utworz": (DOM_ZAPROSZENIA, "_zaproszenia_post", DOM),
+    f"{_D}/zaproszenia/odwolaj": (DOM_ZAPROSZENIA, "_zaproszenia_post", DOM),
 }
 
 #: GET /api/*: sciezka -> (uprawnienie, zakres); klucz z "/" na koncu to
@@ -1059,6 +1077,8 @@ GET_TRASY: dict[str, tuple[str, str]] = {
     f"{_D}/integracje": (DOM_INTEGRACJE, DOM),
     # Odswiezanie ekranu po zapisie: tylko wersja i stan przeladowania.
     f"{_D}/integracje/stan": (DOM_INTEGRACJE, DOM),
+    # Dom -> Czlonkowie -> Zaproszenia (bez tokenow — te widac tylko raz).
+    f"{_D}/zaproszenia": (DOM_ZAPROSZENIA, DOM),
 }
 
 _SCIEZKA_DOMU = re.compile(r"/api/domy/([1-9][0-9]{0,8})(/.+)")
@@ -1140,8 +1160,10 @@ def make_handler(
     konta: PanelKonta | None = None,
     integracje: PanelIntegracje | None = None,
     komendy: KomendyPanelu | None = None,
+    zaproszenia: PanelZaproszenia | None = None,
 ):
     """`sso` = None: naglowki `Remote-*` ignorowane w calosci (panel_sso.py).
+    `zaproszenia`: zaproszenia do domow (zaproszenia.py); None = 503.
     `domy`: domy panelu z `PanelQueries` kazdego domu (panel_domy.py).
     `integracje`: ekran integracji domu (panel_integracje.py); None = 503."""
     static_root = static_dir.resolve()
@@ -1260,6 +1282,8 @@ def make_handler(
             if t.zakres == DOM:
                 dom_id = t.dom_id if t.dom_id is not None else domy.alias(session, admin)
                 ctx = domy.dostep(session, dom_id, admin)
+                if not ctx.administracja and self._bez_2fa_z_zaproszenia(session, ctx.dom_id):
+                    raise AuthError(403, WYMAGA_2FA)
                 uprawnienia = ctx.uprawnienia
             else:
                 uprawnienia = uprawnienia_sesji(session, admin)
@@ -1625,6 +1649,101 @@ def make_handler(
                 raise AuthError(500, "blad serwera") from None
             self._json(200, wynik)
 
+        # -------------------------------------------------- zaproszenia (E4)
+        def _zaproszenia(self) -> PanelZaproszenia:
+            if zaproszenia is None:
+                raise AuthError(503, "Zaproszenia są niedostępne")
+            return zaproszenia
+
+        def _bez_2fa_z_zaproszenia(self, session: Session, dom_id: int | None = None) -> bool:
+            """Sesja z hasla bez TOTP konta, ktore do domu (`dom_id`; None =
+            do ktoregokolwiek) weszlo z zaproszenia. Sesja SSO — 2FA Authelii."""
+            if session.kind != "haslo" or session.totp or zaproszenia is None:
+                return False
+            return zaproszenia.z.wymaga_totp(session.user_id, dom_id)
+
+        def _zaproszenia_post(self, path: str, session: Session, ctx: KontekstDomu) -> None:
+            p, data = self._zaproszenia(), self._read_json()
+            if path.endswith("/utworz"):
+                self._json(200, p.utworz(session, data, ctx.dom_id, ctx.uprawnienia, ctx.admin))
+            else:
+                self._json(200, p.odwolaj(session, data, ctx.dom_id))
+
+        def _kto_przyjmuje(self, *, csrf: bool) -> tuple[str, str | None]:
+            """(tryb, login) zadania na trasie zaproszenia: `sso` — login
+            z `Remote-User` (konta moze jeszcze nie byc), `sesja` — zalogowane
+            konto panelu (przy przyjeciu z CSRF), `haslo` — nikt, ekran nowego
+            konta (tylko bez SSO). Za Authelia bez naglowka (port-forward)
+            nowego konta haslem sie nie zaklada — 401."""
+            if sso is not None:
+                self._via_sso = bool(self.headers.get_all("Remote-User"))
+                ident = sso.identity(self.headers)
+                if ident is not None:
+                    self._grupy = ident.groups
+                    return "sso", ident.login
+            session = _bez_sso(auth.session(self._cookies().get(SESSION_COOKIE)))
+            if session is not None:
+                if csrf and not csrf_ok(session, self.headers.get(CSRF_HEADER)):
+                    raise AuthError(403, "Nieprawidłowy token CSRF")
+                return "sesja", session.login
+            if sso is not None:
+                raise AuthError(401, "Wymagane zalogowanie")
+            return "haslo", None
+
+        def _sprawdz_zaproszenie(self) -> None:
+            p, data = self._zaproszenia(), self._read_json()
+            tryb, login = self._kto_przyjmuje(csrf=False)
+            self._json(200, p.sprawdz(self._str(data, "token", 512), ip=self._client_ip(),
+                                      tryb=tryb, login=login))
+
+        def _przyjmij_zaproszenie(self) -> None:
+            """Przyjecie zaproszenia: czlonkostwo w domu zaproszenia (i konto,
+            gdy go nie ma). Ciala zadania (token, haslo) nie logujemy nigdzie."""
+            p, data = self._zaproszenia(), self._read_json()
+            token = self._str(data, "token", 512)
+            if data.get("potwierdzam") is not True:
+                raise AuthError(400, "Przyjęcie wymaga potwierdzenia, że informacja "
+                                     "o prywatności została przeczytana.")
+            ip, ua = self._client_ip(), self.headers.get("User-Agent")
+            tryb, login = self._kto_przyjmuje(csrf=True)
+            if tryb == "sso":
+                try:
+                    auth.user_id(login)
+                    nowe = False
+                except LookupError:
+                    nowe = True
+                wynik = p.przyjmij(token, ip=ip, login=login, sso=True, zaloz=nowe)
+                # Czlonkostwo wylogowalo konto (domy._wyloguj) — nowa sesja SSO
+                # od razu, front przechodzi do domu bez drugiego logowania.
+                tok, nowa = auth.sso_login(login, ip=ip, user_agent=ua)
+                self._sso_cookies = session_cookies(tok, nowa, int(auth.session_seconds))
+                self._json(200, {"ok": True, "dom_id": wynik.dom_id, "rola": wynik.rola,
+                                 "login": login, "konto_zalozone": wynik.konto_zalozone})
+                return
+            if tryb == "sesja":
+                session = auth.session(self._cookies().get(SESSION_COOKIE))
+                if session is None or not session.totp:
+                    raise AuthError(403, "Przyjęcie zaproszenia hasłem panelu wymaga włączonej "
+                                         "weryfikacji dwuetapowej (Ustawienia → Bezpieczeństwo).")
+                wynik = p.przyjmij(token, ip=ip, login=session.login, sso=False)
+                # Sesja zamknieta przez zmiane czlonkostwa — logowanie od nowa.
+                self._json(200, {"ok": True, "dom_id": wynik.dom_id, "rola": wynik.rola,
+                                 "login": session.login, "zaloguj_ponownie": True},
+                           cleared_cookies())
+                return
+            nowy = self._str(data, "login", 64).strip()
+            if not login_ok(nowy):
+                raise AuthError(400, "Login: małe litery a-z, cyfry, '.', '_', '-'")
+            if not auth.totp_available:
+                # Bez klucza TOTP zaproszony nie wlaczylby 2FA, a bez 2FA nie
+                # zobaczy domu — nie zakladamy konta, ktore do niczego nie wejdzie.
+                raise AuthError(503, "Panel nie ma klucza PANEL_TOTP_KEY — weryfikacja "
+                                     "dwuetapowa jest niedostępna. Poproś administratora.")
+            wynik = p.przyjmij(token, ip=ip, login=nowy, sso=False,
+                               haslo=self._str(data, "haslo", 512), zaloz=True)
+            self._json(200, {"ok": True, "dom_id": wynik.dom_id, "rola": wynik.rola,
+                             "login": nowy, "wymaga_totp": True})
+
         # ---------------------------------------------------------------- MDM
         # Panel jest posrednikiem: token API serwera MDM zostaje w backendzie,
         # a przegladarka widzi tylko zalogowana sesje panelu (+ CSRF przy akcjach).
@@ -1886,6 +2005,9 @@ def make_handler(
                 # instalacji. Decyzja tutaj, front tylko ja czyta; samo Argo
                 # i tak stoi za Authelia z wlasna polityka dostepu.
                 "pokaz_argo": pokaz_argo(session, admin),
+                # Konto z zaproszenia zalogowane haslem bez 2FA: front pokazuje
+                # wlaczenie 2FA zamiast danych domu (trasy domu i tak 403).
+                "wymaga_totp": self._bez_2fa_z_zaproszenia(session),
                 "logout_url": sso.logout_url if self._via_sso else None,
                 **auth.account(session),
             }
@@ -1918,6 +2040,13 @@ def make_handler(
                 return
             if rest == "/tv/aplikacja":
                 self._json(200, stan_aplikacji(ctx.dom_id))
+                return
+            if rest == "/zaproszenia":
+                try:
+                    self._json(200, self._zaproszenia().lista(session, ctx.dom_id,
+                                                              ctx.uprawnienia, ctx.admin))
+                except AuthError as exc:
+                    self._json(exc.status, {"error": exc.message})
                 return
             if rest == "/komendy":
                 self._json(200, komendy.dziennik_domu(ctx.dom_id) if komendy is not None
@@ -2110,6 +2239,17 @@ def sprawdz_zakres_mdm(q: PanelQueries, dom_id: int) -> MdmApi | None:
     return q.mdm
 
 
+def _powiadamiacz_zaproszen(cfg: Config):
+    """Powiadomienie zapraszajacego o przyjeciu — bramka z jawnym odbiorca
+    (zaproszenia.powiadamiacz); bez bramki albo klucza tylko dziennik."""
+    bc = cfg.notifiers.bramka
+    try:
+        klucz = bc.key() if bc is not None and bc.enabled else None
+    except MissingSecretError:
+        klucz = None
+    return powiadamiacz(bc, klucz, ProfilePowiadomien(cfg.panel_auth_path))
+
+
 def _sejf_procesu():
     """KEK procesu dla ekranu integracji — czytany przy kazdym zadaniu: brak
     klucza (BrakKek) to 503 na tym ekranie, nie blad startu panelu."""
@@ -2145,6 +2285,9 @@ def start_panel(cfg: Config, *, konfiguracja_domu: KonfiguracjaDomu | None = Non
             konta=PanelKonta(auth, ProfilePowiadomien(cfg.panel_auth_path)),
             integracje=PanelIntegracje(auth, _sejf_procesu, stany=stany),
             komendy=KomendyPanelu(cfg.panel_auth_path, cfg.whatsapp_komendy),
+            zaproszenia=PanelZaproszenia(auth, Zaproszenia(cfg.panel_auth_path),
+                                         sso_wlaczone=sso is not None,
+                                         powiadom=_powiadamiacz_zaproszen(cfg)),
         ),
     )
     server.domy_panelu = domy_panelu

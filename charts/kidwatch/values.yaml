@@ -179,10 +179,13 @@ sso:
   # rodziny, README "Roles"). `admins` (konto administracyjne, decyzja 5 w
   # docs/architektura-domy.md §8) od etapu E3a: rola administratora instalacji
   # wymaga flagi `kidwatch user-admin <login> on` w bazie ORAZ tej grupy
-  # w naglowku — sama grupa niczego nie nadaje. `kidwatch-goscie` dochodzi w E4.
+  # w naglowku — sama grupa niczego nie nadaje. `kidwatch-goscie` (E4, decyzja 3)
+  # to osoby spoza rodziny zaproszone do domu: Authelia wpuszcza je WYLACZNIE
+  # na ten host, a w panelu widza tylko dom z przyjetego zaproszenia.
   grupy:
     - wlasciciel
     - rodzina
+    - kidwatch-goscie
     - admins
 
 # ------------------------------------------------------------ NETWORKPOLICY

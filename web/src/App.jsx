@@ -165,6 +165,24 @@ function Homes({ user, onSignOut, onUserChanged }) {
   const domId = pickHome(user?.domy, saved);
   setHome(domId);
   const pick = (id) => { saveHome(id); setSaved(String(id)); };
+  // Konto z zaproszenia zalogowane haslem panelu bez 2FA: dane domu dopiero
+  // po wlaczeniu 2FA (serwer i tak odpowiada 403 na trasach domu).
+  if (user?.wymaga_totp) {
+    return (
+      <div className="login-shell">
+        <div className="login-card glass-card">
+          <div className="login-card-head">
+            <h1>Włącz weryfikację dwuetapową</h1>
+            <p>Dołączono do domu z zaproszenia. Zanim zobaczysz jego dane, włącz 2FA
+              (aplikacja z kodami, np. menedżer haseł).</p>
+          </div>
+          <TwoFactor user={user} onChanged={() => setTwoFactorOpen(true)}
+                     onClose={() => { setTwoFactorOpen(false); onUserChanged(); }} />
+          <button className="btn-primary" onClick={onSignOut}>{signOutLabel(user)}</button>
+        </div>
+      </div>
+    );
+  }
   if (domId == null) {
     return (
       <div className="login-shell">

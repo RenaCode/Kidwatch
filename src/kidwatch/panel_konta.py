@@ -302,6 +302,10 @@ class PanelKonta:
             raise AuthError(409, "Nie usuniesz własnego konta z panelu (CLI: user-del).")
         self._zostaje_zarzadca(d, bez=login)
         self.auth.reauth(session, _str(data, "confirm", 512))
+        # Przed wypisaniem: czy mogl widziec sekrety integracji (E4 — sugestia
+        # rotacji klucza domu, bo mogl zrobic zrzut, zanim stracil dostep).
+        c = self.rejestr.czlonkostwo(self.auth.user_id(login), d.dom_id)
+        integracje = c is not None and u.DOM_INTEGRACJE in c.uprawnienia
         try:
             self.auth.remove_membership(login, d.dom_id)
         except UnknownUser as exc:
@@ -315,7 +319,18 @@ class PanelKonta:
             self.auth.delete_user(login)
         log.warning("panel: %s wypisal konto %r z domu %d%s", session.login, login, d.dom_id,
                     " i je usunal (bez domow)" if usuniete else "")
-        return {"ok": True, "konto_usuniete": usuniete}
+        sugestia = (f"Konto miało dostęp do integracji domu — rozważ nowy klucz domu: "
+                    f"kidwatch dom-klucz-rotuj {d.dom_id}" if integracje else None)
+        try:
+            self.rejestr.zapisz_audyt(
+                d.dom_id, session.login, "konta.usun",
+                f"{login} wypisany z domu (sesje zamknięte, preferencje usunięte)"
+                + ("; konto usunięte" if usuniete else "")
+                + ("; sugestia: dom-klucz-rotuj" if integracje else ""))
+        except Exception:
+            # Zmiana juz zapisana; brak wpisu nie cofa wypisania (jest w logu).
+            log.exception("panel: nie zapisano wpisu dziennika o wypisaniu %r", login)
+        return {"ok": True, "konto_usuniete": usuniete, "sugestia": sugestia}
 
     def rola(self, session: Session, data: dict, d: WDomu) -> dict:
         login = self._cel(session, data, d)

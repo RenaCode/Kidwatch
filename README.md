@@ -463,6 +463,45 @@ notification channel; every executed command is copied to all other members
 with a channel (viewers too), unknown numbers get no reply. Log and an emergency switch for the
 installation administrator: Settings → "Komendy z WhatsAppa".
 
+**Invitations** (Settings → **Zaproszenia**, permission `dom.zaproszenia` —
+`wlasciciel-domu` and the active installation administrator; code:
+`src/kidwatch/zaproszenia.py`). Pick a role (never higher than your own
+role in that household), validity (default 72 h, at most 7 days) and,
+recommended with SSO, the invitee's expected SSO login. The panel shows the
+link `https://<panel>/zaproszenie#<token>` **once** — the token lives in the
+URL fragment (not in Traefik logs or `Referer`), the database keeps only its
+SHA-256, and it never appears in logs or the audit log (only `#<id>`).
+The invitee opens the link:
+
+- **through Authelia** (SSO on — the normal path): they log in with an
+  Authelia account in group `kidwatch-goscie` (see "Adding a person from
+  outside the family" below), read the privacy notice and accept. If
+  `Remote-User` has no panel account yet, it is created **at that moment** —
+  the only case of an SSO account created on the fly, and only with a valid
+  token — with a random break-glass password nobody sees. With an expected
+  login set, any other `Remote-User` gets 403;
+- **without SSO**: a "set password" screen (`MIN_PASSWORD_LEN`, Argon2id),
+  then panel 2FA must be enabled before any household data opens (needs
+  `PANEL_TOTP_KEY`; without it the account is not created);
+- **already logged in** (an account from another household): the membership
+  is added to that account; a password session needs panel 2FA.
+
+Accepting = confirming the privacy notice (the installation administrator
+sees all household data, every visit audited; the cluster operator has
+technical access to the database and key). An invitation is single-use,
+can be revoked at any time, dies after 5 failed attempts (wrong login,
+used/expired/revoked token), and every address is limited to 10 failed
+attempts per 15 minutes (also for tokens that do not exist). It grants
+membership only in its household — never the inviter's other households —
+does not change the role of an existing member and cannot be accepted by
+the installation-administrator account. The inviter is notified through the
+gateway only when the gateway supports an explicit recipient (`odbiorca`);
+otherwise the acceptance is only in the household audit log. Expired and
+revoked invitations are deleted after 30 days. An invitee who joined through
+SSO has no known panel password: to confirm sensitive changes (e.g. their
+own notification channels) they enable panel 2FA in Settings and confirm
+with a code.
+
 Members can also be managed in the panel (Settings → **Konta**, permission
 `konta.zarzadzanie` in that household): add (random password shown once),
 remove from the household (the account is deleted once it has no household
@@ -482,8 +521,10 @@ renacode-infra) in front of the panel **and** the same switch sets
 
 - `Remote-User` must equal an **existing** panel login (`user-add`), lowercase
   `[a-z0-9._-]`. No accounts are created on the fly — an unknown login gets
-  403 with a readable message and an "SSO log out" button. A new person needs
-  two steps: an Authelia account and `user-add` with the same login.
+  403 with a readable message and an "SSO log out" button — with one
+  exception: accepting a valid household invitation (see "Invitations"
+  above). A new person needs either an Authelia account and `user-add` with
+  the same login, or an Authelia account and an invitation.
   An existing account whose login differs from Authelia (e.g. before SSO is
   switched on): `user-login <old> <new>` renames it in place — password,
   2FA, household memberships, roles, admin flag, notification channels and
@@ -508,8 +549,10 @@ renacode-infra) in front of the panel **and** the same switch sets
   refuses, even with `--dokoncz`, so a deleted person's traces never land
   on another account. With SSO the Authelia login is the target —
   change only Kidwatch, never the Authelia account, to match.
-- `Remote-Groups` must contain `wlasciciel`, `rodzina` or `admins` (chart
-  `sso.grupy` → `SSO_GRUPY`; must match the Authelia rule for this host).
+- `Remote-Groups` must contain `wlasciciel`, `rodzina`, `kidwatch-goscie` or
+  `admins` (chart `sso.grupy` → `SSO_GRUPY`; must match the Authelia rule
+  for this host). `kidwatch-goscie` is for people from outside the family
+  invited to a household: Authelia admits that group **only** to this host.
   Groups only gate entry; what an account may do comes from its household
   memberships in the panel database (see "Roles" below). `admins` is
   additionally required for the installation-administrator flag to take
@@ -546,6 +589,16 @@ Adding a family member (two steps, same lowercase login in both places):
    password/2FA changes. `user-add` warns when the login could never match
    `Remote-User`.
 
+Adding a person from outside the family (another household, E4):
+
+1. The installation administrator creates an Authelia account in group
+   `kidwatch-goscie` only (renacode-infra, `authelia-uzytkownicy`,
+   procedure "Nowa osoba" in `docs/zadania-wlasciciela.md`) — it opens the
+   Kidwatch panel and nothing else.
+2. The household owner creates an invitation with that login as the expected
+   login and sends the link. No `user-add`: the panel account appears when
+   the invitation is accepted.
+
 **Roles and permissions** (from the panel database, never from
 `Remote-Groups`; code: `src/kidwatch/uprawnienia.py`). Every panel route is
 declared once with one permission (`POST_TRASY` / `GET_TRASY` in
@@ -568,8 +621,9 @@ fails CI, and every route the `podglad` role lacks is checked for 403.
 In a household the same table applies per membership: `wlasciciel-domu`
 has everything `wlasciciel` had, `zarzadca` everything except account
 management, integrations and invitations, `podglad` as above. The new
-`dom.urzadzenia`, `dom.integracje` and `dom.zaproszenia` permissions are
-reserved for the household screens of the next stages.
+`dom.integracje` permission is used by the integrations screen (together
+with the installation-administrator role), `dom.zaproszenia` by
+invitations; `dom.urzadzenia` is reserved for the household devices screen.
 
 Logging out needs no permission. `python -m kidwatch user-rola <login>
 wlasciciel|podglad` changes a role, clears that account's overrides and logs
