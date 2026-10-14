@@ -34,3 +34,22 @@ test('adres spoza https nie trafia do linku', () => {
   // Biezaca aplikacja zostaje nawet z blednym adresem - nie jest linkiem.
   assert.deepEqual(appItems(apps, 'a').map((a) => [a.key, a.href]), [['a', null], ['d', 'https://d.renacode.com/']]);
 });
+
+/* Bez renderera (testy biegna w czystym node): sprawdzamy zrodlo, ze
+   przelacznik siedzi w gornym pasku i ma atrybuty dostepnosci. */
+test('przelacznik jest w gornym pasku panelu, przed logo', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../App.jsx', import.meta.url), 'utf8');
+  const header = src.slice(src.indexOf('<header className={`topbar'), src.indexOf('</header>'));
+  assert.ok(header.length > 0, 'brak gornego paska');
+  const sw = header.indexOf('<AppSwitcher />');
+  assert.ok(sw >= 0, 'AppSwitcher poza gornym paskiem');
+  assert.ok(sw < header.indexOf('brand-mark'), 'siatka ma byc na lewym koncu');
+  const comp = src.slice(src.indexOf('function AppSwitcher('), src.indexOf('function useDismiss('));
+  for (const attr of ['aria-label="Przełącz aplikację"', 'aria-haspopup="dialog"', 'aria-expanded={open}',
+    "aria-controls={open ? 'app-switch-panel' : undefined}", 'aria-current="page"', 'Aplikacje RenaCode']) {
+    assert.ok(comp.includes(attr), attr);
+  }
+  // Inline handlery HTML lamalyby CSP (script-src 'self').
+  assert.doesNotMatch(comp, /\son[a-z]+="/);
+});

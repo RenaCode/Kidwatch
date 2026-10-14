@@ -975,6 +975,14 @@ a.app-item:hover { background: rgba(255, 255, 255, 0.06); }
   .crumbs > * + * { margin-left: 0; padding-left: 0; border-left: none; }
   .crumb-title { font-size: 1.15rem; }
   .api-state { padding: 0 9px; }
+  /* Kilka domow: przelacznik domu nie miesci sie w jednym rzedzie z tytulem
+     (360-414 px). Tytul schodzi do drugiego rzedu, logo ustepuje siatce
+     aplikacji, a wybor domu ma stala szerokosc z wielokropkiem. */
+  .topbar.with-homes { flex-wrap: wrap; row-gap: 10px; }
+  .topbar.with-homes .brand-mark { display: none; }
+  .topbar.with-homes .crumbs { order: 3; flex-basis: 100%; }
+  .topbar.with-homes .top-actions { gap: 8px; }
+  .home-switch select { max-width: 8rem; text-overflow: ellipsis; }
   .screen-time { padding: 14px 10px 12px; }
   .section-head h2 { font-size: 1.2rem; }
   /* Wiersz dziecka na telefonie: imie i liczniki w gornej linii, pasek pod spodem. */

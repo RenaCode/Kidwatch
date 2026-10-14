@@ -71,6 +71,13 @@ function readPreview() {
       || window.localStorage.getItem('kidwatch_preview') === 'true';
   } catch { return false; }
 }
+// `?preview&domy=3`: podglad z kilkoma domami (przelacznik domu w pasku).
+function previewHomes() {
+  let n = 1;
+  try { n = Math.min(5, Math.max(1, Number(new URLSearchParams(window.location.search).get('domy')) || 1)); } catch { /* 1 */ }
+  return Array.from({ length: n }, (_, i) => (
+    { id: i + 1, nazwa: `Dom ${i + 1}`, rola: 'wlasciciel-domu', administracja: false, uprawnienia: ALL }));
+}
 const PREVIEW_META = {
   children: ['Jan', 'Anna'],
   devices: [
@@ -94,7 +101,7 @@ export default function App() {
   const checkSession = useCallback(async () => {
     if (isPreview) {
       setUser({ login: 'admin', rola: 'wlasciciel', uprawnienia: ALL, totp_enabled: true, backup_codes_left: 5,
-        domy: [{ id: 1, nazwa: 'Dom 1', rola: 'wlasciciel-domu', administracja: false, uprawnienia: ALL }] });
+        domy: previewHomes() });
       setAuthState('in');
       return;
     }
@@ -277,10 +284,17 @@ function AppSwitcher() {
   const onKeyDown = (e) => {
     if (e.key === 'Escape' && open) { e.stopPropagation(); close(); btn.current?.focus(); }
   };
+  // Tab poza przelacznik zamyka okienko - inaczej wisialoby nad strona,
+  // a fokus bylby juz gdzie indziej. relatedTarget null (klik w tlo,
+  // zmiana okna) obsluguje useDismiss albo nie wymaga zamkniecia.
+  const onBlur = (e) => {
+    if (open && e.relatedTarget && !e.currentTarget.contains(e.relatedTarget)) close();
+  };
   return (
-    <div className="app-switch" ref={ref} onKeyDown={onKeyDown}>
+    <div className="app-switch" ref={ref} onKeyDown={onKeyDown} onBlur={onBlur}>
       <button ref={btn} className="icon-btn app-switch-btn" aria-label="Przełącz aplikację"
-              aria-haspopup="dialog" aria-expanded={open} aria-controls="app-switch-panel"
+              aria-haspopup="dialog" aria-expanded={open}
+              aria-controls={open ? 'app-switch-panel' : undefined}
               onClick={() => setOpen((v) => !v)}>
         <Icon name="apps" />
       </button>
@@ -478,7 +492,7 @@ function Panel({ user, homes, domId, onPickHome, onSignOut, onUserChanged }) {
       </aside>
 
       <div className="main">
-        <header className="topbar">
+        <header className={`topbar ${showSwitcher(homes) ? 'with-homes' : ''}`}>
           <AppSwitcher />
           <span className="brand-mark mobile-only"><Icon name="logo" size={22} /></span>
           <div className="crumbs">
