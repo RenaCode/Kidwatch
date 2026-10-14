@@ -1715,6 +1715,10 @@ RESTART_PIERWSZY = 60.0
 RESTART_MAX = 1800.0
 #: Dom dzialajacy tyle po restarcie konczy serie awarii (odstep od nowa).
 RESTART_STABILNY = 1800.0
+#: Eskalacja: tyle awarii domu z rzedu (bez 30 min spokoju; ~2 h restartow
+#: w procesie) = koniec procesu kodem 1 — k8s restartuje poda jak przed E3b.
+#: Restart w procesie nie naprawi np. zepsutego stanu biblioteki czy pamieci.
+RESTART_ESKALACJA = 8
 #: Tik stojacy dluzej niz tyle okresow = awaria domu (najmniej MIN_TETNO s).
 TETNO_OKRESY = 3
 MIN_TETNO = 90.0
@@ -1840,8 +1844,10 @@ class Nadzorca:
     nowa po 1, 2, 4... min (najwyzej co 30 min; seria konczy sie po 30 min
     spokoju). Kazda awaria: alarm instancji i czujka domu (notka w kolejce
     domu) — pierwsza od razu, kolejne z serii co 1 h, 2 h... najwyzej co dobe.
-    Pozostale domy chodza dalej. Proces konczy sie tylko po `stop` albo przy
-    awarii samego nadzorcy; tetno procesu (`tetno_procesu`, liveness) dotyka
+    Pozostale domy chodza dalej. Po RESTART_ESKALACJA awariach jednego domu
+    z rzedu (~2 h) nadzorca konczy proces kodem 1 — eskalacja do restartu
+    poda. Poza tym proces konczy sie tylko po `stop` albo przy awarii samego
+    nadzorcy; tetno procesu (`tetno_procesu`, liveness) dotyka
     nadzorca, a nie tik ktoregos domu.
 
     Z `przeladowanie` (§5.1) nadzorca co `okres` sekund porownuje
@@ -2266,6 +2272,16 @@ class Nadzorca:
 
     async def _zaplanuj_restart(self, dom_id: int, home: HomeConfig, wersja: int | None,
                                 powod: str, alarm: float | None) -> None:
+        seria = self._serie.get(dom_id)
+        if seria is not None and seria.proba > RESTART_ESKALACJA:
+            log.error("dom %d: %d awarii z rzedu (%s) — restarty w procesie nie pomagaja, "
+                      "koniec procesu (k8s zrestartuje poda)", dom_id, seria.proba - 1, powod)
+            await self._alarm(f"Dom {dom_id}: monitoring zatrzymany — restart poda",
+                              f"{seria.proba - 1} awarii z rzedu, ostatnia: {powod}. Restarty "
+                              "domu w procesie nie pomagaja; Kidwatch konczy proces, k8s "
+                              "uruchomi go od nowa (log: kubectl logs --previous).")
+            self._awaria = True
+            return
         odstep = self._odstep(dom_id)
         self._restarty[dom_id] = (self.zegar() + odstep, home, wersja)
         proba = self._serie[dom_id].proba if dom_id in self._serie else 1

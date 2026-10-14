@@ -262,3 +262,21 @@ async def test_tick_loop_dotyka_tetna_domu_a_nie_pliku(tmp_path):
     await tick_loop(Silnik(), Kolejka(), Baza(), max_iterations=1, sleep=lambda s: asyncio.sleep(0),
                     heartbeat_path=plik)
     assert plik.exists()
+
+
+async def test_eskalacja_do_restartu_poda_po_serii_awarii():
+    """Dom padajacy bez konca: po RESTART_ESKALACJA awariach z rzedu nadzorca
+    konczy proces kodem 1 (k8s restartuje poda) — inaczej Dom 1 krecilby sie
+    w restartach w procesie z zielonym liveness."""
+    s = Swiat()
+    n = s.nadzorca()
+    stop, zadanie = await _uruchom(s, n)
+    for _ in range(dm.RESTART_ESKALACJA):
+        await _czekaj(lambda: DOM_T in n._restarty or zadanie.done())
+        assert not zadanie.done()
+        s.zegar.t = n._restarty[DOM_T][0]
+        budowy = s.budowy.count(DOM_T)
+        await _czekaj(lambda b=budowy: s.budowy.count(DOM_T) == b + 1)
+    assert await asyncio.wait_for(zadanie, timeout=3) == 1
+    assert s.alarmy[-1][0] == "Dom 2: monitoring zatrzymany — restart poda"
+    stop.set()

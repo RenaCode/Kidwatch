@@ -188,6 +188,10 @@ class MDMService:
         """Zaproszenie w domu `dom_id` — z TOKENU wolajacego, nigdy z ciala
         zadania (§4.3). Etykieta w bazie i polityce: `<dom>/<etykieta>`, Dom 1
         bez prefiksu (jak przed E3b)."""
+        if "/" in label:
+            # `2/x` bez domu zapisalby urzadzenie do Domu 1 pod etykieta Domu 2.
+            raise ServiceError(400, f"etykieta bez prefiksu domu ({label!r}); dom podaj osobno "
+                                    "(token domu albo `enroll --dom N`)")
         label = etykieta_w_domu(dom_id, label)
         self._refuse_quarantined(label)
         if label not in self.policy.devices:

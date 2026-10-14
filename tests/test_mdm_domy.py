@@ -326,3 +326,15 @@ def test_cli_token_domu(tmp_path, monkeypatch, capsys):
     assert store.home_token_dom(token) is None
     assert main(["token-domu", "0"]) == 1
     assert store_mod.token_hash(token) != token
+
+
+def test_etykieta_z_prefiksem_bez_domu_odrzucona(uklad):
+    """`enroll 2/x` bez --dom zapisalby urzadzenie do Domu 1 pod etykieta Domu 2."""
+    from kidwatch_mdm.service import ServiceError
+
+    svc, _, _ = uklad
+    with pytest.raises(ServiceError) as exc:
+        svc.create_enrollment("2/dziecko9")
+    assert exc.value.status == 400
+    with pytest.raises(ServiceError):
+        svc.create_enrollment("2/dziecko9", DOM_2)

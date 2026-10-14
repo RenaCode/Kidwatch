@@ -58,7 +58,16 @@ from .bramka_admin import (
 )
 from .config import Config, HomeConfig, MissingSecretError, WatchedDevice
 from .gametime import ACTIONS, GameRequests, TooManyRequests
-from .mdm import MdmApi, MdmError, build_api, config_domu, udid_w_domie, zakres_tokenu
+from .mdm import (
+    MdmApi,
+    MdmError,
+    build_api,
+    config_domu,
+    udid_w_domie,
+    urzadzenie_domu,
+    zakres_tokenu,
+    zakres_z_whoami,
+)
 from .odbiorcy import ProfilePowiadomien
 from .panel_auth import (
     CSRF_COOKIE,
@@ -1628,14 +1637,21 @@ def make_handler(
                 return q.mdm
             return mdm if ctx.dom_id == dm.DOM_1 else None
 
-        def _udid_domu(self, ctx: KontekstDomu, udid: str) -> None:
+        def _udid_domu(self, ctx: KontekstDomu, udid: str, api: MdmApi | None = None) -> None:
             """Druga bariera (§4.3, E3b): UDID spoza domu = 404, zanim panel
-            zawola serwer MDM — niezaleznie od filtra po stronie serwera."""
+            zawola serwer MDM — niezaleznie od filtra po stronie serwera.
+
+            Z `api`: dodatkowo dom urzadzenia wg serwera musi byc tym domem.
+            Token instancji Domu 1 serwer nie filtruje, a iPad innego domu,
+            ktorego ten dom nie wpisal jeszcze do `urzadzenia`, przeszedlby
+            wyjatek Domu 1 w `udid_w_domie`."""
             try:
                 nasz = udid_w_domie(udid, ctx.dom_id, getattr(ctx.queries, "cfg", None),
                                     domy.rejestr.dom_udidu)
             except sqlite3.Error as exc:
                 raise AuthError(503, "Baza panelu niedostępna") from exc
+            if nasz and api is not None:
+                nasz = urzadzenie_domu(api.request("GET", f"/api/devices/{udid}"), ctx.dom_id)
             if not nasz:
                 log.warning("panel: UDID spoza domu %d odrzucony", ctx.dom_id)
                 raise MdmError(404, "nieznane urzadzenie")
@@ -1688,7 +1704,10 @@ def make_handler(
                     })
                 elif m := re.fullmatch(r"/mdm/devices/([0-9A-Fa-f-]{8,64})", path):
                     self._udid_domu(ctx, m[1])
-                    self._json(200, api.request("GET", f"/api/devices/{m[1]}"))
+                    detail = api.request("GET", f"/api/devices/{m[1]}")
+                    if not urzadzenie_domu(detail, ctx.dom_id):
+                        raise MdmError(404, "nieznane urzadzenie")
+                    self._json(200, detail)
                 else:
                     self._json(404, {"error": "nie ma takiego endpointu"})
             except MdmError as exc:
@@ -1708,7 +1727,7 @@ def make_handler(
             try:
                 api = self._mdm_api(ctx)
                 if udid:
-                    self._udid_domu(ctx, udid)
+                    self._udid_domu(ctx, udid, api)
                 if path == "/mdm/refresh" and udid:
                     result = api.request("POST", f"/api/devices/{udid}/refresh")
                 elif path == "/mdm/command" and udid:
@@ -2057,10 +2076,22 @@ def queries_domow(cfg: Config, konfiguracja_domu: KonfiguracjaDomu | None = None
             q.mdm_z_bazy = True
             mdm_cfg = config_domu(home.mdm, cfg.mdm.url)
             q.mdm = build_api(mdm_cfg)
-            # Token instancji w domu innym niz Dom 1 widzialby iPady Domu 1 (E3b).
+            # Token instancji w domu innym niz Dom 1 widzialby iPady Domu 1 (E3b):
+            # porownanie z MDM_ADMIN_TOKEN, a dla domu != 1 takze serwer
+            # (/api/whoami) — brak odpowiedzi to tez odmowa (fail-closed).
             if q.mdm is not None and zakres_tokenu(dom.id, mdm_cfg.token()) is None:
                 q.mdm.close()
                 q.mdm = None
+            if q.mdm is not None and dom.id != dm.DOM_1:
+                try:
+                    zakres = zakres_z_whoami(dom.id, q.mdm.request("GET", "/api/whoami"))
+                except MdmError as exc:
+                    log.error("panel: dom %d: zakres tokenu MDM nieznany (%s) — MDM wylaczone",
+                              dom.id, exc)
+                    zakres = None
+                if zakres is None:
+                    q.mdm.close()
+                    q.mdm = None
         return q
 
     return zbuduj

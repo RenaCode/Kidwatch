@@ -276,6 +276,7 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
 
     # Serwer MDM to osobny pod z wlasna baza — tu tylko czujka po jego API.
     from .mdm import (  # noqa: PLC0415
+        ZAKRESY_CZUJEK,
         MdmWatcher,
         build_api,
         config_domu,
@@ -284,6 +285,7 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
     )
 
     mdm_cfg = config_domu(home.mdm, inst.mdm.url)  # token z sekretow domu (tryb `baza`)
+    ZAKRESY_CZUJEK.pop(dom_id, None)  # ustali go nowa czujka (/api/whoami)
     mdm_api = build_api(mdm_cfg)
     # Token instancji: Dom 1 jak przed E3b; inny dom — MDM wylaczone (E3b).
     zakres = zakres_tokenu(dom_id, mdm_cfg.token()) if mdm_api is not None else None
@@ -294,7 +296,8 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
         log.info("czujka MDM wlaczona: %s, co %.0f s, token %s", mdm_cfg.url,
                  mdm_cfg.poll_seconds, "instancji" if zakres == "instancja" else "domu")
         rt.dodaj_petle("mdm", lambda: mdm_loop(
-            MdmWatcher(mdm_api, store, mdm_cfg, zakres), dispatcher, mdm_cfg.poll_seconds
+            MdmWatcher(mdm_api, store, mdm_cfg, zakres, dom_id=dom_id), dispatcher,
+            mdm_cfg.poll_seconds
         ))
 
         async def zamknij_mdm() -> None:
@@ -554,34 +557,22 @@ def start_czujki_mdm_instancji(cfg: Config, inst: InstanceConfig, konfiguracje: 
     Domu 1, jak przed E3b. Stan (kursor, dedup) w osobnej bazie obok bazy
     Domu 1. Zwraca (zadanie, api, baza) albo None."""
     from .mdm import (  # noqa: PLC0415
-        ZAKRES_DOM,
-        ZAKRES_INSTANCJA,
         ZAKRES_SERWER,
         AlarmyInstancji,
         MdmApi,
         MdmWatcher,
+        czujka_instancji_potrzebna,
         mdm_loop,
         token_instancji,
-        zakres_tokenu,
     )
 
     token = token_instancji()
     if token is None:
+        # Bez tokenu instancji alarmy serwera daje dom, ktory go trzyma
+        # (serwer potwierdza zakres przez /api/whoami); dom z tokenem domu ich nie daje.
+        log.warning("brak MDM_ADMIN_TOKEN — czujka MDM instancji wylaczona")
         return None
-
-    def zakresy() -> list[str | None]:
-        out = []
-        for dom_id, home in list(konfiguracje.items()):
-            if home is not None and home.mdm.enabled:
-                try:
-                    out.append(zakres_tokenu(dom_id, home.mdm.token()))
-                except Exception:  # noqa: BLE001 — brak sekretu: dom bez MDM
-                    out.append(None)
-        return out
-
-    def aktywny() -> bool:
-        z = zakresy()
-        return ZAKRES_DOM in z and ZAKRES_INSTANCJA not in z
+    aktywny = czujka_instancji_potrzebna
 
     mdm_cfg = cfg.mdm
     api = MdmApi(mdm_cfg, token)

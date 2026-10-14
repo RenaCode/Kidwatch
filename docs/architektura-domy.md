@@ -902,15 +902,29 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
     MDM przed domami nie mają `udid` w `config.yaml` (walidator wymaga pary
     `udid`+`host`), a ścisłe `udid ∈ urzadzenia(1)` odcięłoby Dom 1 od komend.
     Lista i dziennik w zakładce MDM filtrowane tak samo; licznik urządzeń
-    z `/api/health` (wspólny) zastąpiony liczbą urządzeń domu.
+    z `/api/health` (wspólny) zastąpiony liczbą urządzeń domu. Komenda
+    i szczegóły wymagają dodatkowo `dom_id` urządzenia **wg serwera** równego
+    domowi — token instancji Domu 1 nie jest filtrowany, a iPad innego domu,
+    którego tamten dom nie wpisał jeszcze do `urzadzenia`, przeszedłby wyjątek
+    Domu 1 (przegląd #71).
+  - **Zakres tokenu rozstrzyga serwer** (`/api/whoami`, przy pierwszym
+    odczycie czujki; serwer bez `whoami` — porównanie z `MDM_ADMIN_TOKEN`):
+    bez zmiennej Dom 1 z tokenem instancji i tak dostaje zakres instancji,
+    więc alarmy serwera nie giną. Dom ≠ 1 w panelu — `whoami` przy budowie
+    posrednika, błąd = brak MDM. Czujka instancji wznowiona po przerwie
+    zaczyna od bieżącego końca dziennika (zdarzenia z przerwy obsłużyły
+    czujki domów).
   - **Izolacja awarii** (`Nadzorca(..., odbuduj=...)`): koniec zadania domu
     albo tik stojący > 3× okres (min. 90 s, `HomeRuntime.tetno`) zatrzymuje
     tylko ten dom (z opróżnieniem kolejki) i buduje go ponownie po 1, 2, 4…
     min, najwyżej co 30 min; seria kończy się po 30 min spokoju. Alarm
     instancji od razu, kolejne z serii co 1 h, 2 h… do doby; czujka domu
     (`WATCHDOG`) zapisana do kolejki domu przed zamknięciem. Plik tętna
-    procesu (liveness) dotyka nadzorca co 10 s — nie tik Domu 1. Bez
-    `odbuduj` (testy E1) — koniec zadania = kod 1 jak dotąd.
+    procesu (liveness) dotyka nadzorca co 10 s — nie tik Domu 1. **Eskalacja**:
+    `RESTART_ESKALACJA` (8) awarii domu z rzędu bez 30 min spokoju (~2 h)
+    = alarm „monitoring zatrzymany — restart poda” i koniec procesu kodem 1,
+    k8s restartuje poda jak przed E3b. Bez `odbuduj` (testy E1) — koniec
+    zadania = kod 1 jak dotąd. Etykieta zapisu z `/` bez domu — 400.
   - **Nie zrobione w E3b** (przed E6): `run` dalej uruchamia tylko Dom 1
     (start domów ≠ 1 z alarmem wstrzymanej kolejki — osobny krok), urządzenie
     Apple w domu ≠ 1 wymaga dziś `udid`+`host` w `urzadzenia` (walidator
