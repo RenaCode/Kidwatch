@@ -58,7 +58,7 @@ from .bramka_admin import (
 )
 from .config import Config, HomeConfig, MissingSecretError, WatchedDevice
 from .gametime import ACTIONS, GameRequests, TooManyRequests
-from .mdm import MdmApi, MdmError, build_api, config_domu
+from .mdm import MdmApi, MdmError, build_api, config_domu, udid_w_domie, zakres_tokenu
 from .odbiorcy import ProfilePowiadomien
 from .panel_auth import (
     CSRF_COOKIE,
@@ -1620,14 +1620,48 @@ def make_handler(
         # Panel jest posrednikiem: token API serwera MDM zostaje w backendzie,
         # a przegladarka widzi tylko zalogowana sesje panelu (+ CSRF przy akcjach).
         def _mdm_domu(self, ctx: KontekstDomu) -> MdmApi | None:
-            # Token MDM jest dzis jeden, Domu 1; tokeny innych domow i
-            # sprawdzenie `udid ∈ dom` to etap E3b. Inny dom nie ma MDM.
-            # Dom 1 w trybie `baza`: token z sejfu domu (ekran integracji),
-            # nie z MDM_ADMIN_TOKEN — zmiana tokenu w panelu dziala tez tutaj.
-            if ctx.dom_id != dm.DOM_1:
-                return None
+            # Dom z konfiguracja w bazie: token z sejfu domu (ekran integracji;
+            # inny dom tylko z WLASNYM tokenem — queries_domow, E3b). Dom 1
+            # z config.yaml: MDM_ADMIN_TOKEN jak dotad. Inny dom bez bazy — nic.
             q = ctx.queries
-            return q.mdm if getattr(q, "mdm_z_bazy", False) else mdm
+            if getattr(q, "mdm_z_bazy", False):
+                return q.mdm
+            return mdm if ctx.dom_id == dm.DOM_1 else None
+
+        def _udid_domu(self, ctx: KontekstDomu, udid: str) -> None:
+            """Druga bariera (§4.3, E3b): UDID spoza domu = 404, zanim panel
+            zawola serwer MDM — niezaleznie od filtra po stronie serwera."""
+            try:
+                nasz = udid_w_domie(udid, ctx.dom_id, getattr(ctx.queries, "cfg", None),
+                                    domy.rejestr.dom_udidu)
+            except sqlite3.Error as exc:
+                raise AuthError(503, "Baza panelu niedostępna") from exc
+            if not nasz:
+                log.warning("panel: UDID spoza domu %d odrzucony", ctx.dom_id)
+                raise MdmError(404, "nieznane urzadzenie")
+
+        def _mdm_domowe(self, ctx: KontekstDomu, rows: list) -> list:
+            """Lista z serwera bez urzadzen i zdarzen innych domow (token
+            instancji Domu 1 widzi wszystko)."""
+            nasze: dict[str, bool] = {}
+            out = []
+            for r in rows if isinstance(rows, list) else []:
+                if not isinstance(r, dict):
+                    continue
+                if r.get("dom_id") is not None and r["dom_id"] != ctx.dom_id:
+                    continue
+                udid = r.get("udid")
+                if isinstance(udid, str) and udid:
+                    if udid not in nasze:
+                        try:
+                            self._udid_domu(ctx, udid)
+                            nasze[udid] = True
+                        except MdmError:
+                            nasze[udid] = False
+                    if not nasze[udid]:
+                        continue
+                out.append(r)
+            return out
 
         def _mdm_api(self, ctx: KontekstDomu) -> MdmApi:
             api = self._mdm_domu(ctx)
@@ -1639,14 +1673,21 @@ def make_handler(
             try:
                 api = self._mdm_api(ctx)
                 if path == "/mdm":
+                    devices = self._mdm_domowe(ctx, api.devices())
+                    health = api.health()
+                    if isinstance(health, dict):
+                        # Licznik z /api/health obejmuje urzadzenia wszystkich domow.
+                        health["devices"] = len(devices)
                     self._json(200, {
                         "available": True,
-                        "health": api.health(),
-                        "devices": api.devices(),
+                        "health": health,
+                        "devices": devices,
                         "os_update": api.request("GET", "/api/os-update"),
-                        "events": api.request("GET", "/api/events?last=50"),
+                        "events": self._mdm_domowe(
+                            ctx, api.request("GET", "/api/events?last=50")),
                     })
                 elif m := re.fullmatch(r"/mdm/devices/([0-9A-Fa-f-]{8,64})", path):
+                    self._udid_domu(ctx, m[1])
                     self._json(200, api.request("GET", f"/api/devices/{m[1]}"))
                 else:
                     self._json(404, {"error": "nie ma takiego endpointu"})
@@ -1666,6 +1707,8 @@ def make_handler(
                 raise AuthError(400, "Niepoprawny UDID")
             try:
                 api = self._mdm_api(ctx)
+                if udid:
+                    self._udid_domu(ctx, udid)
                 if path == "/mdm/refresh" and udid:
                     result = api.request("POST", f"/api/devices/{udid}/refresh")
                 elif path == "/mdm/command" and udid:
@@ -2012,7 +2055,12 @@ def queries_domow(cfg: Config, konfiguracja_domu: KonfiguracjaDomu | None = None
                          requests, tv_requests)
         if getattr(home, "sekrety", None) is not None and hasattr(home, "mdm"):
             q.mdm_z_bazy = True
-            q.mdm = build_api(config_domu(home.mdm, cfg.mdm.url))
+            mdm_cfg = config_domu(home.mdm, cfg.mdm.url)
+            q.mdm = build_api(mdm_cfg)
+            # Token instancji w domu innym niz Dom 1 widzialby iPady Domu 1 (E3b).
+            if q.mdm is not None and zakres_tokenu(dom.id, mdm_cfg.token()) is None:
+                q.mdm.close()
+                q.mdm = None
         return q
 
     return zbuduj

@@ -166,10 +166,14 @@ OUTBOX_FLUSH_ON_STOP_SECONDS = 10.0
 
 
 def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
-                       classifier: Classifier):
+                       classifier: Classifier, *, tetno_procesu: bool = False):
     """Srodowisko domu (domy.HomeRuntime): baza domu, silnik, kolejka z `dom_id`,
     zrodlo DNS i petle wlaczone w konfiguracji domu. Kolejnosc budowy jak
-    przed domami — brak sekretu zrodla przerywa start, zanim ruszy panel."""
+    przed domami — brak sekretu zrodla przerywa start, zanim ruszy panel.
+
+    Tik dotyka tetna DOMU (`rt.dotknij_tetna`); plik tetna procesu (liveness)
+    tylko z `tetno_procesu=True` — `run` z izolacja awarii (E3b) zostawia go
+    nadzorcy, zeby awaria jednego domu nie restartowala poda."""
     from .domy import (  # noqa: PLC0415
         DOM_1,
         HomeRuntime,
@@ -200,6 +204,8 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
     source = build_source(home, store)
     rt = HomeRuntime(dom_id, home, store, engine, dispatcher, source)
     rt.dodaj_petle("source", lambda: source_loop(source, engine, dispatcher, store))
+    from .scheduler import HEARTBEAT_PATH  # noqa: PLC0415
+
     rt.dodaj_petle("tick", lambda: tick_loop(
         engine,
         dispatcher,
@@ -207,6 +213,8 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
         retention_days=home.store.retention_days,
         notifications_retention_days=home.store.notifications_retention_days,
         rollup_retention_days=home.store.rollup_retention_days,
+        heartbeat_path=HEARTBEAT_PATH if tetno_procesu else None,
+        tetno=rt.dotknij_tetna,
     ))
     rt.dodaj_petle("outbox", dispatcher.run)
 
@@ -267,15 +275,32 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
         rt.dodaj_petle("unifi", lambda: unifi_loop(unifi, dispatcher, home.unifi.poll_seconds))
 
     # Serwer MDM to osobny pod z wlasna baza — tu tylko czujka po jego API.
-    from .mdm import MdmWatcher, build_api, config_domu, mdm_loop  # noqa: PLC0415
+    from .mdm import (  # noqa: PLC0415
+        MdmWatcher,
+        build_api,
+        config_domu,
+        mdm_loop,
+        zakres_tokenu,
+    )
 
     mdm_cfg = config_domu(home.mdm, inst.mdm.url)  # token z sekretow domu (tryb `baza`)
     mdm_api = build_api(mdm_cfg)
+    # Token instancji: Dom 1 jak przed E3b; inny dom — MDM wylaczone (E3b).
+    zakres = zakres_tokenu(dom_id, mdm_cfg.token()) if mdm_api is not None else None
+    if mdm_api is not None and zakres is None:
+        mdm_api.close()
+        mdm_api = None
     if mdm_api is not None:
-        log.info("czujka MDM wlaczona: %s, co %.0f s", mdm_cfg.url, mdm_cfg.poll_seconds)
+        log.info("czujka MDM wlaczona: %s, co %.0f s, token %s", mdm_cfg.url,
+                 mdm_cfg.poll_seconds, "instancji" if zakres == "instancja" else "domu")
         rt.dodaj_petle("mdm", lambda: mdm_loop(
-            MdmWatcher(mdm_api, store, mdm_cfg), dispatcher, mdm_cfg.poll_seconds
+            MdmWatcher(mdm_api, store, mdm_cfg, zakres), dispatcher, mdm_cfg.poll_seconds
         ))
+
+        async def zamknij_mdm() -> None:
+            mdm_api.close()
+
+        rt.dodaj_sprzatanie(zamknij_mdm)
 
     game = (build_game_time(home, store, dispatcher, auth_path, dom_id)
             if home.game_time.enabled else None)
@@ -521,6 +546,57 @@ def start_komend(cfg: Config, rejestr, konfiguracje: dict, alarm):
     return asyncio.create_task(petla_komend(bot, wk.poll_seconds), name="komendy"), bot
 
 
+def start_czujki_mdm_instancji(cfg: Config, inst: InstanceConfig, konfiguracje: dict, alarm):
+    """Czujka MDM INSTANCJI (E3b, §4.3): alarmy calego serwera (certyfikat
+    APNs, uzgadnianie, pushe) i zdarzenia bez domu, tokenem instancji, do
+    administratora (alarm instancji). Aktywna tylko, gdy zaden dzialajacy dom
+    nie trzyma tokenu instancji — do wydania tokenu Domu 1 robi to czujka
+    Domu 1, jak przed E3b. Stan (kursor, dedup) w osobnej bazie obok bazy
+    Domu 1. Zwraca (zadanie, api, baza) albo None."""
+    from .mdm import (  # noqa: PLC0415
+        ZAKRES_DOM,
+        ZAKRES_INSTANCJA,
+        ZAKRES_SERWER,
+        AlarmyInstancji,
+        MdmApi,
+        MdmWatcher,
+        mdm_loop,
+        token_instancji,
+        zakres_tokenu,
+    )
+
+    token = token_instancji()
+    if token is None:
+        return None
+
+    def zakresy() -> list[str | None]:
+        out = []
+        for dom_id, home in list(konfiguracje.items()):
+            if home is not None and home.mdm.enabled:
+                try:
+                    out.append(zakres_tokenu(dom_id, home.mdm.token()))
+                except Exception:  # noqa: BLE001 — brak sekretu: dom bez MDM
+                    out.append(None)
+        return out
+
+    def aktywny() -> bool:
+        z = zakresy()
+        return ZAKRES_DOM in z and ZAKRES_INSTANCJA not in z
+
+    mdm_cfg = cfg.mdm
+    api = MdmApi(mdm_cfg, token)
+    store = Store(str(Path(inst.store.path).parent / "mdm-instancji.db"))
+    watcher = MdmWatcher(api, store, mdm_cfg, ZAKRES_SERWER)
+    zadanie = asyncio.create_task(
+        mdm_loop(watcher, AlarmyInstancji(alarm), mdm_cfg.poll_seconds, aktywny=aktywny),
+        name="mdm-instancja")
+    zadanie.add_done_callback(
+        lambda t: t.cancelled() or log.error("czujka MDM instancji zakonczyla sie: %r",
+                                              t.exception()))
+    log.info("czujka MDM instancji gotowa (aktywna, gdy domy maja wlasne tokeny)")
+    return zadanie, api, store
+
+
 async def cmd_run(args) -> int:
     from .domy import (  # noqa: PLC0415
         DOM_1,
@@ -559,9 +635,10 @@ async def cmd_run(args) -> int:
                     WYMUSZENIE_DOMU_1_ENV, wymuszone)
     inne = [d for d in w_bazie if d != DOM_1]
     if inne:
-        # Kolejne domy wymagaja izolacji powiadomien i awarii (E3a/E3b).
-        log.warning("domy %s maja konfiguracje w bazie — ich uruchamianie to etap E3b, "
-                    "na razie chodzi tylko Dom 1", inne)
+        # Izolacja awarii jest od E3b, ale start kolejnych domow (z alarmem
+        # wstrzymanej kolejki) to osobny krok przed E6 — na razie tylko Dom 1.
+        log.warning("domy %s maja konfiguracje w bazie — ich uruchamianie to krok przed "
+                    "E6, na razie chodzi tylko Dom 1", inne)
     alarm = alarm_instancji(inst)
     stany = StanyDomow()
     if DOM_1 in w_bazie:
@@ -613,10 +690,25 @@ async def cmd_run(args) -> int:
         przeladowanie = przeladowanie_domow(
             rejestr, inst, konfiguracje, stany,
             panel.domy_panelu if panel is not None else None, alarm=alarm)
+    from .scheduler import touch_heartbeat  # noqa: PLC0415
+
+    # Izolacja awarii (E3b, §5.1): koniec petli albo tik stojacy 3x okres
+    # restartuje TYLKO ten dom (1, 2, 4... min), nie caly proces; tetno
+    # procesu (liveness) dotyka nadzorca.
     nadzorca = Nadzorca([runtime], przeladowanie=przeladowanie,
-                        flush_seconds=OUTBOX_FLUSH_ON_STOP_SECONDS)
+                        flush_seconds=OUTBOX_FLUSH_ON_STOP_SECONDS,
+                        odbuduj=lambda dom_id, h: build_home_runtime(
+                            dom_id, inst, h, Classifier(inst.app_map_path)),
+                        alarm=alarm, tetno_procesu=touch_heartbeat)
     komendy = start_komend(cfg, rejestr, konfiguracje, alarm)
+    czujka_mdm = start_czujki_mdm_instancji(cfg, inst, konfiguracje, alarm)
     rc = await nadzorca.run(stop)
+    if czujka_mdm is not None:
+        zadanie, mdm_api, mdm_store = czujka_mdm
+        zadanie.cancel()
+        await asyncio.gather(zadanie, return_exceptions=True)
+        mdm_api.close()
+        mdm_store.close()
     if komendy is not None:
         zadanie, bot = komendy
         zadanie.cancel()

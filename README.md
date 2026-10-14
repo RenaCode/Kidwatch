@@ -198,6 +198,7 @@ Each layer guards against a different failure:
 | `device_silence_minutes` (180) | silence of **one** iPad while others report — profile removed | push `<device> nie zglasza sie do DNS` |
 | same threshold, device never seen | a configured device that has not appeared in DNS once since start — typo in `source_ids` or a profile that never worked | push `<device> nie pojawil sie w DNS` (at most once a day) |
 | `livenessProbe` / `HEALTHCHECK` | the process **hung** — the watchdog can't report its own death, since the alert is sent by the same process | container restart (heartbeat file `KIDWATCH_HEARTBEAT`) |
+| home supervisor (multi-home E3b) | a loop of one home **died** or its tick stalled for > 3 periods (90 s) | only that home is rebuilt after 1, 2, 4… min (max 30 min); instance alert + home watchdog push; other homes and the panel keep running. The heartbeat file is touched by the supervisor, not by a home's tick |
 | UniFi sensor (optional) | an iPad on home Wi-Fi transferred > `alarm_mb` (20) MB in `window_minutes` (15) while NextDNS has not a single query from it — DNS profile removed | push `<device> — profil DNS prawdopodobnie usunięty` |
 | `tv.unreachable_alert_hours` (24) | TV without a single successful read for a day — tunnel, ADB, key | push `<TV> — odczyt z urzadzenia nie dziala` |
 | `tv.traffic` (true), `tv.traffic_min_mb` (10), `tv.traffic_window_minutes` (3) | ADB not answering but UniFi sees the TV streaming — sessions continue from network traffic (no titles; service name from NextDNS if `tv.nextdns_ids` is set) | push `<TV> — ADB nie odpowiada, monitoring z ruchu sieci` after `tv.adb_alert_minutes` (30) |
@@ -985,6 +986,11 @@ How it works:
 - **Kidwatch integration** (`mdm.enabled`): an *MDM* tab in the panel
   (proxied, CSRF-protected; the API token never reaches the browser) and the
   alerts listed in the message table above.
+- **Per home** (multi-home stage E3b): every device belongs to a home. A home
+  token (`kidwatch-mdm token-domu <home>`) sees and commands only that home's
+  devices (a foreign UDID is a 404); the instance token keeps full scope. The
+  Kidwatch panel checks independently that a UDID belongs to the home before
+  calling the server. See [`docs/mdm.md`](docs/mdm.md), "Domy".
 
 ## Deployment
 

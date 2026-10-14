@@ -15,6 +15,12 @@ zadnych domyslnych blokad iPada, zadnych wspolnych nadpisan, zadnego
 `blockedAppBundleIDs`; wlasne `restrictions` urzadzenia tylko z kluczy, ktore
 schemat Apple dopuszcza bez nadzoru (docs/iphone.md). Zostaja inwentarz,
 blokada ekranu (restart wymaga nadzoru), status DDM i wymuszenie wersji systemu.
+
+Domy (docs/architektura-domy.md §4.3, etap E3b): klucz urzadzenia w `devices`
+to `<dom>/<etykieta>` (np. `2/dziecko1`), a Dom 1 zachowuje stare etykiety bez
+prefiksu. Sekcja `domy` daje nadpisania `restrictions`/`blocked_apps` per dom,
+dokladane miedzy wspolne a wlasne urzadzenia — jak wspolne, nie moga zdjac
+blokad domyslnych przez pominiecie klucza.
 """
 
 from __future__ import annotations
@@ -94,6 +100,23 @@ MdmKind = Literal["ipad", "iphone"]
 
 LOCAL_DT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
 
+#: Dom 1 — etykiety bez prefiksu (wszystko sprzed E3b).
+DOM_1 = 1
+_PREFIKS_DOMU = re.compile(r"^(?P<dom>[1-9][0-9]{0,8})/(?P<label>.+)$")
+
+
+def dom_etykiety(label: str) -> int:
+    """Dom wpisu polityki / zapisanej etykiety: `2/dziecko1` -> 2, bez prefiksu -> 1."""
+    m = _PREFIKS_DOMU.match(label)
+    return int(m["dom"]) if m else DOM_1
+
+
+def etykieta_w_domu(dom_id: int, label: str) -> str:
+    """Etykieta zapisu w bazie i kluczu polityki: Dom 1 bez prefiksu (jak
+    przed E3b), kolejne domy `<dom>/<etykieta>` — dwa domy z `dziecko1` sie
+    nie zderzaja."""
+    return label if dom_id == DOM_1 else f"{dom_id}/{label}"
+
 
 class OsUpdate(BaseModel):
     """Wymuszona aktualizacja: do `deadline` (czas lokalny iPada) ma byc `target_version`."""
@@ -144,6 +167,14 @@ class DevicePolicy(BaseModel):
         return v
 
 
+class DomPolicy(BaseModel):
+    """Nadpisania jednego domu (klucz w `Policy.domy`)."""
+
+    restrictions: dict[str, Any] = Field(default_factory=dict)
+    #: None = wspolne `blocked_apps`; lista (takze pusta) = tylko te w domu.
+    blocked_apps: list[str] | None = None
+
+
 class Policy(BaseModel):
     org: str = "RenaCode"
     #: Nadpisania DOKLADANE do DEFAULT_RESTRICTIONS, nie zamiast nich — wpisanie
@@ -158,6 +189,8 @@ class Policy(BaseModel):
     #: Klucz = etykieta podana przy tworzeniu zaproszenia (np. "dziecko1").
     devices: dict[str, DevicePolicy] = Field(default_factory=dict)
     refresh_hours: float = 6.0
+    #: Nadpisania per dom (E3b): {numer domu: DomPolicy}. Dom bez wpisu = wspolne.
+    domy: dict[int, DomPolicy] = Field(default_factory=dict)
     #: Wpisy iPhone'ow odrzucone przy wczytaniu: {etykieta: bledy}. Ustawia
     #: load(); serwer zapisuje je jako zdarzenie (alarm w Kidwatchu).
     _rejected: dict[str, list[str]] = PrivateAttr(default_factory=dict)
@@ -193,11 +226,26 @@ class Policy(BaseModel):
             # iPhone — tylko te walidacja sprawdzila pod katem nadzoru. Domyslne
             # i wspolne sa dla nadzorowanych iPadow.
             return dict(dev.restrictions) if dev.kind == "iphone" else {}
-        merged = {**DEFAULT_RESTRICTIONS, **self.restrictions, **dev.restrictions}
-        blocked = dev.blocked_apps if dev.blocked_apps is not None else self.blocked_apps
+        dom = self.domy.get(dom_etykiety(label)) or DomPolicy()
+        merged = {**DEFAULT_RESTRICTIONS, **self.restrictions, **dom.restrictions,
+                  **dev.restrictions}
+        blocked = next(
+            (b for b in (dev.blocked_apps, dom.blocked_apps) if b is not None), self.blocked_apps
+        )
         if blocked:
             merged["blockedAppBundleIDs"] = list(blocked)
         return merged
+
+    def widok_domu(self, dom_id: int) -> dict[str, Any]:
+        """Polityka widziana tokenem domu: wspolne ustawienia, nadpisania TEGO
+        domu i jego urzadzenia. Wpisy innych domow (etykiety dzieci, adresy
+        NextDNS z identyfikatorem profilu) nie wychodza poza ich dom."""
+        out = self.model_dump()
+        out["devices"] = {
+            label: dev for label, dev in out["devices"].items() if dom_etykiety(label) == dom_id
+        }
+        out["domy"] = {d: v for d, v in out["domy"].items() if d == dom_id}
+        return out
 
 
 class PolicyError(ValueError):
@@ -220,14 +268,25 @@ def validate_entries(policy: Policy, schema: dict | None) -> list[tuple[str | No
     ustawien wspolnych, tresc). Przypisanie nie z tekstu bledu — iPhone
     z etykieta `software_update` nie moze polknac bledu wspolnych ustawien."""
     entries: list[tuple[str | None, str]] = []
-    labels = ["(wspolne)", *(lb for lb, d in policy.devices.items() if d.kind != "iphone")]
+    domy = {f"(dom {d})": d for d in policy.domy}
+    labels = [
+        "(wspolne)",
+        *domy,
+        *(lb for lb, d in policy.devices.items() if d.kind != "iphone"),
+    ]
     for label in labels:
         errors: list[str] = []
-        restr = (
-            {**DEFAULT_RESTRICTIONS, **policy.restrictions}
-            if label == "(wspolne)"
-            else policy.restrictions_for(label)
-        )
+        if label == "(wspolne)":
+            restr = {**DEFAULT_RESTRICTIONS, **policy.restrictions}
+        elif label in domy:
+            # Wspolne + dom, jak dla urzadzenia bez wlasnych kluczy. Blad tu
+            # dotyczy wszystkich iPadow domu — zatrzymuje start jak wspolne.
+            dp = policy.domy[domy[label]]
+            restr = {**DEFAULT_RESTRICTIONS, **policy.restrictions, **dp.restrictions}
+            if dp.blocked_apps:
+                restr["blockedAppBundleIDs"] = list(dp.blocked_apps)
+        else:
+            restr = policy.restrictions_for(label)
         for key, value in restr.items():
             if key in FORBIDDEN_FALSE and value is False:
                 errors.append(f"{label}: {key}=false psuje Popros o zakup / konta Rodziny")
@@ -245,7 +304,7 @@ def validate_entries(policy: Policy, schema: dict | None) -> list[tuple[str | No
                     and not (expected is int and isinstance(value, bool))
                 ):
                     errors.append(f"{label}: {key} ma typ {spec['type']}, dostalem {value!r}")
-        owner = None if label == "(wspolne)" else label
+        owner = None if label == "(wspolne)" or label in domy else label
         entries += [(owner, e) for e in errors]
     for label, dev in policy.devices.items():
         if dev.kind == "iphone":

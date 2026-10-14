@@ -67,6 +67,14 @@ Dopisane w E3a (addytywnie, kontrakt E1 bez zmian): `BEZ_DOMU`,
 `usun_czlonkostwo_conn`, `czlonkostwo_conn`, `OstatniZarzadzajacy`
 i odpowiedniki w `RejestrDomow` (`usun_czlonkostwo`,
 `ustaw_admin_instancji`, `admin_instancji`, `zapisz_audyt`, `audyt`).
+
+Dopisane w E3b (addytywnie): `RejestrDomow.dom_udidu(udid)` (druga bariera
+MDM w panelu), `HomeRuntime.tetno` / `okres_tiku` / `dotknij_tetna()` (tetno
+domu) i izolacja awarii w `Nadzorca(..., odbuduj=...)`: wyjatek w petli domu
+albo tik stojacy dluzej niz 3x okres zatrzymuje TYLKO ten dom i uruchamia go
+ponownie z narastajacym odstepem (1, 2, 4... do 30 min), z alarmem instancji
+i czujka domu; plik tetna procesu (liveness) dotyka nadzorca. Bez `odbuduj`
+— zachowanie E1 (koniec zadania = koniec procesu).
 """
 
 from __future__ import annotations
@@ -86,6 +94,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import uprawnienia as upr
+from .models import Notification, NotifyKind
 
 if TYPE_CHECKING:
     from .config import HomeConfig
@@ -1009,6 +1018,15 @@ class RejestrDomow:
         with self._conn() as conn:
             return migruj_conn(conn, strefa=strefa)
 
+    def dom_udidu(self, udid: str) -> int | None:
+        """Dom, do ktorego nalezy UDID (tabela `urzadzenia`, UDID globalnie
+        jednoznaczny), albo None. Druga bariera MDM w panelu (E3b)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT dom_id FROM urzadzenia WHERE upper(udid) = ? LIMIT 1",
+                (udid.strip().upper(),)).fetchone()
+        return int(row["dom_id"]) if row else None
+
     def domy(self) -> list[Dom]:
         with self._conn() as conn:
             if not _jest_tabela(conn, "domy"):
@@ -1628,6 +1646,13 @@ class HomeRuntime:
     #: `domy.wersja`, z ktorej zbudowano konfiguracje (odczytana PRZED budowa);
     #: None = nieznana (tryb `yaml` albo starszy wolajacy) — nadzorca czyta sam.
     wersja: int | None = None
+    #: Tetno domu (E3b): czas monotoniczny ostatniego udanego tiku. Nadzorca
+    #: z izolacja restartuje dom, gdy tik stoi dluzej niz 3x `okres_tiku`.
+    tetno: float = field(default_factory=time.monotonic)
+    okres_tiku: float = 30.0
+
+    def dotknij_tetna(self) -> None:
+        self.tetno = time.monotonic()
 
     def dodaj_petle(self, nazwa: str, fabryka: Callable[[], Coroutine[Any, Any, Any]]) -> None:
         self.petle.append((nazwa, fabryka))
@@ -1683,6 +1708,18 @@ def blad_przejsciowy(exc: BaseException) -> bool:
     if isinstance(exc, (ValueError, LookupError, MissingSecretError, SejfError, OdmowaSieci)):
         return False
     return isinstance(exc, (sqlite3.Error, OSError, TimeoutError, ConnectionError))
+
+
+#: Izolacja awarii (E3b, §5.1): restart domu po 1, 2, 4... min, najwyzej co 30 min.
+RESTART_PIERWSZY = 60.0
+RESTART_MAX = 1800.0
+#: Dom dzialajacy tyle po restarcie konczy serie awarii (odstep od nowa).
+RESTART_STABILNY = 1800.0
+#: Tik stojacy dluzej niz tyle okresow = awaria domu (najmniej MIN_TETNO s).
+TETNO_OKRESY = 3
+MIN_TETNO = 90.0
+#: Co ile nadzorca z izolacja sprawdza tetna, restarty i dotyka tetna procesu.
+OKRES_NADZORU = 10.0
 
 
 #: Tresc alarmu, gdy opisu bezpiecznego do wysylki nie ma — nigdy surowy blad.
@@ -1782,12 +1819,30 @@ class Przeladowanie:
     zegar: Callable[[], float] = time.monotonic
 
 
+@dataclass
+class _SeriaAwarii:
+    """Kolejne awarie jednego domu: numer proby i rytm alarmow."""
+
+    proba: int
+    nastepny_alarm: float
+    odstep_alarmu: float
+
+
 class Nadzorca:
     """Uruchamia srodowiska domow i czeka na koniec.
 
-    E1 zachowuje regule sprzed domow: kazde zadanie domu jest nieskonczone,
-    wiec jego koniec — z bledem czy bez — konczy proces kodem 1 (k8s
-    restartuje poda). Izolacja awarii miedzy domami to etap E3b.
+    Bez `odbuduj` (E1): kazde zadanie domu jest nieskonczone, wiec jego koniec
+    — z bledem czy bez — konczy proces kodem 1 (k8s restartuje poda).
+
+    Z `odbuduj(dom_id, home) -> HomeRuntime` (E3b, izolacja awarii, §5.1):
+    koniec zadania domu albo tik stojacy dluzej niz 3x okres zatrzymuje caly
+    `HomeRuntime` TEGO domu (z oproznieniem kolejki), a nadzorca buduje go od
+    nowa po 1, 2, 4... min (najwyzej co 30 min; seria konczy sie po 30 min
+    spokoju). Kazda awaria: alarm instancji i czujka domu (notka w kolejce
+    domu) — pierwsza od razu, kolejne z serii co 1 h, 2 h... najwyzej co dobe.
+    Pozostale domy chodza dalej. Proces konczy sie tylko po `stop` albo przy
+    awarii samego nadzorcy; tetno procesu (`tetno_procesu`, liveness) dotyka
+    nadzorca, a nie tik ktoregos domu.
 
     Z `przeladowanie` (§5.1) nadzorca co `okres` sekund porownuje
     `domy.wersja` z wersja dzialajacego srodowiska i przy roznicy restartuje
@@ -1804,10 +1859,27 @@ class Nadzorca:
 
     def __init__(self, domy: Sequence[HomeRuntime],
                  przeladowanie: Przeladowanie | None = None,
-                 flush_seconds: float = 10.0) -> None:
+                 flush_seconds: float = 10.0,
+                 odbuduj: Callable[[int, HomeConfig], HomeRuntime] | None = None,
+                 alarm: Callable[[str, str], Awaitable[None]] | None = None,
+                 tetno_procesu: Callable[[], None] | None = None,
+                 zegar: Callable[[], float] = time.monotonic,
+                 okres_nadzoru: float = OKRES_NADZORU) -> None:
         self.domy = list(domy)
         self.przeladowanie = przeladowanie
         self.flush_seconds = flush_seconds
+        #: Izolacja awarii (E3b): fabryka srodowiska domu; None = jak w E1.
+        self.odbuduj = odbuduj
+        #: Kanal alarmow instancji; None = z `przeladowanie.alarm` (albo log).
+        self.alarm = alarm
+        self.tetno_procesu = tetno_procesu
+        self.zegar = zegar
+        self.okres_nadzoru = okres_nadzoru
+        #: dom -> (kiedy, HomeConfig, wersja) — dom czekajacy na restart.
+        self._restarty: dict[int, tuple[float, HomeConfig, int | None]] = {}
+        self._serie: dict[int, _SeriaAwarii] = {}
+        #: dom -> kiedy (zegar) ostatnio wystartowal — do konca serii awarii.
+        self._starty: dict[int, float] = {}
         self._wersje: dict[int, int | None] = {}
         self._nieudane: dict[int, int] = {}
         #: dom -> (wersja, numer proby, kiedy ponowic) po bledzie przejsciowym.
@@ -1820,7 +1892,15 @@ class Nadzorca:
         self._opisy_alarmu: dict[int, str] = {}
         self._awaria = False
 
+    @property
+    def izolacja(self) -> bool:
+        return self.odbuduj is not None
+
     def _uruchom(self, rt: HomeRuntime) -> None:
+        if self.izolacja:
+            # Tetno od startu srodowiska — czas budowy nie liczy sie do ciszy tiku.
+            rt.tetno = self.zegar()
+            self._starty[rt.dom_id] = self.zegar()
         for task in rt.start():
             self._zadania[task] = rt
 
@@ -1832,13 +1912,23 @@ class Nadzorca:
         for rt in self.domy:
             self._uruchom(rt)
         stop_task = asyncio.create_task(stop.wait(), name="stop")
+        timeout = p.okres if p is not None else None
+        if self.izolacja:
+            timeout = min(timeout, self.okres_nadzoru) if timeout else self.okres_nadzoru
         while True:
             done, _ = await asyncio.wait(
-                {*self._zadania, stop_task}, timeout=p.okres if p is not None else None,
+                {*self._zadania, stop_task}, timeout=timeout,
                 return_when=asyncio.FIRST_COMPLETED)
-            if done or self._awaria:
+            if stop_task in done or self._awaria or (done and not self.izolacja):
                 break
-            await self._sprawdz_wersje()
+            if self.izolacja:
+                for task in done:
+                    await self._awaria_zadania(task)
+                self._dotknij_tetna_procesu()
+                await self._sprawdz_tetna()
+                await self._restartuj_gotowe()
+            if p is not None and not done:
+                await self._sprawdz_wersje()
             if self._awaria:
                 break
         if self._alarmy_w_tle:
@@ -1849,8 +1939,9 @@ class Nadzorca:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
         # Kod 0 udawal w k8s czyste zatrzymanie i ginal w statystyce restartow;
-        # niezerowy widac w `kubectl describe` jako Error.
-        failed = [task for task in done if task is not stop_task]
+        # niezerowy widac w `kubectl describe` jako Error. Z izolacja koniec
+        # zadania domu obsluzyl juz restart domu — liczy sie tylko stop.
+        failed = [] if self.izolacja else [task for task in done if task is not stop_task]
         for task in failed:
             if task.cancelled():
                 log.error("zadanie %s anulowane", task.get_name())
@@ -1917,12 +2008,13 @@ class Nadzorca:
         pozostalych domow. Zawsze tez w logu."""
         p = self.przeladowanie
         log.error("alarm instancji: %s — %s", tytul, tresc)
-        if p is None or p.alarm is None:
+        kanal = self.alarm if self.alarm is not None else (p.alarm if p is not None else None)
+        if kanal is None:
             return
 
         async def wyslij() -> None:
             try:
-                await p.alarm(tytul, tresc)
+                await kanal(tytul, tresc)
             except Exception:
                 log.exception("alarm instancji nie wyszedl: %s", tytul)
 
@@ -2086,6 +2178,144 @@ class Nadzorca:
         except Exception:
             log.exception("dom %d: blad przy zamykaniu starego srodowiska", rt.dom_id)
 
+    # ---------------------------------------------------- izolacja awarii
+    def _dotknij_tetna_procesu(self) -> None:
+        if self.tetno_procesu is None:
+            return
+        try:
+            self.tetno_procesu()
+        except Exception:
+            log.exception("nie zapisano tetna procesu")
+
+    async def _awaria_zadania(self, task: asyncio.Task) -> None:
+        """Zadanie domu sie skonczylo (petle sa nieskonczone, wiec to awaria)."""
+        rt = self._zadania.pop(task, None)
+        if rt is None:
+            return  # zadanie srodowiska zatrzymanego w tym samym obiegu
+        if task.cancelled():
+            powod = f"petla {task.get_name()} anulowana"
+            log.error("dom %d: zadanie %s anulowane", rt.dom_id, task.get_name())
+        elif task.exception() is not None:
+            exc = task.exception()
+            powod = f"petla {task.get_name()}: {opis_bledu(exc)}"
+            log.error("dom %d: zadanie %s zakonczylo sie bledem", rt.dom_id, task.get_name(),
+                      exc_info=exc)
+        else:
+            powod = f"petla {task.get_name()} zakonczyla sie bez bledu"
+            log.error("dom %d: zadanie %s zakonczylo sie bez bledu, a nie powinno",
+                      rt.dom_id, task.get_name())
+        await self._restart_domu(rt, powod)
+
+    async def _sprawdz_tetna(self) -> None:
+        teraz = self.zegar()
+        for rt in list(self.domy):
+            limit = max(TETNO_OKRESY * rt.okres_tiku, MIN_TETNO)
+            cisza = teraz - rt.tetno
+            if cisza > limit:
+                log.error("dom %d: tik stoi od %.0f s (limit %.0f s)", rt.dom_id, cisza, limit)
+                await self._restart_domu(rt, f"tik stoi od {int(cisza)} s")
+
+    async def _restart_domu(self, rt: HomeRuntime, powod: str) -> None:
+        """Zatrzymuje srodowisko domu i planuje jego ponowne zbudowanie.
+        Czujka domu idzie do JEGO kolejki przed zamknieciem (zapis w bazie
+        domu — wysle ja kolejka nowego srodowiska)."""
+        dom_id = rt.dom_id
+        alarm = self._seria(dom_id)
+        if alarm is not None:
+            note = Notification(
+                kind=NotifyKind.WATCHDOG, title="Kidwatch: przerwa w monitoringu domu",
+                text=(f"Monitoring tego domu zatrzymal sie ({powod}) i zostanie uruchomiony "
+                      f"ponownie za {_czas(alarm)}. Do tego czasu powiadomienia moga nie "
+                      "przychodzic."),
+                dedup_key=f"nadzorca:awaria:{dom_id}:{int(time.time())}",
+                ts=_teraz_utc(), priority=4)
+            try:
+                await rt.outbox.send_all([note])
+            except Exception:
+                log.exception("dom %d: nie zapisano czujki awarii w kolejce domu", dom_id)
+        if rt in self.domy:
+            self.domy.remove(rt)
+        await self._zatrzymaj(rt)
+        await self._zaplanuj_restart(dom_id, rt.home, rt.wersja, powod, alarm)
+
+    def _seria(self, dom_id: int) -> float | None:
+        """Kolejna awaria domu: numer proby, odstep restartu i czy pora na
+        alarm. Zwraca odstep restartu, gdy alarm ma wyjsc, inaczej None."""
+        teraz = self.zegar()
+        seria = self._serie.get(dom_id)
+        start = self._starty.get(dom_id)
+        if seria is not None and start is not None and teraz - start >= RESTART_STABILNY:
+            seria = None  # dom chodzil dlugo — nowa seria, odstep od nowa
+        proba = 1 if seria is None else seria.proba + 1
+        odstep = min(RESTART_PIERWSZY * 2 ** (proba - 1), RESTART_MAX)
+        if seria is None:
+            self._serie[dom_id] = _SeriaAwarii(proba, teraz + ALARM_PIERWSZY_ODSTEP,
+                                               ALARM_PIERWSZY_ODSTEP)
+            return odstep
+        seria.proba = proba
+        if teraz < seria.nastepny_alarm:
+            return None
+        seria.odstep_alarmu = min(seria.odstep_alarmu * 2, ALARM_MAX_ODSTEP)
+        seria.nastepny_alarm = teraz + seria.odstep_alarmu
+        return odstep
+
+    def _odstep(self, dom_id: int) -> float:
+        seria = self._serie.get(dom_id)
+        proba = seria.proba if seria is not None else 1
+        return min(RESTART_PIERWSZY * 2 ** (proba - 1), RESTART_MAX)
+
+    async def _zaplanuj_restart(self, dom_id: int, home: HomeConfig, wersja: int | None,
+                                powod: str, alarm: float | None) -> None:
+        odstep = self._odstep(dom_id)
+        self._restarty[dom_id] = (self.zegar() + odstep, home, wersja)
+        proba = self._serie[dom_id].proba if dom_id in self._serie else 1
+        log.error("dom %d: awaria (%s) — restart domu za %s (proba %d); pozostale domy "
+                  "dzialaja", dom_id, powod, _czas(odstep), proba)
+        if alarm is not None:
+            await self._alarm(f"Dom {dom_id}: awaria monitoringu",
+                              f"{powod}. Restart domu za {_czas(odstep)} (proba {proba}); "
+                              "pozostale domy dzialaja. Kolejne awarie z tej serii — alarm "
+                              "najwyzej co 1 h, 2 h... (log: kubectl logs).")
+
+    async def _restartuj_gotowe(self) -> None:
+        p = self.przeladowanie
+        for dom_id, (kiedy, home, wersja) in sorted(self._restarty.items()):
+            if self.zegar() < kiedy:
+                continue
+            del self._restarty[dom_id]
+            assert self.odbuduj is not None
+            try:
+                if p is not None:
+                    await asyncio.to_thread(p.materializuj, dom_id, home)
+                nowy = self.odbuduj(dom_id, home)
+            except Exception as exc:
+                log.exception("dom %d: srodowisko nie wstalo przy restarcie", dom_id)
+                await self._zaplanuj_restart(dom_id, home, wersja,
+                                             f"restart nieudany: {opis_bledu(exc)}",
+                                             self._seria(dom_id))
+                continue
+            nowy.wersja = wersja
+            self.domy.append(nowy)
+            self.domy.sort(key=lambda r: r.dom_id)
+            self._uruchom(nowy)
+            log.warning("dom %d: srodowisko uruchomione ponownie po awarii (proba %d)",
+                        dom_id, self._serie[dom_id].proba if dom_id in self._serie else 1)
+            if p is not None:
+                try:
+                    p.po_zmianie(dom_id, nowy)
+                except Exception:
+                    log.exception("dom %d: blad po restarcie (panel)", dom_id)
+
     async def zamknij(self, flush_seconds: float) -> None:
         for rt in self.domy:
             await rt.zamknij(flush_seconds)
+
+
+def _czas(sekundy: float) -> str:
+    return f"{int(sekundy // 60)} min" if sekundy >= 60 else f"{int(sekundy)} s"
+
+
+def _teraz_utc():
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    return datetime.now(UTC)
