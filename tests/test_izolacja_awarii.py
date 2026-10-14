@@ -264,19 +264,51 @@ async def test_tick_loop_dotyka_tetna_domu_a_nie_pliku(tmp_path):
     assert plik.exists()
 
 
-async def test_eskalacja_do_restartu_poda_po_serii_awarii():
-    """Dom padajacy bez konca: po RESTART_ESKALACJA awariach z rzedu nadzorca
+async def _seria_awarii(s: Swiat, n: dm.Nadzorca, zadanie, dom: int, ile: int) -> None:
+    for _ in range(ile):
+        await _czekaj(lambda: dom in n._restarty or zadanie.done())
+        if zadanie.done():
+            return
+        s.zegar.t = n._restarty[dom][0]
+        budowy = s.budowy.count(dom)
+        await _czekaj(lambda b=budowy: s.budowy.count(dom) == b + 1)
+
+
+async def test_eskalacja_dom_1_restartuje_poda():
+    """Dom 1 padajacy bez konca: po RESTART_ESKALACJA awariach z rzedu nadzorca
     konczy proces kodem 1 (k8s restartuje poda) — inaczej Dom 1 krecilby sie
     w restartach w procesie z zielonym liveness."""
     s = Swiat()
+    s.psuj = {DOM_1: True, DOM_T: False}
     n = s.nadzorca()
     stop, zadanie = await _uruchom(s, n)
-    for _ in range(dm.RESTART_ESKALACJA):
-        await _czekaj(lambda: DOM_T in n._restarty or zadanie.done())
-        assert not zadanie.done()
-        s.zegar.t = n._restarty[DOM_T][0]
-        budowy = s.budowy.count(DOM_T)
-        await _czekaj(lambda b=budowy: s.budowy.count(DOM_T) == b + 1)
+    await _seria_awarii(s, n, zadanie, DOM_1, dm.RESTART_ESKALACJA)
     assert await asyncio.wait_for(zadanie, timeout=3) == 1
-    assert s.alarmy[-1][0] == "Dom 2: monitoring zatrzymany — restart poda"
+    assert s.alarmy[-1][0] == "Dom 1: monitoring zatrzymany — restart poda"
+    stop.set()
+
+
+async def test_inny_dom_padajacy_bez_konca_nie_restartuje_poda():
+    """Dom 2 padajacy bez konca nie moze co ~2 h przerywac zdrowego Domu 1:
+    zostaje backoff (co 30 min) i alarm, proces trwa."""
+    s = Swiat()
+    n = s.nadzorca()
+    stop, zadanie = await _uruchom(s, n)
+    await _seria_awarii(s, n, zadanie, DOM_T, dm.RESTART_ESKALACJA + 3)
+    await _czekaj(lambda: DOM_T in n._restarty)
+    assert not zadanie.done()
+    assert n._restarty[DOM_T][0] - s.zegar.t == dm.RESTART_MAX
+    assert [rt.dom_id for rt in n.domy] == [DOM_1]
+    stop.set()
+    assert await zadanie == 0
+
+
+async def test_eskalacja_gdy_zaden_dom_nie_chodzi():
+    """Jedyny dom (tu: nie Dom 1) padajacy bez konca — nic nie chodzi, restart poda."""
+    s = Swiat()
+    n = dm.Nadzorca([s.srodowisko(DOM_T)], flush_seconds=0.1, odbuduj=s.srodowisko,
+                    alarm=s.alarm, tetno_procesu=s.tetno, zegar=s.zegar, okres_nadzoru=0.01)
+    stop, zadanie = await _uruchom(s, n)
+    await _seria_awarii(s, n, zadanie, DOM_T, dm.RESTART_ESKALACJA)
+    assert await asyncio.wait_for(zadanie, timeout=3) == 1
     stop.set()

@@ -1634,7 +1634,7 @@ def make_handler(
             # z config.yaml: MDM_ADMIN_TOKEN jak dotad. Inny dom bez bazy — nic.
             q = ctx.queries
             if getattr(q, "mdm_z_bazy", False):
-                return q.mdm
+                return sprawdz_zakres_mdm(q, ctx.dom_id)
             return mdm if ctx.dom_id == dm.DOM_1 else None
 
         def _udid_domu(self, ctx: KontekstDomu, udid: str, api: MdmApi | None = None) -> None:
@@ -2083,18 +2083,31 @@ def queries_domow(cfg: Config, konfiguracja_domu: KonfiguracjaDomu | None = None
                 q.mdm.close()
                 q.mdm = None
             if q.mdm is not None and dom.id != dm.DOM_1:
-                try:
-                    zakres = zakres_z_whoami(dom.id, q.mdm.request("GET", "/api/whoami"))
-                except MdmError as exc:
-                    log.error("panel: dom %d: zakres tokenu MDM nieznany (%s) — MDM wylaczone",
-                              dom.id, exc)
-                    zakres = None
-                if zakres is None:
-                    q.mdm.close()
-                    q.mdm = None
+                q.mdm_do_sprawdzenia = True
+                sprawdz_zakres_mdm(q, dom.id)
         return q
 
     return zbuduj
+
+
+def sprawdz_zakres_mdm(q: PanelQueries, dom_id: int) -> MdmApi | None:
+    """Zakres tokenu MDM domu != 1 wg serwera (/api/whoami). Odmowa — MDM domu
+    wylaczone do przeladowania; serwer nieosiagalny — brak MDM w TYM zadaniu,
+    ponowna proba przy nastepnym (fail-closed, bez trwalego wylaczenia)."""
+    if not getattr(q, "mdm_do_sprawdzenia", False) or q.mdm is None:
+        return q.mdm
+    try:
+        zakres = zakres_z_whoami(dom_id, q.mdm.request("GET", "/api/whoami"))
+    except MdmError as exc:
+        log.error("panel: dom %d: zakres tokenu MDM nieznany (%s) — ponowie przy "
+                  "nastepnym zadaniu", dom_id, exc)
+        return None
+    q.mdm_do_sprawdzenia = False
+    if zakres is None:
+        log.error("panel: dom %d: token MDM nie jest tokenem tego domu — MDM wylaczone", dom_id)
+        q.mdm.close()
+        q.mdm = None
+    return q.mdm
 
 
 def _sejf_procesu():

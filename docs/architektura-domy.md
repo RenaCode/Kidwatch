@@ -921,9 +921,11 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
     instancji od razu, kolejne z serii co 1 h, 2 h… do doby; czujka domu
     (`WATCHDOG`) zapisana do kolejki domu przed zamknięciem. Plik tętna
     procesu (liveness) dotyka nadzorca co 10 s — nie tik Domu 1. **Eskalacja**:
-    `RESTART_ESKALACJA` (8) awarii domu z rzędu bez 30 min spokoju (~2 h)
-    = alarm „monitoring zatrzymany — restart poda” i koniec procesu kodem 1,
-    k8s restartuje poda jak przed E3b. Bez `odbuduj` (testy E1) — koniec
+    `RESTART_ESKALACJA` (8) awarii z rzędu bez 30 min spokoju (~2 h)
+    **Domu 1** albo domu, gdy żaden inny nie chodzi = alarm „monitoring
+    zatrzymany — restart poda” i koniec procesu kodem 1, k8s restartuje poda
+    jak przed E3b. Inny dom padający bez końca nie przerywa zdrowego Domu 1:
+    backoff co 30 min i alarm. Bez `odbuduj` (testy E1) — koniec
     zadania = kod 1 jak dotąd. Etykieta zapisu z `/` bez domu — 400.
   - **Nie zrobione w E3b** (przed E6): `run` dalej uruchamia tylko Dom 1
     (start domów ≠ 1 z alarmem wstrzymanej kolejki — osobny krok), urządzenie

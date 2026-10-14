@@ -1715,9 +1715,11 @@ RESTART_PIERWSZY = 60.0
 RESTART_MAX = 1800.0
 #: Dom dzialajacy tyle po restarcie konczy serie awarii (odstep od nowa).
 RESTART_STABILNY = 1800.0
-#: Eskalacja: tyle awarii domu z rzedu (bez 30 min spokoju; ~2 h restartow
-#: w procesie) = koniec procesu kodem 1 — k8s restartuje poda jak przed E3b.
-#: Restart w procesie nie naprawi np. zepsutego stanu biblioteki czy pamieci.
+#: Eskalacja: tyle awarii z rzedu (bez 30 min spokoju; ~2 h restartow
+#: w procesie) DOMU 1 albo domu, gdy zaden inny nie chodzi = koniec procesu
+#: kodem 1 — k8s restartuje poda jak przed E3b. Restart w procesie nie naprawi
+#: np. zepsutego stanu biblioteki czy pamieci. Inny dom padajacy bez konca
+#: nie restartuje poda (przerwalby zdrowy Dom 1): zostaje backoff i alarm.
 RESTART_ESKALACJA = 8
 #: Tik stojacy dluzej niz tyle okresow = awaria domu (najmniej MIN_TETNO s).
 TETNO_OKRESY = 3
@@ -1844,11 +1846,11 @@ class Nadzorca:
     nowa po 1, 2, 4... min (najwyzej co 30 min; seria konczy sie po 30 min
     spokoju). Kazda awaria: alarm instancji i czujka domu (notka w kolejce
     domu) — pierwsza od razu, kolejne z serii co 1 h, 2 h... najwyzej co dobe.
-    Pozostale domy chodza dalej. Po RESTART_ESKALACJA awariach jednego domu
-    z rzedu (~2 h) nadzorca konczy proces kodem 1 — eskalacja do restartu
-    poda. Poza tym proces konczy sie tylko po `stop` albo przy awarii samego
-    nadzorcy; tetno procesu (`tetno_procesu`, liveness) dotyka
-    nadzorca, a nie tik ktoregos domu.
+    Pozostale domy chodza dalej. Po RESTART_ESKALACJA awariach z rzedu (~2 h)
+    Domu 1 albo domu, gdy zaden inny nie chodzi, nadzorca konczy proces
+    kodem 1 — eskalacja do restartu poda. Poza tym proces konczy sie tylko
+    po `stop` albo przy awarii samego nadzorcy; tetno procesu
+    (`tetno_procesu`, liveness) dotyka nadzorca, a nie tik ktoregos domu.
 
     Z `przeladowanie` (§5.1) nadzorca co `okres` sekund porownuje
     `domy.wersja` z wersja dzialajacego srodowiska i przy roznicy restartuje
@@ -2273,7 +2275,8 @@ class Nadzorca:
     async def _zaplanuj_restart(self, dom_id: int, home: HomeConfig, wersja: int | None,
                                 powod: str, alarm: float | None) -> None:
         seria = self._serie.get(dom_id)
-        if seria is not None and seria.proba > RESTART_ESKALACJA:
+        if (seria is not None and seria.proba > RESTART_ESKALACJA
+                and (dom_id == DOM_1 or not self.domy)):
             log.error("dom %d: %d awarii z rzedu (%s) — restarty w procesie nie pomagaja, "
                       "koniec procesu (k8s zrestartuje poda)", dom_id, seria.proba - 1, powod)
             await self._alarm(f"Dom {dom_id}: monitoring zatrzymany — restart poda",

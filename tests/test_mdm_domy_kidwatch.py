@@ -415,3 +415,58 @@ async def test_czujka_instancji_po_przerwie_nie_wysyla_zaleglosci(mdm2, tmp_path
         assert alarmy == ["MDM: odrzucona proba podszycia"]
     finally:
         store.close()
+
+
+def test_blad_whoami_inny_niz_404_nie_ustala_zakresu(mdm2, tmp_path, monkeypatch):
+    """503/500 z /api/whoami: obieg przerwany, zakres NIEustalony (ponowienie
+    w nastepnym obiegu) — nie przejscie na porownanie z MDM_ADMIN_TOKEN."""
+    svc, url, instancja, token_2 = mdm2
+    cfg = MdmConfig(enabled=True, url=url)
+    store = Store(tmp_path / "k.db")
+    oryginal = MdmApi.request
+    stan = {"blad": True}
+
+    def chwilowo_nie(self, method, path, body=None):
+        if path == "/api/whoami" and stan["blad"]:
+            raise mdm_mod.MdmError(503, "serwer MDM nieosiagalny")
+        return oryginal(self, method, path, body)
+
+    monkeypatch.setattr(MdmApi, "request", chwilowo_nie)
+    mdm_mod.ZAKRESY_CZUJEK.clear()
+    try:
+        # Przypuszczenie z env (instancja) dla tokenu Domu 2 — serwer by je obalil.
+        w = MdmWatcher(MdmApi(cfg, token_2), store, cfg, ZAKRES_INSTANCJA, dom_id=DOM_1)
+        with pytest.raises(mdm_mod.MdmError) as exc:
+            w.poll(datetime.now(UTC))
+        assert exc.value.status == 503
+        assert mdm_mod.ZAKRESY_CZUJEK == {} and store.get_meta(mdm_mod.CURSOR_KEY) is None
+        stan["blad"] = False
+        with pytest.raises(mdm_mod.MdmError) as exc:
+            w.poll(datetime.now(UTC))
+        assert exc.value.status == 403  # nastepny obieg pyta serwer od nowa
+    finally:
+        mdm_mod.ZAKRESY_CZUJEK.clear()
+        store.close()
+
+
+def test_panel_ponawia_whoami_po_bledzie(panel2, monkeypatch):
+    """Nieudane /api/whoami domu != 1: brak MDM w tym zadaniu, ale nastepne
+    zadanie pyta znowu (bez czekania na przeladowanie konfiguracji)."""
+    srv = panel2
+    oryginal = MdmApi.request
+    stan = {"blad": True}
+
+    def chwilowo_nie(self, method, path, body=None):
+        if path == "/api/whoami" and stan["blad"]:
+            raise mdm_mod.MdmError(503, "serwer MDM nieosiagalny")
+        return oryginal(self, method, path, body)
+
+    monkeypatch.setattr(MdmApi, "request", chwilowo_nie)
+    srv.domy_panelu.zapomnij(DOM_2)
+    url = f"/api/domy/{DOM_2}/mdm"
+    st, _, body = call(srv, "GET", url, headers=sso(srv, "rodzic-2"))
+    assert st == 200 and body["available"] is False
+    stan["blad"] = False
+    st, _, body = call(srv, "GET", url, headers=sso(srv, "rodzic-2"))
+    assert st == 200 and body["available"] is True
+    assert [d["udid"] for d in body["devices"]] == [UDID_B]
