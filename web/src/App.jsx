@@ -269,13 +269,13 @@ function AccountMenu({ user, onProfile, onSignOut }) {
 // Przelacznik aplikacji RenaCode (siatka 3x3 jak w Jirze). Okienko z lista
 // linkow: Tab przechodzi po nich naturalnie, Escape i klik poza zamykaja.
 // Linki w tej samej karcie - Authelia trzyma jedna sesje dla wszystkich.
-function AppSwitcher() {
+function AppSwitcher({ user }) {
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
   const ref = useDismiss(open, close);
   const btn = useRef(null);
   const panel = useRef(null);
-  const items = appItems();
+  const items = appItems(undefined, undefined, user);
   // Po otwarciu fokus na pierwszej pozycji, zeby klawiatura nie musiala
   // szukac okienka; Escape oddaje go przyciskowi.
   useEffect(() => {
@@ -493,7 +493,7 @@ function Panel({ user, homes, domId, onPickHome, onSignOut, onUserChanged }) {
 
       <div className="main">
         <header className={`topbar ${showSwitcher(homes) ? 'with-homes' : ''}`}>
-          <AppSwitcher />
+          <AppSwitcher user={user} />
           <span className="brand-mark mobile-only"><Icon name="logo" size={22} /></span>
           <div className="crumbs">
             <span className="crumb-brand hide-narrow">Kidwatch</span>

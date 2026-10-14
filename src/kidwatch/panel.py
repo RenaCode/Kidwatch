@@ -95,6 +95,7 @@ from .uprawnienia import (
     MDM_PODGLAD,
     OPISY,
     PODGLAD,
+    ROLE_OWNER,
     TV_APLIKACJA,
     TV_PAUZA,
     WHATSAPP,
@@ -1109,6 +1110,16 @@ def get_uprawnienie(path: str) -> str | None:
     return None if t is None else t.uprawnienie
 
 
+def pokaz_argo(session: Session, admin: bool) -> bool:
+    """Czy przelacznik aplikacji pokazuje Argo CD (`/api/auth/me`).
+
+    Tylko wlasciciel: konto z rola `wlasciciel` (users.rola — lustro Domu 1;
+    `podglad`, `bez-domu` i inne nie) albo aktywny administrator instalacji
+    (`admin` = admin_aktywny: flaga z bazy + grupa `admins`/TOTP, nigdy sam
+    naglowek)."""
+    return bool(admin) or session.rola == ROLE_OWNER
+
+
 def _cookie(name: str, value: str, max_age: int, *, http_only: bool, secure: bool) -> str:
     parts = [f"{name}={value}", "Path=/", f"Max-Age={max_age}", "SameSite=Strict"]
     if http_only:
@@ -1818,6 +1829,11 @@ def make_handler(
                 "uprawnienia": sorted(poza | (jedyny.uprawnienia if jedyny else frozenset())),
                 "domy": lista,
                 "admin_instancji": admin,
+                # Argo CD w przelaczniku aplikacji: tylko wlasciciel (rola
+                # konta `wlasciciel`, lustro Domu 1) albo aktywny administrator
+                # instalacji. Decyzja tutaj, front tylko ja czyta; samo Argo
+                # i tak stoi za Authelia z wlasna polityka dostepu.
+                "pokaz_argo": pokaz_argo(session, admin),
                 "logout_url": sso.logout_url if self._via_sso else None,
                 **auth.account(session),
             }
