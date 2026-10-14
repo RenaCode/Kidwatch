@@ -116,6 +116,16 @@ def admin_aktywny(session: Session, grupy: tuple[str, ...] | None) -> bool:
     return session.kind == "haslo" and session.totp and not session.admin_tylko_sso
 
 
+def pokaz_argo(session: Session, admin: bool) -> bool:
+    """Czy przelacznik aplikacji pokazuje Argo CD (`/api/auth/me`).
+
+    Tylko wlasciciel: konto z rola `wlasciciel` (users.rola — lustro Domu 1;
+    `podglad`, `bez-domu` i inne nie) albo aktywny administrator instalacji
+    (`admin` = admin_aktywny: flaga z bazy + grupa `admins`/TOTP, nigdy sam
+    naglowek)."""
+    return bool(admin) or session.rola == u.ROLE_OWNER
+
+
 def uprawnienia_sesji(session: Session, admin: bool) -> frozenset[str]:
     """Uprawnienia poza domem: konto + instancja (bot WhatsApp)."""
     return session.uprawnienia | (u.UPRAWNIENIA_INSTANCJI if admin else frozenset())

@@ -76,6 +76,7 @@ from .panel_domy import (
     DomyPanelu,
     KontekstDomu,
     admin_aktywny,
+    pokaz_argo,
     uprawnienia_sesji,
 )
 from .panel_integracje import PanelIntegracje
@@ -1818,6 +1819,11 @@ def make_handler(
                 "uprawnienia": sorted(poza | (jedyny.uprawnienia if jedyny else frozenset())),
                 "domy": lista,
                 "admin_instancji": admin,
+                # Argo CD w przelaczniku aplikacji: tylko wlasciciel (rola
+                # konta `wlasciciel`, lustro Domu 1) albo aktywny administrator
+                # instalacji. Decyzja tutaj, front tylko ja czyta; samo Argo
+                # i tak stoi za Authelia z wlasna polityka dostepu.
+                "pokaz_argo": pokaz_argo(session, admin),
                 "logout_url": sso.logout_url if self._via_sso else None,
                 **auth.account(session),
             }

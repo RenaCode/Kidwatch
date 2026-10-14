@@ -1011,3 +1011,24 @@ def test_bilet_2FA_konta_tylko_sso_nie_konczy_logowania(tmp_path):
     # Kontrola: zwykle konto konczy logowanie kodem zapasowym.
     _, sesja = auth.mfa(bilet_zwykly, kody["konto-zwykle"][0])
     assert sesja.login == "konto-zwykle"
+
+
+# ================================================== przelacznik: Argo CD
+def test_pokaz_argo_tylko_wlasciciel_i_administrator(domy):
+    """`pokaz_argo` w /api/auth/me: wlasciciel konta i aktywny administrator
+    tak; podglad, wlasciciel tylko cudzego domu i flaga bez grupy `admins` nie."""
+    def flaga(login: str, grupy: str = "wlasciciel") -> bool:
+        me = call(domy, "GET", "/api/auth/me", headers=sso(domy, login, grupy))[2]
+        return me["pokaz_argo"]
+
+    assert flaga("czlonek-a") is True
+    assert flaga("admin", "admins") is True
+    assert flaga("obu") is False          # podglad w Domu 1, wlasciciel w B
+    assert flaga("czlonek-b") is False    # wlasciciel tylko domu B
+    assert flaga("admin", "rodzina") is False  # flaga bez grupy admins
+
+
+def test_pokaz_argo_grupa_z_naglowka_nie_nadaje(domy):
+    """Konto `podglad` z podrobiona grupa `admins` w naglowku: dalej nie."""
+    me = call(domy, "GET", "/api/auth/me", headers=sso(domy, "obu", "admins"))[2]
+    assert me["pokaz_argo"] is False and me["admin_instancji"] is False
