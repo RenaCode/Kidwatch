@@ -702,6 +702,30 @@ select.input-field option { background: var(--bg-dark); color: var(--text-main);
   color: var(--text-main); font-family: var(--font-main); font-size: 0.88rem; padding: 11px 10px; border-radius: var(--radius-sm); }
 .account-menu button[role="menuitem"]:hover { background: rgba(255, 255, 255, 0.06); }
 
+/* Przelacznik aplikacji RenaCode: siatka 3x3 na lewym koncu paska, okienko
+   rozwija sie w prawo (jak w Jirze). Na telefonie szerokosc ograniczona
+   ekranem, zeby nie wystawalo poza strone. */
+.app-switch { position: relative; flex: none; }
+.app-switch-btn[aria-expanded="true"] { background: rgba(124, 58, 237, 0.24); border-color: rgba(167, 139, 250, 0.6); }
+.app-switch-panel { position: absolute; left: 0; top: calc(100% + 8px); z-index: 50;
+  width: 300px; max-width: calc(100vw - 32px);
+  background: rgba(20, 22, 44, 0.96); border: 1px solid var(--border-glass-strong); border-radius: var(--radius-md);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5); padding: 6px; }
+.app-switch-title { padding: 8px 10px 10px; border-bottom: 1px solid var(--border-glass); margin-bottom: 4px;
+  font-size: 0.76rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+.app-switch-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.app-item { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: var(--radius-sm);
+  color: var(--text-main); text-decoration: none; font-family: var(--font-main); }
+a.app-item:hover { background: rgba(255, 255, 255, 0.06); }
+.app-item.current { background: rgba(124, 58, 237, 0.16); }
+.app-item .badge { margin-left: auto; flex: none; }
+.app-tile { width: 34px; height: 34px; border-radius: 10px; flex: none; display: grid; place-items: center;
+  color: #fff; font-family: var(--font-display); font-weight: 700; font-size: 1rem;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16); }
+.app-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.app-text strong { font-size: 0.92rem; }
+.app-text span { font-size: 0.78rem; color: var(--text-muted); }
+
 /* ------------------------------------------------------------ pulpit */
 .dashboard { display: flex; flex-direction: column; gap: 30px; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -907,6 +931,7 @@ select.input-field option { background: var(--bg-dark); color: var(--text-main);
   .mobile-only { display: flex; }
   .topbar { gap: 12px; margin-bottom: 14px; }
   .topbar .brand-mark { width: 38px; height: 38px; border-radius: 12px; }
+  .topbar .app-switch-btn { width: 38px; height: 38px; border-radius: 12px; }
   .child-tabs.mobile-only { margin-bottom: 16px; overflow-x: auto; scrollbar-width: none; }
   .child-tabs.mobile-only::-webkit-scrollbar { display: none; }
   .child-tab { flex: none; }

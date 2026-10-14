@@ -17,6 +17,7 @@ import {
 } from './utils/domy';
 import TwoFactor from './components/TwoFactor';
 import { signOutLabel, signOutTarget, ssoDenial } from './utils/sso';
+import { appItems } from './utils/aplikacje';
 import { ALL, can, isViewer, sectionsFor } from './utils/uprawnienia';
 import { localToday } from './utils/format';
 import { isCriticalNote } from './utils/mdm';
@@ -258,6 +259,62 @@ function AccountMenu({ user, onProfile, onSignOut }) {
   );
 }
 
+// Przelacznik aplikacji RenaCode (siatka 3x3 jak w Jirze). Okienko z lista
+// linkow: Tab przechodzi po nich naturalnie, Escape i klik poza zamykaja.
+// Linki w tej samej karcie - Authelia trzyma jedna sesje dla wszystkich.
+function AppSwitcher() {
+  const [open, setOpen] = useState(false);
+  const close = useCallback(() => setOpen(false), []);
+  const ref = useDismiss(open, close);
+  const btn = useRef(null);
+  const panel = useRef(null);
+  const items = appItems();
+  // Po otwarciu fokus na pierwszej pozycji, zeby klawiatura nie musiala
+  // szukac okienka; Escape oddaje go przyciskowi.
+  useEffect(() => {
+    if (open) panel.current?.querySelector('a')?.focus();
+  }, [open]);
+  const onKeyDown = (e) => {
+    if (e.key === 'Escape' && open) { e.stopPropagation(); close(); btn.current?.focus(); }
+  };
+  return (
+    <div className="app-switch" ref={ref} onKeyDown={onKeyDown}>
+      <button ref={btn} className="icon-btn app-switch-btn" aria-label="Przełącz aplikację"
+              aria-haspopup="dialog" aria-expanded={open} aria-controls="app-switch-panel"
+              onClick={() => setOpen((v) => !v)}>
+        <Icon name="apps" />
+      </button>
+      {open && (
+        <div id="app-switch-panel" className="app-switch-panel" role="dialog"
+             aria-labelledby="app-switch-title" ref={panel}>
+          <div id="app-switch-title" className="app-switch-title">Aplikacje RenaCode</div>
+          <ul className="app-switch-list">
+            {items.map((a) => {
+              const body = (
+                <>
+                  <span className="app-tile" style={{ background: a.color }} aria-hidden="true">{a.initial}</span>
+                  <span className="app-text">
+                    <strong>{a.name}</strong>
+                    <span>{a.desc}</span>
+                  </span>
+                  {a.current && <span className="badge info">ta aplikacja</span>}
+                </>
+              );
+              return (
+                <li key={a.key}>
+                  {a.current
+                    ? <div className="app-item current" aria-current="page">{body}</div>
+                    : <a className="app-item" href={a.href}>{body}</a>}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Zamykanie wysuwanego menu: klik poza nim albo Escape.
 function useDismiss(open, close) {
   const ref = useRef(null);
@@ -422,6 +479,7 @@ function Panel({ user, homes, domId, onPickHome, onSignOut, onUserChanged }) {
 
       <div className="main">
         <header className="topbar">
+          <AppSwitcher />
           <span className="brand-mark mobile-only"><Icon name="logo" size={22} /></span>
           <div className="crumbs">
             <span className="crumb-brand hide-narrow">Kidwatch</span>
