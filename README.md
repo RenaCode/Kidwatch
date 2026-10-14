@@ -488,9 +488,13 @@ The invitee opens the link:
 
 Accepting = confirming the privacy notice (the installation administrator
 sees all household data, every visit audited; the cluster operator has
-technical access to the database and key). An invitation is single-use,
-can be revoked at any time, dies after 5 failed attempts (wrong login,
-used/expired/revoked token), and every address is limited to 10 failed
+technical access to the database and key). Creating one needs a fresh password or 2FA
+confirmation. An invitation is single-use, can be revoked at any time,
+stops working as soon as the inviter loses the right to issue it (removed
+from the household, `dom.zaproszenia` revoked, role lowered below the
+invited role), dies after 5 failed unauthenticated attempts (wrong login on
+the no-SSO screen, used/expired/revoked token — a wrong account logged in
+through Authelia is refused without burning the link), and every address is limited to 10 failed
 attempts per 15 minutes (also for tokens that do not exist). It grants
 membership only in its household — never the inviter's other households —
 does not change the role of an existing member and cannot be accepted by
@@ -596,8 +600,13 @@ Adding a person from outside the family (another household, E4):
    procedure "Nowa osoba" in `docs/zadania-wlasciciela.md`) — it opens the
    Kidwatch panel and nothing else.
 2. The household owner creates an invitation with that login as the expected
-   login and sends the link. No `user-add`: the panel account appears when
-   the invitation is accepted.
+   login (the screen warns when it is left empty under SSO) and sends the
+   link. No `user-add`: the panel account appears when the invitation is
+   accepted.
+3. Tell the invitee to log in at `https://auth.renacode.com` (and register
+   2FA) **before** opening the link — or simply open the link a second time:
+   the first Authelia login redirect drops the `#token` part of the address,
+   and the page then asks to open the link again.
 
 **Roles and permissions** (from the panel database, never from
 `Remote-Groups`; code: `src/kidwatch/uprawnienia.py`). Every panel route is

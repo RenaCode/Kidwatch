@@ -1740,7 +1740,8 @@ def make_handler(
                 raise AuthError(503, "Panel nie ma klucza PANEL_TOTP_KEY — weryfikacja "
                                      "dwuetapowa jest niedostępna. Poproś administratora.")
             wynik = p.przyjmij(token, ip=ip, login=nowy, sso=False,
-                               haslo=self._str(data, "haslo", 512), zaloz=True)
+                               haslo=self._str(data, "haslo", 512), zaloz=True,
+                               uwierzytelniony=False)
             self._json(200, {"ok": True, "dom_id": wynik.dom_id, "rola": wynik.rola,
                              "login": nowy, "wymaga_totp": True})
 

@@ -546,6 +546,12 @@ function NewInvitation({ data, onDone }) {
                    onChange={(e) => setDla(e.target.value)} />
           </label>
         </div>
+        {data.sso && !dla.trim() && (
+          <p className="notice" style={{ margin: '10px 0 0', fontSize: '0.8rem' }}>
+            Wpisz login osoby z Authelii. Bez niego link przyjmie każdy, kto go dostanie
+            i ma konto SSO z dostępem do Kidwatcha.
+          </p>
+        )}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 10, maxWidth: 560 }}>
           <ConfirmField value={confirm} onChange={setConfirm} />
           <button className="btn-ghost" type="submit"

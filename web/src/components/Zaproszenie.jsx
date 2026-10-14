@@ -16,6 +16,13 @@ import { roleLabel } from '../utils/domy';
 import { newAccountProblem, tokenFromHash } from '../utils/zaproszenia';
 
 const TOKEN_KEY = 'kidwatch.zaproszenie';
+/* Pierwsze wejscie przez Authelie: przekierowanie na portal i z powrotem
+   gubi koncowke adresu (#token) zanim ta strona sie zaladuje - sessionStorage
+   nie pomoze (strona nie zdazyla ruszyc). Stad prosba o ponowne otwarcie
+   linku: drugi raz Authelia juz nie przekierowuje. */
+const NO_TOKEN = 'W adresie nie ma tokenu zaproszenia. Jeśli przed chwilą logowałeś(-aś) się '
+  + 'w SSO, logowanie zgubiło końcówkę linku — otwórz link z zaproszenia jeszcze raz '
+  + '(teraz już bez logowania). Inaczej skopiuj link ponownie w całości.';
 const HOME_KEY = 'kidwatch.dom';
 
 function readToken() {
@@ -44,7 +51,7 @@ function goHome(domId) {
 export default function Zaproszenie() {
   const [token] = useState(readToken);
   const [info, setInfo] = useState(null);
-  const [error, setError] = useState(token ? null : 'Link jest niepełny — skopiuj go jeszcze raz w całości.');
+  const [error, setError] = useState(token ? null : NO_TOKEN);
   const [read, setRead] = useState(false);
   const [form, setForm] = useState({ login: '', haslo: '', haslo2: '' });
   const [busy, setBusy] = useState(false);

@@ -1007,6 +1007,18 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
     adresu (10 / 15 min, także nieistniejące tokeny). Członek domu i konto
     administracyjne dostają 409 **bez** zużycia tokenu. Argon2 przy zakładaniu
     konta w tym samym jednym slocie co logowanie.
+  - **Po przeglądzie #72**: (1) tworzenie wymaga świeżego hasła/2FA — test
+    z kanarkiem; (2) prawo zapraszającego sprawdzane także przy podglądzie
+    i przyjęciu (`zapraszajacy_moze`, w transakcji): wypisanie z domu,
+    odebranie `dom.zaproszenia` albo rola obniżona pod rolę zaproszenia
+    zamyka jego oczekujące linki (410); (3) zły login **zalogowanego** (SSO,
+    sesja) nie podbija `proby` ani licznika adresu — to nie zgadywanie,
+    a inaczej każdy z linkiem i kontem SSO spaliłby zaproszenie; liczą się
+    tylko próby nieuwierzytelnione (ekran „ustaw hasło”) i złe/martwe
+    tokeny; (4) pierwsze logowanie w Authelii gubi `#token` (przekierowanie
+    przed załadowaniem strony) — ekran prosi o ponowne otwarcie linku,
+    README każe zalogować się w SSO wcześniej; przy SSO ekran ostrzega
+    o pustym oczekiwanym loginie.
   - **Informacja o prywatności** (§8 decyzja 5) idzie z serwera
     (`INFORMACJA_O_PRYWATNOSCI`) i jest pokazywana przed przyjęciem;
     `potwierdzam: true` jest wymagane, a wpis `zaproszenie.przyjete`

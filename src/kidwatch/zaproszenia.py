@@ -28,13 +28,17 @@ ZABEZPIECZENIA
     czlonkostwo — z dwoch rownoleglych przyjec przechodzi jedno;
   * wygasa, mozna je odwolac w kazdej chwili; wygasle i odwolane znikaja po
     30 dniach (`sprzataj`);
-  * limit MAX_PROB nieudanych prob na token (zly login wzgledem `dla`, proba
-    na zuzytym/odwolanym/wygaslym) i limit per adres (IP_MAX_FAILED w oknie,
+  * limit MAX_PROB nieudanych prob na token (zly login wzgledem `dla` na
+    ekranie bez SSO, proba na zuzytym/odwolanym/wygaslym — NIE zly login
+    zalogowanego w SSO: to nie zgadywanie) i limit per adres (IP_MAX_FAILED w oknie,
     jak `ip_failures` logowania) — takze dla tokenow, ktorych nie ma;
   * sufit roli: zaproszenie nie nadaje roli wyzszej niz rola zapraszajacego
     (`wlasciciel-domu` i administrator — dowolna); nie podnosi roli
     istniejacego czlonka (tylko nowy czlonek) i nie przyjmuje go konto
     administracyjne (§2.3: bez czlonkostw);
+  * prawo zapraszajacego sprawdzane takze przy PRZYJECIU (`zapraszajacy_moze`):
+    wypisanie z domu albo degradacja zamyka jego oczekujace linki;
+  * utworzenie wymaga swiezego potwierdzenia haslem albo kodem 2FA;
   * przyjecie daje czlonkostwo WYLACZNIE w domu zaproszenia — inne domy
     zapraszajacego zostaja nieznane (404).
 
@@ -223,6 +227,30 @@ def dozwolone_role(rola_zapraszajacego: str | None, upr_zapraszajacego: frozense
             and u.ROLE_DOMU_UPRAWNIENIA[r] <= upr_zapraszajacego]
 
 
+NIEWAZNE_BEZ_PRAWA = ("To zaproszenie straciło ważność: osoba, która je wysłała, nie może "
+                      "już zapraszać do tego domu z tą rolą. Poproś o nowe.")
+
+
+def zapraszajacy_moze(conn: sqlite3.Connection, z: Zaproszenie) -> bool:
+    """Czy zapraszajacy NADAL moze wydac to zaproszenie (przeglad #72, 2).
+
+    Link zyje do 7 dni; prawo sprawdzone tylko przy tworzeniu zostawialoby
+    dzialajace linki osoby wypisanej z domu albo zdegradowanej. Teraz:
+    konto istnieje i (a) jest czlonkiem domu z `dom.zaproszenia`, a rola
+    zaproszenia miesci sie pod jej obecnym sufitem, albo (b) bez czlonkostwa
+    ma flage administratora instalacji (grupy `admins` z naglowka tu nie ma —
+    flaga to warunek konieczny, sufitu administrator nie ma)."""
+    if z.utworzone_przez is None:
+        return False
+    stan = dm.czlonkostwo_conn(conn, z.utworzone_przez, z.dom_id)
+    if stan is None:
+        return dm.admin_instancji(conn, z.utworzone_przez)
+    upr = u.efektywne(*stan, role=u.ROLE_DOMU_UPRAWNIENIA)
+    if dm.admin_instancji(conn, z.utworzone_przez):
+        return True
+    return u.DOM_ZAPROSZENIA in upr and z.rola in dozwolone_role(stan[0], upr, admin=False)
+
+
 @dataclass(frozen=True)
 class Przyjecie:
     """Wynik przyjecia zaproszenia."""
@@ -409,10 +437,18 @@ class Zaproszenia:
             if zid is not None:
                 conn.execute("UPDATE zaproszenia SET proby = proby + 1 WHERE id = ?", (zid,))
 
-    def _token(self, token: str, ip: str, login: str | None) -> Zaproszenie:
+    def _token(self, token: str, ip: str, login: str | None,
+               uwierzytelniony: bool = True) -> Zaproszenie:
         """Zaproszenie z tokenu, ktore jeszcze mozna przyjac — inaczej
         AuthError (i licznik prob). `login` = None: bez sprawdzenia `dla`
-        (ekran bez SSO, login wpisze zaproszony)."""
+        (ekran bez SSO, login wpisze zaproszony).
+
+        `uwierzytelniony`: login pochodzi z Authelii albo z sesji panelu.
+        Wtedy `dla` != login NIE zjada prob tokenu ani adresu — to nie
+        zgadywanie (token jest wazny, a tozsamosc potwierdzona), a inaczej
+        kazdy z linkiem i kontem SSO spalilby zaproszenie wlasciwej osobie
+        (przeglad #72, 3c). Licza sie proby nieuwierzytelnione (ekran
+        „ustaw haslo”) i kazdy zly albo martwy token."""
         self._sprawdz_adres(ip)
         if not isinstance(token, str) or not token or len(token) > MAX_TOKEN:
             self._porazka(ip)
@@ -436,21 +472,28 @@ class Zaproszenia:
                 ZABLOKOWANE: "To zaproszenie zablokowano po nieudanych próbach — poproś o nowe.",
             }[stan])
         if login is not None and z.dla is not None and z.dla != login:
-            self._porazka(ip, z.id)
+            if not uwierzytelniony:
+                self._porazka(ip, z.id)
             log.warning("zaproszenia: zaproszenie #%d dla innego konta (proba %r z %s)", z.id,
                         login, ip)
             raise AuthError(403, "To zaproszenie jest dla innego konta. Zaloguj się w SSO "
                                  "jako osoba, którą zaproszono.")
+        with self._conn() as conn:
+            if not zapraszajacy_moze(conn, z):
+                log.warning("zaproszenia: zaproszenie #%d bez prawa zapraszajacego", z.id)
+                raise AuthError(410, NIEWAZNE_BEZ_PRAWA)
         return z
 
-    def sprawdz(self, token: str, *, ip: str, login: str | None) -> Zaproszenie:
+    def sprawdz(self, token: str, *, ip: str, login: str | None,
+                uwierzytelniony: bool = True) -> Zaproszenie:
         """Podglad przed przyjeciem (dom, rola, waznosc). Te same bariery
         i liczniki co przyjecie — podglad nie jest wyrocznia bez limitu."""
-        return self._token(token, ip, login)
+        return self._token(token, ip, login, uwierzytelniony)
 
     # ------------------------------------------------------------ przyjecie
     def przyjmij(self, token: str, *, ip: str, login: str, sso: bool,
-                 haslo: str | None = None, zaloz: bool = False) -> Przyjecie:
+                 haslo: str | None = None, zaloz: bool = False,
+                 uwierzytelniony: bool = True) -> Przyjecie:
         """Przyjecie zaproszenia przez `login`.
 
         `zaloz`=True: konta moze nie byc — powstaje w tej transakcji (SSO:
@@ -458,7 +501,7 @@ class Zaproszenia:
         zaproszonego). `zaloz`=False: konto musi istniec (sesja panelu).
         Wszystko albo nic: zuzycie tokenu, konto, czlonkostwo i wpis
         w dzienniku w jednej transakcji."""
-        z = self._token(token, ip, login)
+        z = self._token(token, ip, login, uwierzytelniony)
         if haslo is not None:
             check_password_policy(haslo)
         # Argon2 (64 MiB) poza transakcja i tylko po waznym tokenie: zgadywanie
@@ -505,6 +548,10 @@ class Zaproszenia:
                 # jest tez zuzywane — moze trafic do wlasciwej osoby.
                 raise AuthError(409, "Należysz już do tego domu. Zmianę roli robi osoba "
                                      "zarządzająca kontami.")
+        # Prawo zapraszajacego jeszcze raz, w transakcji: odebrane miedzy
+        # sprawdzeniem tokenu a zapisem tez zamyka link.
+        if not zapraszajacy_moze(conn, z):
+            raise AuthError(410, NIEWAZNE_BEZ_PRAWA)
         # Warunkowo: z dwoch rownoleglych przyjec przechodzi jedno.
         if conn.execute(
             "UPDATE zaproszenia SET przyjete_przez = ?, przyjete_przez_login = ?, "
@@ -651,7 +698,7 @@ class PanelZaproszenia:
     def sprawdz(self, token: str, *, ip: str, tryb: str, login: str | None) -> dict:
         """Podglad dla ekranu przyjecia. `tryb`: `sso` (login z Authelii),
         `sesja` (zalogowane konto panelu) albo `haslo` (nowe konto bez SSO)."""
-        z = self.z.sprawdz(token, ip=ip, login=login)
+        z = self.z.sprawdz(token, ip=ip, login=login, uwierzytelniony=tryb != "haslo")
         konto = None
         if login is not None:
             try:
@@ -670,9 +717,11 @@ class PanelZaproszenia:
         }
 
     def przyjmij(self, token: str, *, ip: str, login: str, sso: bool,
-                 haslo: str | None = None, zaloz: bool = False) -> Przyjecie:
+                 haslo: str | None = None, zaloz: bool = False,
+                 uwierzytelniony: bool = True) -> Przyjecie:
         try:
-            p = self.z.przyjmij(token, ip=ip, login=login, sso=sso, haslo=haslo, zaloz=zaloz)
+            p = self.z.przyjmij(token, ip=ip, login=login, sso=sso, haslo=haslo, zaloz=zaloz,
+                                uwierzytelniony=uwierzytelniony)
         except ValueError as exc:  # polityka hasla
             raise AuthError(400, str(exc)) from exc
         except dm.OstatniZarzadzajacy as exc:  # pragma: no cover — dopisanie nie odbiera

@@ -367,14 +367,44 @@ def test_dla_rozne_od_remote_user(domy):
     assert _naruszenia_dla(domy) == []
     token = token_od(domy, dla=GOSC)
     przyjmij(domy, token, gosc("ktos-inny"))
-    # Wlasciwa osoba nadal przyjmie (jedna nieudana proba na token).
+    # Wlasciwa osoba nadal przyjmie.
     assert przyjmij(domy, token, gosc())[0] == 200
+
+
+def _spalone_przez_zalogowanego(srv) -> list[str]:
+    """Zalogowany w SSO z niewlasciwym loginem probuje wiele razy (podglad
+    i przyjecie). To nie zgadywanie — token nie moze sie spalic ani adres
+    zablokowac; wlasciwa osoba przyjmuje dalej (przeglad #72, 3c)."""
+    body = zapros(srv, "czlonek-b", DOM_B, dla=GOSC)[2]
+    ip = "203.0.113.5"
+    for _ in range(MAX_PROB + IP_MAX_FAILED):
+        call(srv, "POST", "/api/zaproszenia/sprawdz", {"token": body["token"]},
+             gosc("ktos-inny", ip=ip))
+        przyjmij(srv, body["token"], gosc("ktos-inny", ip=ip))
+    zle = []
+    if _wiersz(srv, body["zaproszenie"]["id"])["proby"] != 0:
+        zle.append("proby tokenu")
+    status = przyjmij(srv, body["token"], gosc(ip=ip))[0]
+    if status != 200:
+        zle.append(f"wlasciwa osoba: {status}")
+    return zle
+
+
+def test_zly_login_zalogowanego_nie_pali_zaproszenia(domy):
+    assert _spalone_przez_zalogowanego(domy) == []
+
+
+def test_kanarek_zly_login_zalogowanego_liczony(domy, monkeypatch):
+    prawdziwa = zp.Zaproszenia._token
+    monkeypatch.setattr(zp.Zaproszenia, "_token",
+                        lambda self, token, ip, login, *_: prawdziwa(self, token, ip, login, False))
+    assert _spalone_przez_zalogowanego(domy)
 
 
 def test_kanarek_dla(domy, monkeypatch):
     prawdziwa = zp.Zaproszenia._token
     monkeypatch.setattr(zp.Zaproszenia, "_token",
-                        lambda self, token, ip, login: prawdziwa(self, token, ip, None))
+                        lambda self, token, ip, login, *_: prawdziwa(self, token, ip, None))
     assert _naruszenia_dla(domy)
 
 
@@ -458,26 +488,44 @@ def test_kanarek_token_w_logu(domy, caplog, monkeypatch):
 
 
 # ============================================================ limit prob
+HASLO_GOSCIA = "nowe-haslo-goscia-1"
+
+
+def _nowe_konto(srv, token: str, login: str, ip: str):
+    return call(srv, "POST", "/api/zaproszenia/przyjmij",
+                {"token": token, "potwierdzam": True, "login": login, "haslo": HASLO_GOSCIA},
+                {"X-Forwarded-For": ip})
+
+
 def _naruszenia_limitu_tokenu(srv) -> list[str]:
-    """MAX_PROB nieudanych prob na token (zly login) — potem nie przyjmie
-    nawet wlasciwa osoba."""
-    token = token_od(srv, dla=GOSC)
+    """MAX_PROB nieudanych prob na token bez uwierzytelnienia (ekran „ustaw
+    haslo”, zly login wzgledem `dla`) — potem nie przyjmie nawet wlasciwa
+    osoba."""
+    token = _token_bez_sso(srv, dla=GOSC)
     for i in range(MAX_PROB):
-        assert przyjmij(srv, token, gosc(f"ktos-{i}", ip=f"192.0.2.{i + 1}"))[0] == 403
-    status, _, _ = przyjmij(srv, token, gosc(ip="192.0.2.100"))
+        assert _nowe_konto(srv, token, f"ktos-{i}", f"192.0.2.{i + 1}")[0] == 403
+    status = _nowe_konto(srv, token, GOSC, "192.0.2.100")[0]
     return [] if status == 410 and not _konto(srv, GOSC) else [f"przyjete po probach ({status})"]
 
 
-def test_limit_prob_na_token(domy):
-    assert _naruszenia_limitu_tokenu(domy) == []
-    lista = call(domy, "GET", f"/api/domy/{DOM_B}/zaproszenia",
-                 headers=sso(domy, "czlonek-b"))[2]["zaproszenia"]
-    assert lista[0]["stan"] == "zablokowane"
+def test_limit_prob_na_token(tmp_path, monkeypatch):
+    srv = _bez_sso(tmp_path, monkeypatch)
+    try:
+        assert _naruszenia_limitu_tokenu(srv) == []
+        with _db(srv) as conn:
+            # MAX_PROB zlych loginow + proba wlasciwej osoby na zablokowanym.
+            assert conn.execute("SELECT proby FROM zaproszenia").fetchone()[0] == MAX_PROB + 1
+    finally:
+        srv.shutdown()
 
 
-def test_kanarek_limit_prob_na_token(domy, monkeypatch):
+def test_kanarek_limit_prob_na_token(tmp_path, monkeypatch):
     monkeypatch.setattr(zp, "MAX_PROB", 10**6)
-    assert _naruszenia_limitu_tokenu(domy)
+    srv = _bez_sso(tmp_path, monkeypatch)
+    try:
+        assert _naruszenia_limitu_tokenu(srv)
+    finally:
+        srv.shutdown()
 
 
 def test_limit_prob_per_adres_takze_dla_nieistniejacych_tokenow(domy):
@@ -532,7 +580,7 @@ def test_konto_SSO_w_locie_tylko_z_waznym_tokenem(domy):
 def test_kanarek_konto_bez_tokenu(domy, monkeypatch):
     """Mutacja: wyszukanie zaproszenia ignoruje token (bierze dowolne
     oczekujace) — konto powstaje z tokenem, ktorego nie ma."""
-    def bez_sprawdzenia(self, token, ip, login):
+    def bez_sprawdzenia(self, token, ip, login, *_):
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM zaproszenia WHERE przyjete_at IS NULL AND "
                                "odwolane_at IS NULL ORDER BY id").fetchone()
@@ -589,13 +637,13 @@ def _bez_sso(tmp_path, monkeypatch):
     return srv
 
 
-def _token_bez_sso(srv) -> str:
+def _token_bez_sso(srv, dla: str | None = None) -> str:
     from conftest import panel_login  # noqa: PLC0415
 
     c = panel_login(srv.server_address[1], "czlonek-b", HASLO)
     csrf = dict(x.split("=", 1) for x in c.split("; "))["kidwatch_csrf"]
     status, _, body = call(srv, "POST", f"/api/domy/{DOM_B}/zaproszenia/utworz",
-                           {"rola": "podglad", "confirm": HASLO},
+                           {"rola": "podglad", "confirm": HASLO, **({"dla": dla} if dla else {})},
                            {"Cookie": c, "X-CSRF-Token": csrf})
     assert status == 200, body
     assert body["instrukcja_sso"] is None  # bez SSO nie ma Authelii
@@ -776,6 +824,71 @@ async def test_powiadomienie_tylko_z_jawnym_odbiorca(monkeypatch):
 
 def test_bez_bramki_powiadamiacz_nic_nie_robi():
     assert zp.powiadamiacz(None, None, None) is zp._nic
+
+
+# ==================================================== potwierdzenie tworzenia
+def _bez_potwierdzenia(srv) -> list[str]:
+    """Tworzenie bez swiezego hasla/2FA (brak, zle) musi byc odmowione
+    i nie zostawic wiersza."""
+    zle = []
+    for confirm in ("", "zle-haslo"):
+        status, _, body = zapros(srv, "czlonek-b", DOM_B, confirm=confirm)
+        if status == 200:
+            zle.append(f"utworzone z confirm={confirm!r}")
+    with _db(srv) as conn:
+        if conn.execute("SELECT COUNT(*) FROM zaproszenia").fetchone()[0]:
+            zle.append("wiersz w bazie")
+    return zle
+
+
+def test_tworzenie_wymaga_hasla_albo_2FA(domy):
+    assert _bez_potwierdzenia(domy) == []
+    assert zapros(domy, "czlonek-b", DOM_B)[0] == 200  # kontrola pozytywna
+
+
+def test_kanarek_tworzenie_bez_potwierdzenia(domy, monkeypatch):
+    monkeypatch.setattr(PanelAuth, "reauth", lambda self, session, secret: None)
+    assert _bez_potwierdzenia(domy)
+
+
+# ============================================ prawo zapraszajacego przy przyjeciu
+def _linki_po_utracie_prawa(srv) -> list[str]:
+    """Oczekujace linki osoby, ktora stracila prawo zapraszania (wypisana
+    z domu, odebrane `dom.zaproszenia`, rola obnizona pod sufit) nie
+    otwieraja domu (przeglad #72, 2)."""
+    auth = srv.auth
+    auth.add_user("zarz2", HASLO, "zarzadca", dom_id=DOM_B)
+    auth.set_permissions("zarz2", {u.DOM_ZAPROSZENIA: True}, dom_id=DOM_B)
+    tokeny = {
+        "wypisany": token_od(srv, "obu", DOM_B, rola="wlasciciel-domu"),
+        "bez prawa": token_od(srv, "zarz2", DOM_B, rola="podglad"),
+    }
+    auth.add_user("zarz3", HASLO, "zarzadca", dom_id=DOM_B)
+    auth.set_permissions("zarz3", {u.DOM_ZAPROSZENIA: True}, dom_id=DOM_B)
+    tokeny["obnizony"] = token_od(srv, "zarz3", DOM_B, rola="zarzadca")
+    auth.remove_membership("obu", DOM_B)
+    auth.set_permissions("zarz2", {u.DOM_ZAPROSZENIA: None}, dom_id=DOM_B)
+    auth.set_role("zarz3", "podglad", dom_id=DOM_B)
+    auth.set_permissions("zarz3", {u.DOM_ZAPROSZENIA: True}, dom_id=DOM_B)
+    zle = []
+    for i, (nazwa, token) in enumerate(tokeny.items()):
+        login = f"gosc-p{i}"
+        podglad = call(srv, "POST", "/api/zaproszenia/sprawdz", {"token": token}, gosc(login))[0]
+        status = przyjmij(srv, token, gosc(login))[0]
+        if status != 410 or podglad != 410 or _konto(srv, login):
+            zle.append(f"{nazwa}: {podglad}/{status}")
+    return zle
+
+
+def test_zaproszenie_traci_waznosc_z_prawem_zapraszajacego(domy):
+    assert _linki_po_utracie_prawa(domy) == []
+    # Kontrola pozytywna: prawo jest — link dziala.
+    assert przyjmij(domy, token_od(domy), gosc())[0] == 200
+
+
+def test_kanarek_prawo_zapraszajacego_tylko_przy_tworzeniu(domy, monkeypatch):
+    monkeypatch.setattr(zp, "zapraszajacy_moze", lambda conn, z: True)
+    assert _linki_po_utracie_prawa(domy)
 
 
 # ============================================================ jednostkowe
