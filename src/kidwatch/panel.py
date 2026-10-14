@@ -76,6 +76,7 @@ from .panel_domy import (
     DomyPanelu,
     KontekstDomu,
     admin_aktywny,
+    pokaz_argo,
     uprawnienia_sesji,
 )
 from .panel_integracje import PanelIntegracje
@@ -95,7 +96,6 @@ from .uprawnienia import (
     MDM_PODGLAD,
     OPISY,
     PODGLAD,
-    ROLE_OWNER,
     TV_APLIKACJA,
     TV_PAUZA,
     WHATSAPP,
@@ -1108,16 +1108,6 @@ def get_uprawnienie(path: str) -> str | None:
     """Uprawnienie trasy GET albo None, gdy takiej trasy nie ma."""
     t = trasa("GET", path)
     return None if t is None else t.uprawnienie
-
-
-def pokaz_argo(session: Session, admin: bool) -> bool:
-    """Czy przelacznik aplikacji pokazuje Argo CD (`/api/auth/me`).
-
-    Tylko wlasciciel: konto z rola `wlasciciel` (users.rola — lustro Domu 1;
-    `podglad`, `bez-domu` i inne nie) albo aktywny administrator instalacji
-    (`admin` = admin_aktywny: flaga z bazy + grupa `admins`/TOTP, nigdy sam
-    naglowek)."""
-    return bool(admin) or session.rola == ROLE_OWNER
 
 
 def _cookie(name: str, value: str, max_age: int, *, http_only: bool, secure: bool) -> str:
