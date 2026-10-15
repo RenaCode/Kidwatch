@@ -29,7 +29,7 @@ from typing import Any
 from . import profiles
 from .apns import NoPusher, Pusher
 from .pki import CA, SignatureError, fingerprint, verify_mdm_signature
-from .policy import MdmKind, Policy, PolicyError
+from .policy import DOM_1, MdmKind, Policy, PolicyError, etykieta_w_domu
 from .signing import ProfileSigner
 from .store import Store, from_iso, iso, now_utc
 
@@ -184,14 +184,22 @@ class MDMService:
                 f"(kidwatch-mdm check-policy), zrestartuj serwer i dopiero zapisuj urzadzenie",
             )
 
-    def create_enrollment(self, label: str) -> dict[str, str]:
+    def create_enrollment(self, label: str, dom_id: int = DOM_1) -> dict[str, str]:
+        """Zaproszenie w domu `dom_id` — z TOKENU wolajacego, nigdy z ciala
+        zadania (§4.3). Etykieta w bazie i polityce: `<dom>/<etykieta>`, Dom 1
+        bez prefiksu (jak przed E3b)."""
+        if "/" in label:
+            # `2/x` bez domu zapisalby urzadzenie do Domu 1 pod etykieta Domu 2.
+            raise ServiceError(400, f"etykieta bez prefiksu domu ({label!r}); dom podaj osobno "
+                                    "(token domu albo `enroll --dom N`)")
+        label = etykieta_w_domu(dom_id, label)
         self._refuse_quarantined(label)
         if label not in self.policy.devices:
             log.warning(
                 "zaproszenie dla etykiety %r spoza polityki — dostanie wartosci domyslne", label
             )
-        token = self.store.create_enrollment(label, self.enrollment_ttl)
-        self.store.event("enrollment_created", detail={"label": label})
+        token = self.store.create_enrollment(label, self.enrollment_ttl, dom_id=dom_id)
+        self.store.event("enrollment_created", detail={"label": label}, dom_id=dom_id)
         return {"token": token, "url": f"{self.public_url}/mdm/enroll/{token}"}
 
     def enrollment_profile(self, token: str, now: datetime | None = None) -> Response:
@@ -236,7 +244,10 @@ class MDMService:
             200,
             data,
             MOBILECONFIG,
-            {"Content-Disposition": f'attachment; filename="kidwatch-{row["label"]}.mobileconfig"'},
+            {
+                "Content-Disposition": "attachment; filename="
+                f'"kidwatch-{row["label"].replace("/", "-")}.mobileconfig"'
+            },
         )
 
     # ======================================================= uwierzytelnienie
@@ -313,7 +324,10 @@ class MDMService:
             raise ServiceError(400, "temat push nie zgadza sie z certyfikatem serwera")
 
         now = iso(now_utc())
+        # Dom dziedziczony z zaproszenia (czyli z tokenu, ktorym je utworzono).
+        dom_id = int(ident["dom_id"])
         fields = {
+            "dom_id": dom_id,
             "label": ident["label"],
             "enrollment_token": ident["token"],
             "cert_fp": fp,
@@ -329,7 +343,8 @@ class MDMService:
                 # Ponowny zapis tego samego iPada: nowa tozsamosc, czysta kolejka
                 # i swiezy stan DDM. Historia komend zostaje.
                 c.execute(
-                    "UPDATE devices SET label=:label, enrollment_token=:enrollment_token, "
+                    "UPDATE devices SET dom_id=:dom_id, label=:label, "
+                    "enrollment_token=:enrollment_token, "
                     "cert_fp=:cert_fp, serial=:serial, product=:product, "
                     "os_version=:os_version, build_version=:build_version, topic=:topic, "
                     "checked_out_at=NULL, push_token=NULL, push_magic=NULL, ddm_token=NULL, "
@@ -344,10 +359,11 @@ class MDMService:
                 c.execute("DELETE FROM profile_state WHERE udid = ?", (udid,))
             else:
                 c.execute(
-                    "INSERT INTO devices (udid, label, enrollment_token, cert_fp, serial, "
-                    "product, os_version, build_version, topic, enrolled_at, last_seen_at) "
-                    "VALUES (:udid, :label, :enrollment_token, :cert_fp, :serial, :product, "
-                    ":os_version, :build_version, :topic, :now, :now)",
+                    "INSERT INTO devices (udid, dom_id, label, enrollment_token, cert_fp, "
+                    "serial, product, os_version, build_version, topic, enrolled_at, "
+                    "last_seen_at) VALUES (:udid, :dom_id, :label, :enrollment_token, "
+                    ":cert_fp, :serial, :product, :os_version, :build_version, :topic, "
+                    ":now, :now)",
                     {**fields, "now": now, "udid": udid},
                 )
             c.execute(
@@ -490,8 +506,14 @@ class MDMService:
             self.store.mark_profile_installed(cmd_uuid)
 
     # ========================================================== DDM (check-in)
-    def os_update(self) -> dict | None:
-        override = self.store.setting("os_update")
+    @staticmethod
+    def os_update_key(dom_id: int = DOM_1) -> str:
+        """Klucz nadpisania wersji systemu: Dom 1 — `os_update` jak przed E3b
+        (wycofanie obrazu nie gubi ustawienia), kolejne — `os_update:<dom>`."""
+        return "os_update" if dom_id == DOM_1 else f"os_update:{dom_id}"
+
+    def os_update(self, dom_id: int = DOM_1) -> dict | None:
+        override = self.store.setting(self.os_update_key(dom_id))
         if override is not None:
             return override or None  # {} = jawnie wylaczone z API
         return self.policy.os_update.model_dump() if self.policy.os_update else None
@@ -505,7 +527,7 @@ class MDMService:
             self.policy,
             device["label"],
             supervised=bool(device["supervised"]),
-            os_update=self.os_update(),
+            os_update=self.os_update(_dom(device)),
             kind=self.kind_of(device),
         )
 
@@ -710,6 +732,14 @@ class MDMService:
         cmd = self.store.enqueue(udid, request_type, body, origin="api")
         self.kick(udid)
         return cmd
+
+
+def _dom(device) -> int:
+    """Dom wiersza urzadzenia (baza sprzed E3b w trakcie migracji: Dom 1)."""
+    try:
+        return int(device["dom_id"])
+    except (IndexError, KeyError, TypeError):
+        return DOM_1
 
 
 def _json(obj: Any) -> str:

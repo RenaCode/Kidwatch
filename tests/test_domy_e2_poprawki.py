@@ -39,7 +39,7 @@ from test_domy_e2 import (  # noqa: F401 — fixtury
     kek,
 )
 
-pytestmark = pytest.mark.usefixtures("bez_sieci")
+pytestmark = pytest.mark.usefixtures("bez_sieci", "run_zatrzymany_po_awarii")
 
 PUBLICZNY = "9.9.9.9"
 PUBLICZNY_2 = "149.112.112.112"
@@ -65,7 +65,8 @@ def test_wymuszenie_yaml_z_sekretu_wyprowadza_z_crashloopa(tmp_path, monkeypatch
     assert cli.main(["--config", str(cfg_path), "run"]) == 2  # CrashLoop
 
     monkeypatch.setenv("KIDWATCH_DOM_1_ZRODLO", "yaml")
-    assert cli.main(["--config", str(cfg_path), "run"]) == 1  # wystartowal (atrapa sie konczy)
+    # Wystartowal: atrapa zrodla sie konczy, nadzorca planuje restart domu (E3b).
+    assert cli.main(["--config", str(cfg_path), "run"]) == 0
     ostrzezenia = [r for r in caplog.records if r.levelno == logging.WARNING
                    and "KIDWATCH_DOM_1_ZRODLO" in r.getMessage()]
     assert ostrzezenia and "config.yaml" in ostrzezenia[0].getMessage()
@@ -78,7 +79,7 @@ def test_wymuszenie_tylko_dokladnie_yaml(tmp_path, monkeypatch, kek, caplog, war
     cfg_path = _dom_1_w_bazie(tmp_path, monkeypatch)
     monkeypatch.delenv("KIDWATCH_KEK")
     monkeypatch.setenv("KIDWATCH_DOM_1_ZRODLO", wartosc)
-    oczekiwany = 1 if wartosc.strip().lower() == "yaml" else 2
+    oczekiwany = 0 if wartosc.strip().lower() == "yaml" else 2
     assert cli.main(["--config", str(cfg_path), "run"]) == oczekiwany
     if oczekiwany == 2:
         assert "KIDWATCH_DOM_1_ZRODLO" in caplog.text  # nieznana wartosc nie przechodzi cicho

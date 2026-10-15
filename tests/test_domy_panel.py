@@ -784,7 +784,8 @@ def test_front_zna_te_same_trasy_domu_co_serwer():
 # ================================================== Dom 1 w trybie `baza`
 @pytest.mark.usefixtures("kek")
 @pytest.mark.parametrize("zrodlo", ["yaml", "baza"])
-def test_run_panel_domu_1_z_bazy_pokazuje_ten_sam_dom(tmp_path, monkeypatch, zrodlo):
+def test_run_panel_domu_1_z_bazy_pokazuje_ten_sam_dom(tmp_path, monkeypatch, zrodlo,
+                                                     run_zatrzymany_po_awarii):
     """Przeglad E3a, B-1: `run` budowal panel bez konfiguracji domu, wiec po
     `dom-zrodlo 1 baza` (E2) Dom 1 w panelu byl pusty — bez urzadzen, dzieci,
     czasu gry i pauzy TV. Sciezka produkcyjna: `dom-importuj`, potem
@@ -833,7 +834,7 @@ def test_run_panel_domu_1_z_bazy_pokazuje_ten_sam_dom(tmp_path, monkeypatch, zro
         return srv
 
     monkeypatch.setattr(panel_mod, "start_panel", start_i_odpytaj)
-    assert main(["--config", str(cfg_path), "run"]) == 1  # koniec atrapy zrodla
+    assert main(["--config", str(cfg_path), "run"]) == 0  # koniec atrapy = restart domu (E3b)
     assert widziane["meta"]["children"] == ["Kuba", "Zosia"], widziane
     assert [d["name"] for d in widziane["day"]["devices"]] == ["iPad Kuby", "iPad Zosi",
                                                               "TV wspolny"]

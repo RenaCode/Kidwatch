@@ -26,7 +26,17 @@ blocked_apps: []
 # Co ile godzin odswiezac stan iPadow (informacje, profile, aplikacje).
 refresh_hours: 6
 
-# Klucz = etykieta podana przy `kidwatch-mdm enroll <etykieta>`.
+# Nadpisania per dom (Kidwatch z wieloma domami, docs/mdm.md „Domy”):
+# dokladane MIEDZY wspolne `restrictions` a wlasne urzadzenia; `blocked_apps`
+# domu zastepuje wspolne (pusta lista = bez blokad aplikacji w domu).
+# domy:
+#   2:
+#     restrictions: {}
+#     blocked_apps: []
+
+# Klucz = etykieta podana przy `kidwatch-mdm enroll <etykieta>`. Dom 1 —
+# sama etykieta (jak dotad); kolejne domy — `<dom>/<etykieta>`, np. `2/dziecko1`
+# (zaproszenie tokenem Domu 2 albo `enroll --dom 2 dziecko1`).
 devices:
   dziecko1:
     name: iPad Dziecka 1

@@ -240,3 +240,35 @@ __all__ = [
     "kinds",
     "panel_login",
 ]
+
+
+def zatrzymaj_run_po_restarcie(monkeypatch) -> list:
+    """`run` z izolacja awarii (E3b) nie konczy sie, gdy padnie zadanie domu —
+    nadzorca planuje restart domu. Testy `run` zatrzymuja proces (jak SIGTERM)
+    zaraz po zaplanowaniu pierwszego restartu; zwraca liste (dom, powod)."""
+    from kidwatch import domy as dm  # noqa: PLC0415
+
+    zaplanowane: list = []
+    oryginalny_run = dm.Nadzorca.run
+
+    async def run(self, stop):
+        oryginal = self._zaplanuj_restart
+
+        async def zaplanuj(dom_id, home, wersja, powod, alarm):
+            await oryginal(dom_id, home, wersja, powod, alarm)
+            zaplanowane.append((dom_id, powod))
+            stop.set()
+
+        self._zaplanuj_restart = zaplanuj
+        return await oryginalny_run(self, stop)
+
+    monkeypatch.setattr(dm.Nadzorca, "run", run)
+    return zaplanowane
+
+
+@pytest.fixture
+def run_zatrzymany_po_awarii(monkeypatch) -> list:
+    """Testy `run` z atrapa zrodla, ktora sie konczy: przed E3b koniec zadania
+    = kod 1; z izolacja awarii proces zyje, a dom czeka na restart — test
+    konczy `run` (kod 0) zaraz po zaplanowaniu restartu."""
+    return zatrzymaj_run_po_restarcie(monkeypatch)

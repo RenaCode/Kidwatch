@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from conftest import local
+from conftest import local, zatrzymaj_run_po_restarcie
 from kidwatch.__main__ import main
 from kidwatch.classifier import Classifier
 from kidwatch.config import Config
@@ -42,9 +42,12 @@ def test_summary_z_CLI_nie_zajmuje_klucza_dedupu_podsumowania(tmp_path, capsys):
         assert [n.kind for n in notes if n.kind is NotifyKind.DAILY] == [NotifyKind.DAILY]
 
 
-def test_run_konczy_sie_kodem_bledu_gdy_padnie_zadanie(tmp_path, monkeypatch):
+def test_run_restartuje_dom_gdy_padnie_zadanie(tmp_path, monkeypatch):
     """Regresja: koniec petli zrodla konczyl proces z kodem 0 — w k8s
-    wygladalo to jak czyste zatrzymanie, nie awaria."""
+    wygladalo to jak czyste zatrzymanie, nie awaria. Od E3b (izolacja awarii,
+    docs/architektura-domy.md §5.1) koniec petli to awaria DOMU: nadzorca
+    planuje restart tego domu, a proces (panel, inne domy) zyje dalej; tetno
+    procesu dotyka nadzorca. Bez izolacji (E1) — kod 1: test_domy.py."""
     import kidwatch.__main__ as cli  # noqa: PLC0415
 
     data = yaml.safe_load(FIXTURE.read_text(encoding="utf-8"))
@@ -64,5 +67,9 @@ def test_run_konczy_sie_kodem_bledu_gdy_padnie_zadanie(tmp_path, monkeypatch):
             pass
 
     monkeypatch.setattr(cli, "build_source", lambda cfg, store: EmptySource())
-    monkeypatch.setenv("KIDWATCH_HEARTBEAT", str(tmp_path / "hb"))
-    assert main(["--config", str(cfg_path), "run"]) == 1
+    hb = tmp_path / "hb"
+    monkeypatch.setattr("kidwatch.scheduler.HEARTBEAT_PATH", hb)
+    zaplanowane = zatrzymaj_run_po_restarcie(monkeypatch)
+    assert main(["--config", str(cfg_path), "run"]) == 0
+    assert zaplanowane == [(1, "petla source zakonczyla sie bez bledu")]
+    assert hb.exists()
