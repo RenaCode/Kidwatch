@@ -7,6 +7,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { get, post } from '../utils/api';
 import { roleLabel } from '../utils/domy';
+import { LOGIN_RE, WAZNOSCI, canRevoke, inviteLink, statusLabel } from '../utils/zaproszenia';
 import {
   CHANNEL_LABEL, channelsSummary, modeNotice, permissionChange, prefsFromProfile, prefsPayload,
   quietProblem, samePrefs, toggle, toggleChild,
@@ -306,8 +307,11 @@ function AccountRow({ konto, katalog, confirm, onUsed, onChanged }) {
   const act = async (path, body, okText) => {
     setBusy(true); setMsg(null);
     try {
-      await post(path, { login: konto.login, confirm, ...body });
+      const r = await post(path, { login: konto.login, confirm, ...body });
       setMsg({ ok: true, text: okText });
+      // Wypisanie konta z dostepem do integracji: sugestia rotacji klucza
+      // domu (E4). Wiersz konta zaraz zniknie z listy - stad okno.
+      if (r?.sugestia) window.alert(r.sugestia);
       onChanged();
     } catch (err) {
       setMsg({ ok: false, text: err.message });
@@ -458,6 +462,165 @@ export function AuditLog() {
           <span>{w.opis}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------ zaproszenia
+   Dom -> Czlonkowie -> Zapros (uprawnienie dom.zaproszenia, E4). Link
+   z tokenem pokazujemy RAZ - serwer trzyma tylko jego skrot i drugi raz go
+   nie poda. Role do wyboru podaje serwer (sufit: nie wyzej niz wlasna). */
+function NewInvitation({ data, onDone }) {
+  const [rola, setRola] = useState(data.role[data.role.length - 1] || 'podglad');
+  const [waznosc, setWaznosc] = useState(data.waznosc_domyslna_h);
+  const [dla, setDla] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [created, setCreated] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true); setMsg(null); setCopied(false);
+    try {
+      const r = await post('/api/zaproszenia/utworz', {
+        rola, waznosc_h: Number(waznosc), dla: dla.trim() || undefined, confirm,
+      });
+      setCreated({ ...r, link: inviteLink(window.location.origin, r.token) });
+      setDla('');
+      onDone();
+    } catch (err) {
+      setMsg({ ok: false, text: err.message });
+    } finally {
+      setConfirm(''); setBusy(false);
+    }
+  };
+
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(created.link); setCopied(true); } catch { /* zaznacz recznie */ }
+  };
+
+  if (data.role.length === 0) {
+    return <p className="dim">To konto nie może nikogo zaprosić (rola bez sufitu).</p>;
+  }
+  return (
+    <>
+      {created && (
+        <div className="notice info" style={{ marginBottom: 12 }} role="status">
+          <div style={{ marginBottom: 6 }}>
+            <strong>Link zaproszenia</strong> — pokazany tylko teraz; wyślij go osobie zaproszonej
+            bezpiecznym kanałem. Działa raz, do {new Date(created.zaproszenie.wygasa_at).toLocaleString('pl-PL')}.
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input className="input-field mono" readOnly value={created.link} style={{ flex: 1, minWidth: 220 }}
+                   aria-label="Link zaproszenia" onFocus={(e) => e.target.select()} />
+            <button type="button" className="btn-ghost" onClick={copy}>{copied ? 'Skopiowano' : 'Kopiuj'}</button>
+            <button type="button" className="btn-link" onClick={() => setCreated(null)}>Ukryj</button>
+          </div>
+          {created.instrukcja_sso && <p style={{ margin: '8px 0 0' }}>{created.instrukcja_sso}</p>}
+          {created.konto_istnieje === true && (
+            <p style={{ margin: '8px 0 0' }}>Konto o tym loginie już jest w Kidwatchu — po przyjęciu
+              dołączy do tego domu.</p>
+          )}
+        </div>
+      )}
+      <form onSubmit={submit} noValidate>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <label className="field" style={{ marginBottom: 0 }}>
+            <span className="field-label">Rola</span>
+            <select className="input-field" value={rola} onChange={(e) => setRola(e.target.value)}>
+              {data.role.map((r) => <option key={r} value={r}>{roleLabel(r)}</option>)}
+            </select>
+          </label>
+          <label className="field" style={{ marginBottom: 0 }}>
+            <span className="field-label">Ważność</span>
+            <select className="input-field" value={waznosc} onChange={(e) => setWaznosc(e.target.value)}>
+              {WAZNOSCI.filter((w) => w.h <= data.waznosc_max_h)
+                .map((w) => <option key={w.h} value={w.h}>{w.label}</option>)}
+            </select>
+          </label>
+          <label className="field" style={{ marginBottom: 0 }}>
+            <span className="field-label">{data.sso ? 'Login w SSO (zalecany)' : 'Login (opcjonalnie)'}</span>
+            <input className="input-field" autoComplete="off" value={dla} placeholder="np. login-goscia"
+                   onChange={(e) => setDla(e.target.value)} />
+          </label>
+        </div>
+        {data.sso && !dla.trim() && (
+          <p className="notice" style={{ margin: '10px 0 0', fontSize: '0.8rem' }}>
+            Wpisz login osoby z Authelii. Bez niego link przyjmie każdy, kto go dostanie
+            i ma konto SSO z dostępem do Kidwatcha.
+          </p>
+        )}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 10, maxWidth: 560 }}>
+          <ConfirmField value={confirm} onChange={setConfirm} />
+          <button className="btn-ghost" type="submit"
+                  disabled={busy || !confirm || (dla.trim() !== '' && !LOGIN_RE.test(dla.trim()))}>
+            {busy ? 'Tworzę…' : '+ Zaproś'}
+          </button>
+        </div>
+        <Msg msg={msg} />
+      </form>
+    </>
+  );
+}
+
+export function Invitations() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const load = useCallback(async () => {
+    try { setData(await get('/api/zaproszenia')); setError(null); } catch (e) { setError(e.message); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  if (error && !data) return <div className="glass-card"><div className="form-error">{error}</div></div>;
+  if (!data) return <div className="glass-card"><div className="empty loading-pulse">Wczytywanie…</div></div>;
+
+  const revoke = async (z) => {
+    setMsg(null);
+    try {
+      await post('/api/zaproszenia/odwolaj', { id: z.id });
+      setMsg({ ok: true, text: 'Zaproszenie odwołane.' });
+      load();
+    } catch (e) {
+      setMsg({ ok: false, text: e.message });
+    }
+  };
+
+  return (
+    <div className="glass-card">
+      <div className="card-title">
+        <span>Zaproś do domu</span>
+        <span className="hint">{data.sso ? 'logowanie przez SSO' : 'nowe konto z hasłem i 2FA'}</span>
+      </div>
+      <NewInvitation data={data} onDone={load} />
+      <Msg msg={msg} />
+      {data.zaproszenia.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          {data.zaproszenia.slice(0, 30).map((z) => (
+            <div key={z.id} style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center',
+                                      fontSize: '0.84rem', padding: '6px 0',
+                                      borderTop: '1px solid var(--border, rgba(255,255,255,0.08))' }}>
+              <span className="dim">#{z.id}</span>
+              <span className={z.stan === 'oczekuje' ? 'badge info' : 'badge'}>{statusLabel(z.stan)}</span>
+              <span>{roleLabel(z.rola)}</span>
+              {z.dla && <span className="mono">{z.dla}</span>}
+              <span className="dim">
+                {z.przyjete_przez
+                  ? `przyjął(-ęła) ${z.przyjete_przez}`
+                  : `do ${new Date(z.wygasa_at).toLocaleString('pl-PL')}`}
+              </span>
+              {canRevoke(z) && (
+                <button type="button" className="btn-link" style={{ marginLeft: 'auto' }}
+                        onClick={() => window.confirm(`Odwołać zaproszenie #${z.id}?`) && revoke(z)}>
+                  Odwołaj
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

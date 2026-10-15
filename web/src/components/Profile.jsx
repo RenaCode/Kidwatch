@@ -13,7 +13,7 @@ import {
   sourcesLabel, testSummary, validateRecipients,
 } from '../utils/recipients';
 import TwoFactor from './TwoFactor';
-import { Accounts, AuditLog, MyNotifications } from './Konta';
+import { Accounts, AuditLog, Invitations, MyNotifications } from './Konta';
 import Integrations from './Integracje';
 import { KomendyAdmin, KomendyDomu } from './Komendy';
 import { canEditIntegrations } from '../utils/integracje';
@@ -454,6 +454,13 @@ export default function Profile({ user, onChanged, onClose, tvPause, onTvPauseCh
           <AuditLog />
           <div className="stat-label">Komendy z WhatsAppa{user?.dom ? ` — ${user.dom.nazwa}` : ''}</div>
           <KomendyDomu />
+        </>
+      )}
+      {/* Zaproszenia do domu (E4): rola nie wyzsza od wlasnej, link pokazany raz. */}
+      {can(user, 'dom.zaproszenia') && (
+        <>
+          <div className="stat-label">Zaproszenia{user?.dom ? ` — ${user.dom.nazwa}` : ''}</div>
+          <Invitations />
         </>
       )}
       {/* Integracje domu i ich sekrety: tylko aktywny administrator instalacji

@@ -9,7 +9,9 @@ Kontrakt: renacode-infra docs/sso-tozsamosc.md. W skrocie:
     naglowki sa ignorowane w calosci — panel bez SSO stoi za routerem, ktory
     `Remote-User` od klienta przepuszcza.
   - `Remote-User` == `users.login` w panel-auth.db. Kont nie zakladamy w locie:
-    konto bez dopasowania to 403 z czytelnym komunikatem.
+    konto bez dopasowania to 403 z czytelnym komunikatem. Jedyny wyjatek:
+    przyjecie WAZNEGO zaproszenia do domu (zaproszenia.py, trasa publiczna
+    /api/zaproszenia/przyjmij) zaklada konto o loginie z `Remote-User`.
   - Sesja z naglowka nie pyta o haslo ani o wlasny TOTP panelu — 2FA wymusila
     juz Authelia. Dlatego sesja `sso` jest wazna TYLKO z naglowkiem tego
     samego uzytkownika: bez niego (port-forward, wylaczona flaga) nic nie
@@ -42,15 +44,19 @@ PORTAL_ENV = "SSO_PORTAL"
 GROUPS_ENV = "SSO_GRUPY"
 
 DEFAULT_PORTAL = "https://auth.renacode.com"
-#: Grupy Authelii z dostepem do panelu: konto codzienne wlasciciela, rodzina
-#: i (od E3a, docs/architektura-domy.md §8 decyzja 5 po korekcie z 11.10)
+#: Grupy Authelii z dostepem do panelu: konto codzienne wlasciciela, rodzina,
+#: goscie z zaproszen (od E4) i (od E3a, docs/architektura-domy.md §8 decyzja 5 po korekcie z 11.10)
 #: konto administracyjne `admins`. Wpuszczenie to nie uprawnienia: rola
 #: administratora instalacji wymaga flagi `users.admin_instancji` w bazie,
 #: a grupa `admins` jest dla niej tylko warunkiem koniecznym
 #: (panel_domy.admin_aktywny). Konto z `admins` bez konta w panelu dostaje
 #: 403 jak kazde inne. Chart: `sso.grupy` -> SSO_GRUPY.
 GRUPA_ADMINOW = "admins"
-DEFAULT_GROUPS = ("wlasciciel", "rodzina", GRUPA_ADMINOW)
+#: Osoby spoza rodziny zaproszone do domu (E4, §8 decyzja 3): grupa Authelii
+#: wpuszczana WYLACZNIE na host panelu Kidwatcha. Jak kazda grupa — tylko
+#: wpuszcza; co konto widzi, mowi jego czlonkostwo z zaproszenia.
+GRUPA_GOSCI = "kidwatch-goscie"
+DEFAULT_GROUPS = ("wlasciciel", "rodzina", GRUPA_GOSCI, GRUPA_ADMINOW)
 
 USER_HEADER = "Remote-User"
 GROUPS_HEADER = "Remote-Groups"
