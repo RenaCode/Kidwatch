@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, PrivateAttr, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 #: Ograniczenia domyslne. Kazde dziala WYLACZNIE na nadzorowanym iPadzie
 #: (schemat: supervised: true) — na zwyklym iOS je ignoruje.
@@ -95,6 +95,60 @@ DEFAULT_STATUS_ITEMS = [
     "passcode.is-present",
 ]
 
+#: Ekrany kreatora pomijane przy zapisie ADE (Apple: SkipKeys). Celowo NIE
+#: pomijamy AppleID (dziecko loguje sie wlasnym kontem z Rodziny), Restore
+#: (przywrocenie „wypranej" kopii z zapisami gier) ani ScreenTime.
+DEFAULT_ADE_SKIP = ["Android", "Diagnostics", "Payment", "Privacy", "Siri"]
+
+#: Klucze SkipKeys dla iOS/iPadOS (developer.apple.com/documentation/
+#: devicemanagement/skipkeys, stan 2026-10-15). Literowke iOS przemilczy —
+#: ekran sie pokaze — wiec nieznany klucz zatrzymuje start jak literowka
+#: w ograniczeniach.
+ADE_SKIP_KEYS = frozenset(
+    {
+        "AccessibilityAppearance",
+        "ActionButton",
+        "Android",
+        "Appearance",
+        "AppleID",
+        "AppStore",
+        "Biometric",
+        "CameraButton",
+        "DeviceFeaturesTour",
+        "DeviceToDeviceMigration",
+        "Diagnostics",
+        "DisplayTone",
+        "EnableLockdownMode",
+        "HomeButtonSensitivity",
+        "iMessageAndFaceTime",
+        "Intelligence",
+        "Keyboard",
+        "LiquidGlass",
+        "Location",
+        "MessagingActivationUsingPhoneNumber",
+        "Multitasking",
+        "OnBoarding",
+        "Passcode",
+        "Payment",
+        "Privacy",
+        "Restore",
+        "RestoreCompleted",
+        "Safety",
+        "SafetyAndHandling",
+        "ScreenTime",
+        "SIMSetup",
+        "Siri",
+        "SoftwareUpdate",
+        "SpokenLanguage",
+        "TermsOfAddress",
+        "TOS",
+        "UpdateCompleted",
+        "WatchMigration",
+        "Welcome",
+        "Zoom",
+    }
+)
+
 #: Rodzaje urzadzen MDM. iPhone = polityka bez kluczy „tylko pod nadzorem".
 MdmKind = Literal["ipad", "iphone"]
 
@@ -152,6 +206,20 @@ class DevicePolicy(BaseModel):
     dns_url: str | None = None
     restrictions: dict[str, Any] = Field(default_factory=dict)
     blocked_apps: list[str] | None = None
+    #: Numer seryjny z Apple Business (Ustawienia > Ogolne > To urzadzenie).
+    #: Wiaze zapis ADE z etykieta: iPad w kreatorze przedstawia sie numerem
+    #: seryjnym, nie linkiem z zaproszenia. Brak = iPad bez ADE.
+    serial: str | None = None
+
+    @field_validator("serial")
+    @classmethod
+    def _serial(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9]{8,20}", v):
+            raise ValueError(f"serial: same litery i cyfry (8-20 znakow), dostalem {v!r}")
+        return v
 
     @field_validator("kind", mode="before")
     @classmethod
@@ -175,6 +243,27 @@ class DomPolicy(BaseModel):
     blocked_apps: list[str] | None = None
 
 
+class AdeSettings(BaseModel):
+    """Profil ADE (Apple Business). Wplywa tylko na kreator konfiguracji."""
+
+    skip_setup_items: list[str] = Field(default_factory=lambda: list(DEFAULT_ADE_SKIP))
+    department: str | None = None
+    support_phone_number: str | None = None
+    support_email_address: str | None = None
+
+    @field_validator("skip_setup_items")
+    @classmethod
+    def _skip(cls, v: list[str]) -> list[str]:
+        unknown = sorted(set(v) - ADE_SKIP_KEYS)
+        if unknown:
+            raise ValueError(f"ade.skip_setup_items: nieznane klucze {unknown} (literowka?)")
+        if "AppleID" in v or "Restore" in v:
+            # Bez tych ekranow dziecko nie zaloguje sie kontem z Rodziny (Popros
+            # o zakup, limity) albo nie przywroci kopii z zapisami gier.
+            raise ValueError("ade.skip_setup_items: AppleID i Restore musza zostac w kreatorze")
+        return v
+
+
 class Policy(BaseModel):
     org: str = "RenaCode"
     #: Nadpisania DOKLADANE do DEFAULT_RESTRICTIONS, nie zamiast nich — wpisanie
@@ -191,6 +280,7 @@ class Policy(BaseModel):
     refresh_hours: float = 6.0
     #: Nadpisania per dom (E3b): {numer domu: DomPolicy}. Dom bez wpisu = wspolne.
     domy: dict[int, DomPolicy] = Field(default_factory=dict)
+    ade: AdeSettings = Field(default_factory=AdeSettings)
     #: Wpisy iPhone'ow odrzucone przy wczytaniu: {etykieta: bledy}. Ustawia
     #: load(); serwer zapisuje je jako zdarzenie (alarm w Kidwatchu).
     _rejected: dict[str, list[str]] = PrivateAttr(default_factory=dict)
@@ -201,6 +291,26 @@ class Policy(BaseModel):
 
     def device(self, label: str) -> DevicePolicy:
         return self.devices.get(label) or DevicePolicy(name=label)
+
+    @model_validator(mode="after")
+    def _unique_serials(self) -> Policy:
+        seen: dict[str, str] = {}
+        for label, dev in self.devices.items():
+            if dev.serial and dev.serial in seen:
+                raise ValueError(
+                    f"serial {dev.serial} jest i w {seen[dev.serial]}, i w {label} — "
+                    "zapis ADE nie wiedzialby, ktora etykiete wydac"
+                )
+            if dev.serial:
+                seen[dev.serial] = label
+        return self
+
+    def label_for_serial(self, serial: str | None) -> str | None:
+        """Etykieta iPada o tym numerze seryjnym (zapis ADE)."""
+        wanted = (serial or "").strip().upper()
+        if not wanted:
+            return None
+        return next((lb for lb, d in self.devices.items() if d.serial == wanted), None)
 
     def kind(self, label: str, product: str | None = None) -> MdmKind:
         """Rodzaj wg ProductName, gdy urzadzenie juz go zglosilo; inaczej wg

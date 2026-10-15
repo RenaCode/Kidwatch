@@ -10,6 +10,11 @@ Przeplyw jednego iPada:
   PUT  /mdm/checkin  DeclarativeManagement (tokens / declaration-items / ...)
   PUT  /mdm/checkin  CheckOut       profil zdjety -> alarm
 
+Zapis ADE (Apple Business) zamiast zaproszenia: iPad w kreatorze wysyla
+POST /mdm/ade/enroll z podpisanym przez Apple MachineInfo (ade.py). Numer
+seryjny z polityki wskazuje etykiete, dalej przeplyw jest ten sam, z jedna
+roznica: Authenticate musi przyjsc z UDID-em z MachineInfo.
+
 Kazda wiadomosc iPada musi miec poprawny Mdm-Signature (pki.py), a jej
 certyfikat musi byc TYM, ktory urzadzenie przedstawilo przy Authenticate.
 """
@@ -26,10 +31,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from . import profiles
+from . import ade, profiles
 from .apns import NoPusher, Pusher
 from .pki import CA, SignatureError, fingerprint, verify_mdm_signature
-from .policy import DOM_1, MdmKind, Policy, PolicyError, etykieta_w_domu
+from .policy import DOM_1, MdmKind, Policy, PolicyError, dom_etykiety, etykieta_w_domu
 from .signing import ProfileSigner
 from .store import Store, from_iso, iso, now_utc
 
@@ -61,6 +66,10 @@ DEVICE_QUERIES = [
     "LastCloudBackupDate",
     "IsMDMLostModeEnabled",
 ]
+
+#: Zaproszenie wystawione dla zapisu ADE: iPad pobiera profil i od razu
+#: robi Authenticate, wiec godzina to duzy zapas.
+ADE_ENROLLMENT_TTL = timedelta(hours=1)
 
 REFRESH_COMMANDS = ("DeviceInformation", "SecurityInfo", "ProfileList", "InstalledApplicationList")
 
@@ -143,6 +152,10 @@ class MDMService:
         self.started_at = now_utc()
         self.next_reconcile = 0.0
         self.last_reconcile_error: str | None = None
+        #: Synchronizacja z Apple Business (ade.AdeSync) — None bez tokenu ADE.
+        self.ade: ade.AdeSync | None = None
+        #: Weryfikacja MachineInfo; testy podstawiaja wlasne korzenie zaufania.
+        self.parse_machine_info = ade.parse_machine_info
 
     def _check_quarantine(self) -> None:
         """Kwarantanna wpisow iPhone'a (policy.load) przy starcie.
@@ -250,6 +263,47 @@ class MDMService:
             },
         )
 
+    def ade_enroll(self, body: bytes) -> Response:
+        """POST z kreatora iPada przypisanego do nas w Apple Business."""
+        try:
+            machine = self.parse_machine_info(body)
+        except ade.MachineInfoError as exc:
+            self.store.event("ade_enroll_rejected", detail=str(exc))
+            raise ServiceError(401, f"zapis ADE odrzucony: {exc}") from exc
+        serial, udid = str(machine["SERIAL"]), str(machine["UDID"])
+        label = self.policy.label_for_serial(serial)
+        if label is None:
+            # Urzadzenie z organizacji, ale bez wpisu w polityce: nie wiemy,
+            # czyje to i jakie ma dostac ograniczenia. Kreator pokaze blad.
+            self.store.event(
+                "ade_unknown_serial",
+                udid,
+                {"serial": serial, "product": machine.get("PRODUCT")},
+            )
+            raise ServiceError(403, "numer seryjny spoza polityki — dopisz `serial` do wpisu")
+        self._refuse_quarantined(label)
+        # Dom z klucza polityki (`2/dziecko1` -> Dom 2, bez prefiksu -> Dom 1),
+        # tak jak zaproszenie tokenem domu: urzadzenie i jego zdarzenia ida
+        # do czujki tego domu. Organizacja Apple Business (i token ADE) jest
+        # jedna na instancje, ale numer seryjny wskazuje jeden wpis = jeden dom.
+        dom_id = dom_etykiety(label)
+        token = self.store.create_enrollment(
+            label, ADE_ENROLLMENT_TTL, dom_id=dom_id, expected_udid=udid, source="ade"
+        )
+        self.store.event(
+            "ade_enrollment",
+            udid,
+            {
+                "label": label,
+                "serial": serial,
+                "product": machine.get("PRODUCT"),
+                "os_version": machine.get("OS_VERSION"),
+            },
+            dom_id=dom_id,
+        )
+        log.info("ADE: profil zapisu dla %s (%s)", label, machine.get("PRODUCT"))
+        return self.enrollment_profile(token)
+
     # ======================================================= uwierzytelnienie
     def _verified(self, body: bytes, signature: str | None) -> tuple[dict, str]:
         if not signature:
@@ -315,6 +369,11 @@ class MDMService:
             raise ServiceError(401, "certyfikat nie pochodzi z zadnego zaproszenia")
         # Zaproszenie sprzed kwarantanny (wazne 24 h): profil mogl juz zejsc.
         self._refuse_quarantined(ident["label"])
+        if ident["expected_udid"] and ident["expected_udid"] != udid:
+            # Profil z zapisu ADE trafil do innego urzadzenia niz to, ktore
+            # podpisalo MachineInfo: przechwycony albo przekazany dalej.
+            self.store.event("ade_udid_mismatch", udid, {"label": ident["label"]})
+            raise ServiceError(403, "profil ADE wydany dla innego urzadzenia")
         if ident["bound_udid"] and ident["bound_udid"] != udid:
             self.store.event("enrollment_reuse", udid, {"bound_to": ident["bound_udid"]})
             raise ServiceError(403, "zaproszenie przypisane do innego urzadzenia")
@@ -371,7 +430,9 @@ class MDMService:
                 (udid, now, ident["token"]),
             )
         self.store.event(
-            "authenticate", udid, {"label": ident["label"], "serial": fields["serial"]}
+            "authenticate",
+            udid,
+            {"label": ident["label"], "serial": fields["serial"], "source": ident["source"]},
         )
         return EMPTY_OK
 
@@ -391,6 +452,18 @@ class MDMService:
             self.store.event("enrolled", udid, {"label": device["label"]})
             for request_type in REFRESH_COMMANDS:
                 self._enqueue_refresh(udid, request_type)
+            self.kick(udid)
+        if message.get("AwaitingConfiguration") and not self.store.pending(
+            udid, "DeviceConfigured"
+        ):
+            # Zapis ADE z await_device_configured: kreator stoi, dopoki nie
+            # dostanie DeviceConfigured. Najpierw ograniczenia (kolejka jest
+            # FIFO), potem zwolnienie kreatora — dziecko nie zobaczy ekranu
+            # domowego bez blokad. Blad instalacji profilu nie blokuje
+            # kreatora: DeviceConfigured i tak przyjdzie po nim.
+            self._ensure_restrictions(self.store.device(udid), now_utc())
+            self.store.enqueue(udid, "DeviceConfigured", {}, origin="ade")
+            self.store.event("ade_awaiting_configuration", udid, {"label": device["label"]})
             self.kick(udid)
         return EMPTY_OK
 
@@ -614,25 +687,7 @@ class MDMService:
                 for request_type in REFRESH_COMMANDS:
                     self._enqueue_refresh(udid, request_type)
 
-            profile, digest = profiles.restrictions_profile(
-                self.policy, device["label"], self.kind_of(device)
-            )
-            state = self.store.profile_states(udid).get(profiles.RESTRICTIONS_ID)
-            retry_after = from_iso(state["retry_after"]) if state else None
-            if (
-                state is None
-                or state["content_hash"] != digest
-                or (
-                    state["installed_at"] is None and retry_after is not None and now >= retry_after
-                )
-            ) and not self.store.pending(udid, "InstallProfile"):
-                cmd = self.store.enqueue(
-                    udid,
-                    "InstallProfile",
-                    {"Payload": payload_install_profile(profile)},
-                    origin="policy",
-                )
-                self.store.set_profile_state(udid, profiles.RESTRICTIONS_ID, digest, cmd)
+            self._ensure_restrictions(device, now)
 
             token = profiles.declarations_token(self.declarations_for(device))
             if device["ddm_token"] != token and not self.store.pending(
@@ -657,6 +712,28 @@ class MDMService:
         # ze uzgadnianie nie przeszlo od godziny, takze po restarcie.
         self.store.set_setting("last_reconcile_ok_at", iso(now))
         return stats
+
+    def _ensure_restrictions(self, device, now: datetime) -> None:
+        """Profil ograniczen w kolejce, gdy go nie ma, jest stary albo minela
+        przerwa po nieudanej instalacji."""
+        udid = device["udid"]
+        profile, digest = profiles.restrictions_profile(
+            self.policy, device["label"], self.kind_of(device)
+        )
+        state = self.store.profile_states(udid).get(profiles.RESTRICTIONS_ID)
+        retry_after = from_iso(state["retry_after"]) if state else None
+        if (
+            state is None
+            or state["content_hash"] != digest
+            or (state["installed_at"] is None and retry_after is not None and now >= retry_after)
+        ) and not self.store.pending(udid, "InstallProfile"):
+            cmd = self.store.enqueue(
+                udid,
+                "InstallProfile",
+                {"Payload": payload_install_profile(profile)},
+                origin="policy",
+            )
+            self.store.set_profile_state(udid, profiles.RESTRICTIONS_ID, digest, cmd)
 
     def _kind_mismatch(self, device) -> None:
         """`kind: iphone` pod etykieta iPada: iPad zostaje iPadem (Policy.kind),

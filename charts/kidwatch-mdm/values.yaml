@@ -63,6 +63,13 @@ adminSecret: kidwatch-mdm-admin
 #      kubectl -n default create secret generic kidwatch-mdm-policy \
 #        --from-file=policy.yaml=./policy.yaml
 policySecret: kidwatch-mdm-policy
+#
+# 5) Token Apple Business (ADE) — opcjonalny, odnawiany co rok:
+#      kidwatch-mdm ade import <pobrany .p7m>
+#      kubectl -n default create secret generic kidwatch-mdm-ade \
+#        --from-file=token.json=$HOME/.kidwatch-mdm/ade/token.json
+#    Brak sekretu = iPady zapisuja sie tylko z zaproszen (bez ADE).
+adeSecret: kidwatch-mdm-ade
 
 ports:
   mdm: 8080

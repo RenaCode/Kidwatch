@@ -26,6 +26,11 @@ blocked_apps: []
 # Co ile godzin odswiezac stan iPadow (informacje, profile, aplikacje).
 refresh_hours: 6
 
+# Zapis automatyczny (Apple Business, docs/mdm.md Krok 5). Ekrany kreatora
+# pomijane przy wymazanym iPadzie; AppleID i Restore zostaja zawsze.
+# ade:
+#   skip_setup_items: [Android, Diagnostics, Payment, Privacy, Siri]
+
 # Nadpisania per dom (Kidwatch z wieloma domami, docs/mdm.md „Domy”):
 # dokladane MIEDZY wspolne `restrictions` a wlasne urzadzenia; `blocked_apps`
 # domu zastepuje wspolne (pusta lista = bez blokad aplikacji w domu).
@@ -43,6 +48,9 @@ devices:
     # DNS-over-HTTPS (iOS 27+). Na nadzorowanym iPadzie obejmuje wszystkie
     # sieci i nie da sie go wylaczyc; bez nadzoru serwer DNS nie wysyla wcale.
     dns_url: https://dns.nextdns.io/<profil>/iPad-Dziecka-1
+    # Numer seryjny z Apple Business: iPad w kreatorze przedstawia sie nim
+    # i dostaje profil TEJ etykiety (zapis ADE). Bez niego ADE odrzuca iPada.
+    # serial: <numer seryjny>
   dziecko2:
     name: iPad Dziecka 2
     dns_url: https://dns.nextdns.io/<profil>/iPad-Dziecka-2

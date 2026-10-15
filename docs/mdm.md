@@ -19,11 +19,12 @@ Nadzór (supervision) to warunek wszystkich blokad. Bez niego iOS przyjmie profi
 ## Architektura
 
 ```
-iPad ──HTTPS──▶ Traefik ──/mdm/*──▶ kidwatch-mdm :8080  (checkin, connect, enroll)
+iPad ──HTTPS──▶ Traefik ──/mdm/*──▶ kidwatch-mdm :8080  (checkin, connect, enroll, ade/enroll)
                                         │
 Kidwatch ──token──▶ kidwatch-mdm-admin :8081  (tylko w klastrze, NetworkPolicy)
                                         │
 kidwatch-mdm ──HTTP/2 + cert──▶ api.push.apple.com  (budzenie iPadów)
+kidwatch-mdm ──OAuth1 + sesja──▶ mdmenrollment.apple.com  (ADE: profil, przypisania, co 30 min)
 ```
 
 - Każdy iPad dostaje w profilu zapisu **własny certyfikat** od CA serwera. Każda jego wiadomość jest podpisana (`Mdm-Signature`) i sprawdzana: wystawca, podpis treści, powiązanie z UDID.
@@ -114,9 +115,56 @@ Co da się sprawdzić bez nadzoru: zapis, push, komendy, lista aplikacji (i alar
 Nadzór wymaga wymazania iPada. Dwie drogi:
 
 - **Apple Configurator (bez organizacji):** Mac + kabel, raz. „Przygotuj” → Ręczna konfiguracja → zaznacz „Nadzoruj urządzenia” → serwer MDM: nowy serwer z adresem z `kidwatch-mdm enroll <etykieta>`. **NIE** odznaczaj „Zezwalaj na parowanie z innymi komputerami” — Kidwatch czyta listę procesów przez parowanie. Reset w trybie odzyskiwania (komputer + kabel) zdejmuje nadzór; Kidwatch zauważy to jako ciszę iPada i zdarzenie `checkout`.
-- **Apple Business (jeśli wniosek przejdzie):** zapis automatyczny (ADE) bez kabla, nadzór wraca sam po każdym resecie. Wymaga dodatkowo obsługi tokenu ADE — osobny etap.
+- **Apple Business (organizacja zweryfikowana 2026-10-15):** zapis automatyczny (ADE). iPad przypisany w Apple Business do usługi `kidwatch-mdm` sam pobiera profil zapisu w kreatorze — po **każdym** wymazaniu, także po resecie z komputera. Profilu MDM nie da się zdjąć, a kreator czeka, aż serwer wgra ograniczenia (`DeviceConfigured`). Kroki niżej.
 
 Plan zachowania zapisów gier („pranie” kopii przez inne urządzenie) jest w notatkach projektu.
+
+### Krok 5a — usługa `kidwatch-mdm` w Apple Business (raz)
+
+1. **Klucz i certyfikat** są już wygenerowane w `~/.kidwatch-mdm/ade/` (`ade.key` i `kidwatch-mdm-ade.pem`). Gdyby trzeba od nowa: `kidwatch-mdm ade keypair`. Zrób kopię `ade.key` — bez niego tokenu z Apple nie odszyfrujesz.
+2. **Apple Business** → Urządzenia → Usługi zarządzania → **Dodaj** → nazwa `kidwatch-mdm` → wgraj `kidwatch-mdm-ade.pem` → Zapisz → **Pobierz token** (plik `*.p7m`).
+3. **Odszyfruj token** (na Macu, z repo):
+
+   ```sh
+   uv run kidwatch-mdm ade import ~/Downloads/<pobrany>.p7m
+   ```
+
+   Zapisuje `~/.kidwatch-mdm/ade/token.json` (0600) i wypisuje polecenie do Sekretu. Sekretów nie wypisuje.
+4. **Sekret w klastrze** i restart:
+
+   ```sh
+   kubectl -n default create secret generic kidwatch-mdm-ade \
+     --from-file=token.json=$HOME/.kidwatch-mdm/ade/token.json \
+     --dry-run=client -o yaml | kubectl apply -f -
+   kubectl -n default rollout restart deploy/kidwatch-mdm
+   ```
+
+   Sprawdzenie: `GET :8081/api/health` → `"ade": {"configured": true, "days_left": …}`. Token wygasa po roku — alarm przychodzi 30 dni wcześniej; odnowienie: „Pobierz token” w tej samej usłudze, `ade import --force`, ten sam Sekret.
+5. **Lokalnie** (opcjonalnie): `uv run kidwatch-mdm ade devices --policy <polityka>` pokazuje urządzenia przypisane do serwera i stan profilu.
+
+### Krok 5b — iPad dziecka
+
+1. **Numer seryjny do polityki** (Ustawienia → Ogólne → To urządzenie). Prawdziwa polityka jest w Sekrecie `kidwatch-mdm-policy`, nie w repo:
+
+   ```yaml
+   devices:
+     dziecko1:
+       name: iPad Dziecka 1
+       serial: <numer seryjny>
+       dns_url: https://dns.nextdns.io/<profil>/iPad-Dziecka-1
+   ```
+
+   iPad innego domu: wpis `<dom>/<etykieta>` (np. `2/dziecko1`) z `serial` — zapis ADE trafia wtedy do tego domu (jak zaproszenie tokenem domu), a jego alarmy do czujki tego domu. Token ADE jest **jeden na instancję** (jedna organizacja Apple Business); numer seryjny musi być unikalny w całej polityce. Alarmy organizacji (brak tokenu, token wygasa, synchronizacja, nieznane urządzenie, odrzucony podpis) idą do czujki instancji — administratora.
+
+   `kidwatch-mdm check-policy` przed podmianą Sekretu. Bez `serial` zapis ADE zostanie odrzucony (alarm „zapis ADE nieznanego urządzenia”).
+2. **Dodaj iPada do organizacji:** Apple Configurator na Macu, kabel → „Przygotuj” → Ręczna konfiguracja → **Dodaj do Apple Business** (iPad zostaje wymazany; przez pierwsze 30 dni można go odłączyć z Ustawień). **NIE** odznaczaj „Zezwalaj na parowanie z innymi komputerami”.
+3. **Apple Business** → Urządzenia → ten iPad → **Przypisz do usługi `kidwatch-mdm`**. Serwer przy najbliższej synchronizacji (do 30 min; restart poda = od razu) przypisze mu swój profil ADE. Gotowość = alarm „zapis automatyczny gotowy”, a w `/api/health` `ade.devices.<etykieta> = "ok"`.
+4. **Kreator na iPadzie:** Wi-Fi → „Zarządzanie zdalne” (profil kidwatch-mdm, bez przycisku pominięcia) → logowanie kontem dziecka z Rodziny → przywrócenie wypranej kopii. Kreator chwilę czeka na ograniczenia, potem rusza dalej.
+5. **Parowanie dla Kidwatcha od nowa:** wymazanie kasuje rekord parowania — raz kabel do Maca i `pymobiledevice3 lockdown pair` (jak przy pierwszym uruchomieniu Kidwatcha).
+
+Profil ADE (`build_profile` w `src/kidwatch_mdm/ade.py`): nadzór, obowiązkowy, MDM nie do zdjęcia, `await_device_configured`. Pomijane ekrany kreatora: `ade.skip_setup_items` w polityce (domyślnie Android, Diagnostics, Payment, Privacy, Siri). `AppleID` i `Restore` zostają zawsze — bez nich nie ma konta z Rodziny ani przywrócenia kopii.
+
+Alarmy ADE (trasa `kidwatch:czujka`): iPad zniknął z usługi w Apple Business, utracony profil, Apple odrzucił przypisanie, polityka ma numery seryjne a brak tokenu, zapis nieznanego urządzenia, odrzucony podpis zapisu, token wygasa za < 30 dni, synchronizacja nie działa od 6 h.
 
 ## Krok 6 — Kidwatch
 
@@ -155,7 +203,7 @@ Wycofanie obrazu serwera: kolumny `dom_id` i tabela tokenów są tylko dopisane,
 
 | Metoda | Ścieżka | Co |
 |---|---|---|
-| GET | `/api/health` | bez tokenu; stan certyfikatu APNs, liczba iPadów |
+| GET | `/api/health` | bez tokenu; stan certyfikatu APNs, liczba iPadów, `ade` (token, synchronizacja, liczba iPadów z `serial` w każdym stanie) |
 | GET | `/api/whoami` | zakres tokenu: `{"zakres": "instancja"}` albo `{"zakres": "dom", "dom_id": N}` |
 | GET | `/api/devices` | lista urządzeń (`dom_id`, `kind`: `ipad`/`iphone`, nadzór, system, ostatni kontakt, błąd push, synchronizacja DDM); token domu — tylko jego |
 | GET | `/api/devices/<udid>` | szczegóły: informacje, aplikacje, profile, status DDM, historia komend |
@@ -163,7 +211,7 @@ Wycofanie obrazu serwera: kolumny `dom_id` i tabela tokenów są tylko dopisane,
 | POST | `/api/devices/<udid>/commands` | `{"request_type": "DeviceLock", "Message": "..."}` albo `RestartDevice` (iPhone bez nadzoru: 409) |
 | POST | `/api/enrollments` | `{"label": "dziecko1"}` → link do profilu zapisu (24 h, jednorazowy) |
 | GET/PUT | `/api/os-update` | `{"target_version": "27.1", "deadline": "2026-10-20T20:00:00"}`, `{"clear": true}`, `{"disabled": true}`; per dom tokenu (instancja: Dom 1 albo `?dom=N`) |
-| GET | `/api/events?since=<id>` | dziennik: `checkout`, `profile_missing`, `apps_installed`, `command_error`, `push_token_dead`, `os_update_failed`, `signature_rejected`, `policy_entry_rejected`, `kind_mismatch`… |
+| GET | `/api/events?since=<id>` | dziennik: `checkout`, `profile_missing`, `apps_installed`, `command_error`, `push_token_dead`, `os_update_failed`, `signature_rejected`, `policy_entry_rejected`, `kind_mismatch`, `ade_*`… |
 | GET | `/api/policy` | polityka w użyciu (token domu: bez wpisów innych domów) |
 | GET/POST | `/api/tokens` | tylko token instancji: lista tokenów domów (bez wartości) / `{"dom_id": 2, "opis": "..."}` → token pokazany raz |
 | DELETE | `/api/tokens/<id>` | tylko token instancji: odwołanie tokenu domu |

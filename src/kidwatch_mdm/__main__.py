@@ -13,6 +13,9 @@ ustawia je chart, sekrety przychodza z Secretow:
   KIDWATCH_MDM_ADMIN_TOKEN  token API dla Kidwatch (wymagany)
   KIDWATCH_MDM_SIGN_CERT    tls.crt do podpisu profilu zapisu (opcjonalny)
   KIDWATCH_MDM_SIGN_KEY     tls.key do podpisu profilu zapisu (opcjonalny)
+  KIDWATCH_MDM_ADE_TOKEN    token.json z `kidwatch-mdm ade import` (opcjonalny;
+                            brak = bez Apple Business, zapis tylko z zaproszen)
+  KIDWATCH_MDM_ADE_URL      adres API ADE (domyslnie mdmenrollment.apple.com)
   KIDWATCH_MDM_PORT / KIDWATCH_MDM_ADMIN_PORT   domyslnie 8080 / 8081
 """
 
@@ -27,6 +30,7 @@ import threading
 import time
 from pathlib import Path
 
+from . import ade as ade_mod
 from . import apns_cert
 
 DEFAULT_APNS_DIR = Path.home() / ".kidwatch-mdm" / "apns"
@@ -76,7 +80,7 @@ def build_service():
     signer = build_signer(_env("KIDWATCH_MDM_SIGN_CERT"), _env("KIDWATCH_MDM_SIGN_KEY"))
     if signer is None:
         log.warning('brak certyfikatu podpisu — profil zapisu bedzie „Niezweryfikowany"')
-    return MDMService(
+    service = MDMService(
         signer=signer,
         store=Store(data / "kidwatch-mdm.db"),
         ca=ca,
@@ -84,6 +88,21 @@ def build_service():
         public_url=public_url,
         pusher=pusher,
     )
+    tokens = ade_mod.tokens_from_file(_env("KIDWATCH_MDM_ADE_TOKEN"))
+    if tokens is None:
+        log.info("brak tokenu ADE — Apple Business wylaczone")
+        ade_mod.report_unconfigured(service.store, policy)
+    else:
+        service.ade = ade_mod.AdeSync(
+            store=service.store,
+            policy=policy,
+            public_url=public_url,
+            client=ade_mod.AdeClient(
+                tokens, base_url=_env("KIDWATCH_MDM_ADE_URL", ade_mod.APPLE_URL)
+            ),
+        )
+        log.info("ADE: token wazny do %s", tokens.access_token_expiry)
+    return service
 
 
 def loop_step(service, now: float) -> None:
@@ -139,6 +158,8 @@ def cmd_run(args) -> int:
     heartbeat = _env("KIDWATCH_MDM_HEARTBEAT")
     while not stop.is_set():
         loop_step(service, time.monotonic())
+        if service.ade is not None:
+            ade_mod.sync_step(service.ade, time.monotonic())
         # Tetno = petla zyje (nie zawisla). Czy uzgadnianie sie UDAJE, mowi
         # last_reconcile_ok_at w /api/health — pilnuje tego czujka Kidwatch.
         # Restart poda nie naprawi zlej polityki ani bledu w kodzie, a co
@@ -281,6 +302,95 @@ def cmd_apns_check(args) -> int:
     return 0
 
 
+def _ade_dir(args) -> Path:
+    return Path(args.dir).expanduser()
+
+
+def cmd_ade_keypair(args) -> int:
+    cert = ade_mod.generate_keypair(_ade_dir(args))
+    print(f"zapisano {cert} i klucz {ade_mod.KEY_FILE} w {_ade_dir(args)}")
+    print("Wgraj ten .pem w Apple Business: Urzadzenia > Uslugi zarzadzania > Dodaj.")
+    return 0
+
+
+def cmd_ade_import(args) -> int:
+    directory = _ade_dir(args)
+    tokens = ade_mod.decrypt_server_token(
+        Path(args.file).read_bytes(),
+        directory / ade_mod.CERT_FILE,
+        directory / ade_mod.KEY_FILE,
+    )
+    target = directory / ade_mod.TOKEN_FILE
+    try:
+        ade_mod.write_private(target, tokens.to_json(), force=args.force)
+    except FileExistsError:
+        print(f"BLAD: {target} juz istnieje — przy odnowieniu dodaj --force", file=sys.stderr)
+        return 1
+    # Tylko sciezka i data — sekretow NIE wypisujemy (trafilyby do historii
+    # terminala i transkryptow).
+    print(f"zapisano {target} (0600), token wazny do {tokens.access_token_expiry}")
+    print("Sekret w klastrze (zastepuje poprzedni):")
+    print(
+        "  kubectl -n default create secret generic kidwatch-mdm-ade "
+        f"--from-file=token.json={target} --dry-run=client -o yaml | kubectl apply -f -"
+    )
+    print("  kubectl -n default rollout restart deploy/kidwatch-mdm")
+    return 0
+
+
+def _ade_client(args) -> ade_mod.AdeClient:
+    path = args.token or _env("KIDWATCH_MDM_ADE_TOKEN") or str(_ade_dir(args) / ade_mod.TOKEN_FILE)
+    tokens = ade_mod.tokens_from_file(path)
+    if tokens is None:
+        raise SystemExit(f"brak tokenu ADE: {path} (najpierw `kidwatch-mdm ade import`)")
+    return ade_mod.AdeClient(tokens, base_url=_env("KIDWATCH_MDM_ADE_URL", ade_mod.APPLE_URL))
+
+
+def _ade_policy(args):
+    from . import policy as policy_mod
+
+    path = args.policy or _env("KIDWATCH_MDM_POLICY")
+    return policy_mod.load(path) if path else policy_mod.Policy()
+
+
+def cmd_ade_devices(args) -> int:
+    client = _ade_client(args)
+    policy = _ade_policy(args)
+    account = client.account() or {}
+    print(f"organizacja: {account.get('org_name')}  serwer: {account.get('server_name')}")
+    devices, _ = client.fetch_devices()
+    if not devices:
+        print("brak urzadzen przypisanych do tego serwera w Apple Business")
+    for dev in devices:
+        serial = str(dev.get("serial_number") or "")
+        label = policy.label_for_serial(serial) or "-"
+        print(
+            f"{serial:<14} {label:<12} {dev.get('model') or '?':<24} "
+            f"profil: {dev.get('profile_status') or '-'} {dev.get('profile_uuid') or ''}"
+        )
+    return 0
+
+
+def cmd_ade_assign(args) -> int:
+    policy = _ade_policy(args)
+    dev = policy.devices.get(args.label)
+    if dev is None or not dev.serial:
+        print(f"BLAD: wpis {args.label} nie istnieje albo nie ma `serial`", file=sys.stderr)
+        return 1
+    public_url = args.url or _env("KIDWATCH_MDM_PUBLIC_URL")
+    if not public_url or not public_url.startswith("https://"):
+        raise SystemExit("podaj --url https://... (adres serwera MDM)")
+    client = _ade_client(args)
+    uuid = client.define_profile(ade_mod.build_profile(policy, public_url))
+    result = client.assign_profile(uuid, [dev.serial])
+    status = result.get(dev.serial, "?")
+    print(f"{args.label}: profil {uuid} -> {status}")
+    if status != "SUCCESS":
+        return 1
+    print("Uwaga: serwer przy nastepnej synchronizacji wyrowna profil do swojego.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="kidwatch-mdm")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -342,6 +452,48 @@ def build_parser() -> argparse.ArgumentParser:
     sp = with_dir(apns_sub.add_parser("check", help="sprawdz certyfikat .pem od Apple"))
     sp.add_argument("cert")
     sp.set_defaults(func=cmd_apns_check)
+
+    ade = sub.add_parser("ade", help="Apple Business: automatyczny zapis (ADE)")
+    ade_sub = ade.add_subparsers(dest="ade_cmd", required=True)
+
+    def ade_opts(sp, *, token: bool = False, policy: bool = False):
+        sp.add_argument(
+            "--dir",
+            default=str(ade_mod.DEFAULT_DIR),
+            help=f"klucz, certyfikat i token (domyslnie {ade_mod.DEFAULT_DIR})",
+        )
+        if token:
+            sp.add_argument(
+                "--token",
+                help="token.json (domyslnie $KIDWATCH_MDM_ADE_TOKEN albo <dir>/token.json)",
+            )
+        if policy:
+            sp.add_argument("--policy", help="plik polityki (domyslnie $KIDWATCH_MDM_POLICY)")
+        return sp
+
+    sp = ade_opts(ade_sub.add_parser("keypair", help="klucz i certyfikat dla Apple Business"))
+    sp.set_defaults(func=cmd_ade_keypair)
+
+    sp = ade_opts(ade_sub.add_parser("import", help="odszyfruj token .p7m z Apple Business"))
+    sp.add_argument("file", help="pobrany token (*.p7m)")
+    sp.add_argument("--force", action="store_true", help="nadpisz istniejacy token.json")
+    sp.set_defaults(func=cmd_ade_import)
+
+    sp = ade_opts(
+        ade_sub.add_parser("devices", help="urzadzenia przypisane do serwera"),
+        token=True,
+        policy=True,
+    )
+    sp.set_defaults(func=cmd_ade_devices)
+
+    sp = ade_opts(
+        ade_sub.add_parser("assign", help="przypisz profil ADE iPadowi z polityki"),
+        token=True,
+        policy=True,
+    )
+    sp.add_argument("label", help="etykieta z polityki (wpis z polem serial)")
+    sp.add_argument("--url", help="adres serwera (domyslnie $KIDWATCH_MDM_PUBLIC_URL)")
+    sp.set_defaults(func=cmd_ade_assign)
     return p
 
 
@@ -353,7 +505,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except apns_cert.CertError as exc:
+    except (apns_cert.CertError, ade_mod.AdeError) as exc:
         print(f"BLAD: {exc}", file=sys.stderr)
         return 2
 

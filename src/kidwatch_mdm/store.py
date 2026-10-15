@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS enrollments (
     -- tozsamosci, a urzadzenie z innym UDID nie moze sie nim zapisac.
     udid       TEXT,
     bound_at   TEXT,
+    -- Zapis ADE: UDID z podpisanego przez Apple MachineInfo. Authenticate
+    -- z innym UDID jest odrzucany. 'link' (zaproszenie) albo 'ade'.
+    expected_udid TEXT,
+    source     TEXT NOT NULL DEFAULT 'link',
     -- Dom z TOKENU, ktorym utworzono zaproszenie (nie z ciala zadania).
     dom_id     INTEGER NOT NULL DEFAULT 1
 );
@@ -200,6 +204,7 @@ class Store:
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
         self._migrate_domy()
+        self._migrate()
         # Identyfikator TEJ bazy: nowa baza (nowy PVC, ponowny init) = nowy
         # identyfikator. Kidwatch po nim poznaje, ze numeracja zdarzen ruszyla
         # od 1 i jego kursor nic tu nie znaczy. Kopia odtworzona z backupu
@@ -227,6 +232,17 @@ class Store:
             " WHERE dom_id IS NULL AND udid IS NOT NULL"
         )
 
+    def _migrate(self) -> None:
+        """Kolumny dodane po pierwszym wdrozeniu: CREATE IF NOT EXISTS nie
+        zmienia istniejacej tabeli na PVC."""
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(enrollments)")}
+        if "expected_udid" not in cols:
+            self.conn.execute("ALTER TABLE enrollments ADD COLUMN expected_udid TEXT")
+        if "source" not in cols:
+            self.conn.execute(
+                "ALTER TABLE enrollments ADD COLUMN source TEXT NOT NULL DEFAULT 'link'"
+            )
+
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
@@ -248,15 +264,22 @@ class Store:
 
     # ------------------------------------------------------------- zapisy
     def create_enrollment(
-        self, label: str, ttl: timedelta, now: datetime | None = None, *, dom_id: int = DOM_1
+        self,
+        label: str,
+        ttl: timedelta,
+        now: datetime | None = None,
+        *,
+        dom_id: int = DOM_1,
+        expected_udid: str | None = None,
+        source: str = "link",
     ) -> str:
         now = now or now_utc()
         token = secrets.token_urlsafe(24)
         with self.tx() as c:
             c.execute(
-                "INSERT INTO enrollments (token, label, created_at, expires_at, dom_id) "
-                "VALUES (?,?,?,?,?)",
-                (token, label, iso(now), iso(now + ttl), dom_id),
+                "INSERT INTO enrollments (token, label, created_at, expires_at, dom_id, "
+                "expected_udid, source) VALUES (?,?,?,?,?,?,?)",
+                (token, label, iso(now), iso(now + ttl), dom_id, expected_udid, source),
             )
         return token
 
@@ -273,7 +296,7 @@ class Store:
     def identity(self, fp: str) -> sqlite3.Row | None:
         return self.one(
             "SELECT i.fingerprint, i.token, e.label, e.udid AS bound_udid, e.expires_at, "
-            "e.dom_id "
+            "e.dom_id, e.expected_udid, e.source "
             "FROM identities i JOIN enrollments e ON e.token = i.token WHERE i.fingerprint = ?",
             (fp,),
         )

@@ -66,6 +66,10 @@ spec:
               value: /secrets/tls/tls.crt
             - name: KIDWATCH_MDM_SIGN_KEY
               value: /secrets/tls/tls.key
+            # Token Apple Business (ADE). Opcjonalny jak APNs: bez Sekretu
+            # serwer dziala, a iPady zapisuja sie tylko z zaproszen.
+            - name: KIDWATCH_MDM_ADE_TOKEN
+              value: /secrets/ade/token.json
           ports:
             - name: mdm
               containerPort: {{ .Values.ports.mdm }}
@@ -113,6 +117,9 @@ spec:
             - name: tls
               mountPath: /secrets/tls
               readOnly: true
+            - name: ade
+              mountPath: /secrets/ade
+              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -138,5 +145,11 @@ spec:
         - name: tls
           secret:
             secretName: {{ .Values.ingress.tlsSecret }}
+            defaultMode: 0400
+            optional: true
+        # Token ADE z `kidwatch-mdm ade import` (docs/mdm.md, Krok 5).
+        - name: ade
+          secret:
+            secretName: {{ .Values.adeSecret }}
             defaultMode: 0400
             optional: true
