@@ -8,7 +8,9 @@ z realizacji: §7, E1); **etap E2 zrealizowany w kodzie** — sejf integracji,
 `docs/sejf-domow.md`); **etap E3a zrealizowany** — panel i API per dom,
 administrator instalacji (ustalenia: §7, E3a); **etap E3b zrealizowany
 w kodzie** — MDM per dom i izolacja awarii pętli (ustalenia i plan wdrożenia:
-§7, E3b). Podstawa: `main` po #43 i #44 oraz
+§7, E3b); **etap E4 zrealizowany w kodzie** — zaproszenia i konta spoza
+rodziny (ustalenia: §7, E4; bez usunięcia aliasów i lustra — przeniesione
+do E4b). Podstawa: `main` po #43 i #44 oraz
 otwarty #45 (powiadomienia per konto), który zostanie scalony wcześniej
 i jest tu traktowany jako punkt wyjścia.
 
@@ -974,6 +976,72 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
   dostępu do innych domów zapraszającego.
 - **Gotowe, gdy**: konto testowe z grupy `kidwatch-goscie` przyjęło
   zaproszenie do Domu testowego i widzi tylko jego.
+- **Ustalenia z realizacji** (2026-10-14, wiążą E4b/E6):
+  - **Moduł** `src/kidwatch/zaproszenia.py`: tabela `zaproszenia` (schemat
+    §2.2 z dwiema zmianami: `utworzone_przez`/`przyjete_przez` są `NULL`-owalne
+    z `ON DELETE SET NULL` i obok mają kolumny `*_login` — konto bez domów
+    jest kasowane, a `NOT NULL REFERENCES users` blokowałby to usunięcie),
+    tabela `zaproszenia_ip` (limit per adres), logika i walidacja
+    (`PanelZaproszenia`). Trasy: `GET/POST /api/domy/<id>/zaproszenia[/utworz|/odwolaj]`
+    (`dom.zaproszenia`; tworzenie z potwierdzeniem hasłem/2FA, sufit roli
+    sprawdzany przed potwierdzeniem) i publiczne `POST /api/zaproszenia/sprawdz`,
+    `POST /api/zaproszenia/przyjmij` (token w ciele, tylko `application/json`).
+  - **Kto przyjmuje** (`tryb`): `sso` — `Remote-User` (konto zakładane w tej
+    samej transakcji co zużycie tokenu i członkostwo, hasło awaryjne losowe,
+    nikomu niepokazane; po przyjęciu od razu nowa sesja SSO); `sesja` — konto
+    zalogowane w panelu (hasłem: wymagany TOTP; CSRF; przyjęcie zamyka
+    sesje konta jak każda zmiana członkostwa — logowanie od nowa); `haslo` —
+    bez SSO nowe konto z hasłem zaproszonego, **tylko** gdy panel ma
+    `PANEL_TOTP_KEY` (inaczej 503: konto i tak nie zobaczyłoby domu). Za
+    Authelią bez nagłówka (port-forward) nowego konta hasłem się nie zakłada.
+  - **TOTP dla zaproszonych bez SSO**: `czlonkostwa.zaproszenie_id` (kolumna
+    z E1) oznacza członkostwo z zaproszenia; sesja z hasła bez TOTP dostaje
+    na trasach takiego domu 403, a `/api/auth/me` — `wymaga_totp` (front:
+    ekran włączenia 2FA). Sesja SSO — 2FA zrobiła Authelia.
+  - **Bariery i liczniki**: stan zaproszenia (`_token`) i niezależnie
+    warunkowy `UPDATE … WHERE przyjete_at IS NULL AND odwolane_at IS NULL
+    AND wygasa_at > ? AND proby < 5` w transakcji — każda z osobna zatrzymuje
+    powtórne i wygasłe przyjęcie (testy kanarkowe wyłączają pierwszą).
+    Nieudana próba na istniejącym tokenie (zły login względem `dla`,
+    zużyty/odwołany/wygasły) podbija `proby`; każda nieudana próba — licznik
+    adresu (10 / 15 min, także nieistniejące tokeny). Członek domu i konto
+    administracyjne dostają 409 **bez** zużycia tokenu. Argon2 przy zakładaniu
+    konta w tym samym jednym slocie co logowanie.
+  - **Po przeglądzie #72**: (1) tworzenie wymaga świeżego hasła/2FA — test
+    z kanarkiem; (2) prawo zapraszającego sprawdzane także przy podglądzie
+    i przyjęciu (`zapraszajacy_moze`, w transakcji): wypisanie z domu,
+    odebranie `dom.zaproszenia` albo rola obniżona pod rolę zaproszenia
+    zamyka jego oczekujące linki (410); (3) zły login **zalogowanego** (SSO,
+    sesja) nie podbija `proby` ani licznika adresu — to nie zgadywanie,
+    a inaczej każdy z linkiem i kontem SSO spaliłby zaproszenie; liczą się
+    tylko próby nieuwierzytelnione (ekran „ustaw hasło”) i złe/martwe
+    tokeny; (4) pierwsze logowanie w Authelii gubi `#token` (przekierowanie
+    przed załadowaniem strony) — ekran prosi o ponowne otwarcie linku,
+    README każe zalogować się w SSO wcześniej; przy SSO ekran ostrzega
+    o pustym oczekiwanym loginie.
+  - **Informacja o prywatności** (§8 decyzja 5) idzie z serwera
+    (`INFORMACJA_O_PRYWATNOSCI`) i jest pokazywana przed przyjęciem;
+    `potwierdzam: true` jest wymagane, a wpis `zaproszenie.przyjete`
+    w `audyt` mówi, że ją potwierdzono.
+  - **Powiadomienie zapraszającego**: tylko bramką z jawnym odbiorcą
+    (`funkcje: ["odbiorca"]`, kanał konta zapraszającego) — bez niej
+    wiadomość poszłaby trasami Domu 1, więc zostaje sam wpis w dzienniku.
+  - **Usunięcie członka** (`konta/usun`): wpis `konta.usun` w `audyt`,
+    sesje zamknięte i preferencje w domu skasowane (jak w E3a), a gdy konto
+    miało `dom.integracje` — odpowiedź z sugestią `dom-klucz-rotuj <dom>`.
+  - **Grupy SSO**: `kidwatch-goscie` w `DEFAULT_GROUPS` i `sso.grupy`;
+    reguła hosta panelu w Authelii (renacode-infra) wpuszcza ją wyłącznie
+    na `kidwatch.renacode.com`. Kolejność wdrożenia dowolna (każda strona
+    sama odmawia), konto gościa w Authelii — dopiero po obu.
+  - **Przeniesione do E4b** (osobny PR po scaleniu E3b): usunięcie aliasów
+    starych tras (`/api/day` → 409/alias) i lustra `users.rola`. Powody:
+    (1) aliasy są używane przez ~10 plików testów, które równolegle zmienia
+    E3b (MDM per dom) — wspólna zmiana to pewny konflikt; (2) usunięcie
+    lustra łamie wycofanie do obrazu E3a: jego start uzgadnia `czlonkostwa`
+    z `users.rola`, więc nieaktualne lustro nadpisałoby role (np. gościa
+    przyjętego do Domu 1 wypisałby jako `bez-domu`). E4b: najpierw obraz,
+    który przestaje **czytać** lustro przy starcie, po nim — przestaje je
+    pisać.
 
 ### E5 — iPhone (MDM + NextDNS)
 

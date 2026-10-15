@@ -198,6 +198,10 @@ export function previewResponse(path, method) {
     case '/api/mdm': return MDM;
     case '/api/konto/powiadomienia': return { profil: PROFIL, ...KATALOG };
     case '/api/konta': return KONTA;
+    case '/api/zaproszenia': return {
+      zaproszenia: [], role: ['wlasciciel-domu', 'zarzadca', 'podglad'],
+      waznosc_domyslna_h: 72, waznosc_max_h: 168, sso: true,
+    };
     default: throw new ApiError(404, 'brak danych w podglądzie');
   }
 }

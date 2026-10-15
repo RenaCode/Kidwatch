@@ -14,6 +14,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from kidwatch.panel_sso import DEFAULT_GROUPS
+
 KORZEN = Path(__file__).resolve().parents[1]
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="helm niedostepny")
 SSO = "default-authelia-sso@kubernetescrd"
@@ -87,9 +89,11 @@ def test_flaga_zaufania_do_naglowkow_tylko_razem_z_middlewarem():
     env = env_panelu("sso.enabled=true")
     assert env["SSO_NAGLOWKI"] == "1"
     assert env["SSO_ADRES"] == "https://kidwatch.renacode.com/"
-    # `admins` od E3a (konto administracyjne, decyzja 5); goscie dopiero w E4.
-    assert env["SSO_GRUPY"] == "wlasciciel,rodzina,admins"
-    assert "kidwatch-goscie" not in env["SSO_GRUPY"]
+    # `admins` od E3a (konto administracyjne, decyzja 5); `kidwatch-goscie`
+    # od E4 (osoby z zaproszen, decyzja 3) — ta sama lista co regula hosta
+    # w Authelii (renacode-infra) i DEFAULT_GROUPS w panel_sso.py.
+    assert env["SSO_GRUPY"] == "wlasciciel,rodzina,kidwatch-goscie,admins"
+    assert tuple(env["SSO_GRUPY"].split(",")) == DEFAULT_GROUPS
     # Bez routera panelu nie ma middleware'u — nie ma tez zaufania.
     assert env_panelu("sso.enabled=true", "ingress.enabled=false")["SSO_NAGLOWKI"] == "0"
 
