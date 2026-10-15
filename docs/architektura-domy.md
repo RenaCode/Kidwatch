@@ -6,7 +6,9 @@ kontrakt dla kolejnych etapów w docstringu `src/kidwatch/domy.py` (ustalenia
 z realizacji: §7, E1); **etap E2 zrealizowany w kodzie** — sejf integracji,
 `dom-importuj`, strażnik sieci (ustalenia: §7, E2; runbook:
 `docs/sejf-domow.md`); **etap E3a zrealizowany** — panel i API per dom,
-administrator instalacji (ustalenia: §7, E3a). Podstawa: `main` po #43 i #44 oraz
+administrator instalacji (ustalenia: §7, E3a); **etap E3b zrealizowany
+w kodzie** — MDM per dom i izolacja awarii pętli (ustalenia i plan wdrożenia:
+§7, E3b). Podstawa: `main` po #43 i #44 oraz
 otwarty #45 (powiadomienia per konto), który zostanie scalony wcześniej
 i jest tu traktowany jako punkt wyjścia.
 
@@ -871,6 +873,65 @@ osobno. Kolejność zależności: **E1 → (E2 ∥ E3a ∥ E5) → E3b → E4 �
 - **Gotowe, gdy**: Kidwatch używa tokenu Domu 1; `refresh` iPada Domu 1
   działa; komenda na UDID spoza domu = 404 w obu miejscach.
 - **Równolegle z**: E2 (różne pliki), po E3a w części `panel.py`.
+- **Ustalenia z realizacji** (wiążą E4/E6):
+  - **Serwer**: `enrollments.dom_id`, `devices.dom_id` (`NOT NULL DEFAULT 1`),
+    `events.dom_id` (NULL = zdarzenie serwera, np. odrzucony podpis; przy
+    każdym starcie zdarzenia bez domu z UDID-em znanego urządzenia dostają
+    jego dom — zapisy obrazu sprzed E3b po wycofaniu), tabela `tokeny_domow`
+    (SHA-256, odwoływalne). Zakres z nagłówka: token instancji = wszystko jak
+    dotąd (zaproszenia i `os-update` Domu 1, inny dom `?dom=N`), token domu =
+    tylko `dom_id` domu, obcy UDID = 404 przed odczytem ciała; `/api/tokens`
+    i `/api/whoami`. `os_update` Domu 1 zostaje pod kluczem `os_update`
+    (obraz sprzed E3b go czyta), kolejne — `os_update:<dom>`. CLI:
+    `token-domu`, `tokeny`, `token-odwolaj`, `enroll --dom`. Polityka:
+    `<dom>/<etykieta>`, `domy: {N: {restrictions, blocked_apps}}` walidowane jak
+    wspólne (błąd zatrzymuje start).
+  - **Kidwatch — zakres tokenu** (`mdm.zakres_tokenu`): token domu równy
+    `MDM_ADMIN_TOKEN` = zakres instancji, dozwolony **tylko Domowi 1** (czujka
+    jak przed E3b); inny dom z tokenem instancji — MDM wyłączone w pętli
+    i w panelu (fail-closed). Czujka domu z własnym tokenem: iPady i zdarzenia
+    domu, bez alarmów serwera. **Czujka instancji** (`run`,
+    `start_czujki_mdm_instancji`): token instancji, alarmy serwera i zdarzenia
+    bez domu jako alarm instancji, stan w `mdm-instancji.db` obok bazy
+    Domu 1; aktywna tylko, gdy jakiś dom ma token domu, a żaden — token
+    instancji (bez dublowania alarmów w kroku 1 wdrożenia).
+  - **Panel — `udid ∈ dom`** (`mdm.udid_w_domie`, `RejestrDomow.dom_udidu`):
+    UDID przypisany w `urzadzenia` innemu domowi = 404 zawsze; poza tym
+    należy do domu z konfiguracji domu. **Odstępstwo dla bezpieczeństwa Domu 1**:
+    UDID, którego nie ma żaden dom, Dom 1 obsługuje dalej — iPady zapisane do
+    MDM przed domami nie mają `udid` w `config.yaml` (walidator wymaga pary
+    `udid`+`host`), a ścisłe `udid ∈ urzadzenia(1)` odcięłoby Dom 1 od komend.
+    Lista i dziennik w zakładce MDM filtrowane tak samo; licznik urządzeń
+    z `/api/health` (wspólny) zastąpiony liczbą urządzeń domu. Komenda
+    i szczegóły wymagają dodatkowo `dom_id` urządzenia **wg serwera** równego
+    domowi — token instancji Domu 1 nie jest filtrowany, a iPad innego domu,
+    którego tamten dom nie wpisał jeszcze do `urzadzenia`, przeszedłby wyjątek
+    Domu 1 (przegląd #71).
+  - **Zakres tokenu rozstrzyga serwer** (`/api/whoami`, przy pierwszym
+    odczycie czujki; serwer bez `whoami` — porównanie z `MDM_ADMIN_TOKEN`):
+    bez zmiennej Dom 1 z tokenem instancji i tak dostaje zakres instancji,
+    więc alarmy serwera nie giną. Dom ≠ 1 w panelu — `whoami` przy budowie
+    posrednika, błąd = brak MDM. Czujka instancji wznowiona po przerwie
+    zaczyna od bieżącego końca dziennika (zdarzenia z przerwy obsłużyły
+    czujki domów).
+  - **Izolacja awarii** (`Nadzorca(..., odbuduj=...)`): koniec zadania domu
+    albo tik stojący > 3× okres (min. 90 s, `HomeRuntime.tetno`) zatrzymuje
+    tylko ten dom (z opróżnieniem kolejki) i buduje go ponownie po 1, 2, 4…
+    min, najwyżej co 30 min; seria kończy się po 30 min spokoju. Alarm
+    instancji od razu, kolejne z serii co 1 h, 2 h… do doby; czujka domu
+    (`WATCHDOG`) zapisana do kolejki domu przed zamknięciem. Plik tętna
+    procesu (liveness) dotyka nadzorca co 10 s — nie tik Domu 1. **Eskalacja**:
+    `RESTART_ESKALACJA` (8) awarii z rzędu bez 30 min spokoju (~2 h)
+    **Domu 1** albo domu, gdy żaden inny nie chodzi = alarm „monitoring
+    zatrzymany — restart poda” i koniec procesu kodem 1, k8s restartuje poda
+    jak przed E3b. Inny dom padający bez końca nie przerywa zdrowego Domu 1:
+    backoff co 30 min i alarm. Bez `odbuduj` (testy E1) — koniec
+    zadania = kod 1 jak dotąd. Etykieta zapisu z `/` bez domu — 400.
+  - **Nie zrobione w E3b** (przed E6): `run` dalej uruchamia tylko Dom 1
+    (start domów ≠ 1 z alarmem wstrzymanej kolejki — osobny krok), urządzenie
+    Apple w domu ≠ 1 wymaga dziś `udid`+`host` w `urzadzenia` (walidator
+    odczytu wprost) — przed pierwszym iPadem Domu 2 trzeba dopuścić urządzenie
+    „tylko MDM” bez adresu.
 
 ### E4 — zaproszenia (i konta spoza rodziny)
 

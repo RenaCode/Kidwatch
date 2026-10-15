@@ -33,8 +33,10 @@ DEFAULT_TICK_SECONDS = 30.0
 HEARTBEAT_PATH = Path(os.environ.get("KIDWATCH_HEARTBEAT", "/tmp/kidwatch-heartbeat"))  # noqa: S108
 
 
-def touch_heartbeat(path: Path = HEARTBEAT_PATH) -> None:
-    """Zapisuje czas ostatniego udanego tiku. Blad zapisu nie moze zabic petli."""
+def touch_heartbeat(path: Path | None = None) -> None:
+    """Zapisuje czas ostatniego udanego tiku. Blad zapisu nie moze zabic petli.
+    Bez `path` — biezace HEARTBEAT_PATH (nadzorca domow, E3b)."""
+    path = HEARTBEAT_PATH if path is None else path
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(str(int(time.time())), encoding="utf-8")
@@ -52,9 +54,14 @@ async def tick_loop(
     interval_seconds: float = DEFAULT_TICK_SECONDS,
     sleep=asyncio.sleep,
     max_iterations: int | None = None,
-    heartbeat_path: Path = HEARTBEAT_PATH,
+    heartbeat_path: Path | None = HEARTBEAT_PATH,
+    tetno=None,
 ) -> None:
-    """Woła `engine.tick()` w petli. `max_iterations` istnieje dla testow."""
+    """Woła `engine.tick()` w petli. `max_iterations` istnieje dla testow.
+
+    `tetno()` — tetno domu (domy.HomeRuntime.dotknij_tetna) po udanym tiku.
+    `heartbeat_path=None` — plik tetna procesu dotyka kto inny (nadzorca
+    domow z izolacja awarii, E3b): tik jednego domu nie decyduje o liveness."""
     iteration = 0
     while max_iterations is None or iteration < max_iterations:
         iteration += 1
@@ -71,7 +78,10 @@ async def tick_loop(
             )
             # Dotykamy tetna DOPIERO po udanym tiku — inaczej zglaszalibysmy
             # zdrowie procesu, ktory w kazdym obiegu wywala wyjatek.
-            touch_heartbeat(heartbeat_path)
+            if heartbeat_path is not None:
+                touch_heartbeat(heartbeat_path)
+            if tetno is not None:
+                tetno()
         except asyncio.CancelledError:
             raise
         except Exception:

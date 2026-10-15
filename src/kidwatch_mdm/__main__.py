@@ -215,12 +215,51 @@ def cmd_enroll(args) -> int:
     service = build_service()
     service.enrollment_ttl = td(hours=args.hours)
     try:
-        out = service.create_enrollment(args.label)
+        out = service.create_enrollment(args.label, args.dom)
     except ServiceError as exc:
         print(f"BLAD: {exc}", file=sys.stderr)
         return 1
     print(out["url"])
     print(f"wazny {args.hours} h, jednorazowy (wiaze sie z pierwszym iPadem, ktory sie zapisze)")
+    return 0
+
+
+def _store():
+    from .store import Store
+
+    return Store(Path(_env("KIDWATCH_MDM_DATA", "/data")) / "kidwatch-mdm.db")
+
+
+def cmd_token_domu(args) -> int:
+    """Token API domu (E3b). Wypisany RAZ — w bazie zostaje SHA-256."""
+    if args.dom < 1:
+        print("BLAD: numer domu >= 1", file=sys.stderr)
+        return 1
+    token_id, token = _store().create_home_token(args.dom, args.opis)
+    print(token)
+    print(
+        f"token domu {args.dom} (id {token_id}) — pokazany tylko teraz. Wpisz go w Kidwatchu: "
+        f"panel -> Dom {args.dom} -> Integracje -> MDM -> token.",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def cmd_tokeny(args) -> int:
+    rows = _store().home_tokens()
+    for r in rows:
+        stan = f"odwolany {r['revoked_at']}" if r["revoked_at"] else "aktywny"
+        print(f"{r['id']:>4}  dom {r['dom_id']:<3} {stan:<36} {r['created_at']}  {r['opis'] or ''}")
+    if not rows:
+        print("brak tokenow domow (Kidwatch uzywa tokenu instancji)")
+    return 0
+
+
+def cmd_token_odwolaj(args) -> int:
+    if not _store().revoke_home_token(args.id):
+        print(f"BLAD: brak aktywnego tokenu o id {args.id}", file=sys.stderr)
+        return 1
+    print(f"token {args.id} odwolany")
     return 0
 
 
@@ -373,7 +412,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("enroll", help="link do profilu zapisu dla jednego iPada")
     sp.add_argument("label", help="etykieta z polityki, np. dziecko1")
     sp.add_argument("--hours", type=int, default=24)
+    sp.add_argument("--dom", type=int, default=1,
+                    help="dom urzadzenia (domyslnie 1; inny dom: etykieta <dom>/<label>)")
     sp.set_defaults(func=cmd_enroll)
+
+    sp = sub.add_parser("token-domu", help="nowy token API domu (wypisany raz)")
+    sp.add_argument("dom", type=int, help="numer domu z Kidwatcha (`kidwatch domy`)")
+    sp.add_argument("--opis", default=None)
+    sp.set_defaults(func=cmd_token_domu)
+
+    sp = sub.add_parser("tokeny", help="tokeny domow (bez wartosci)")
+    sp.set_defaults(func=cmd_tokeny)
+
+    sp = sub.add_parser("token-odwolaj", help="odwolaj token domu")
+    sp.add_argument("id", type=int)
+    sp.set_defaults(func=cmd_token_odwolaj)
 
     apns = sub.add_parser("apns", help="certyfikat push APNs przez mdmcert.download")
     apns_sub = apns.add_subparsers(dest="apns_cmd", required=True)

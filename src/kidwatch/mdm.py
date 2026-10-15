@@ -10,26 +10,120 @@ Dwie rzeczy:
 
 Serwer MDM ma WLASNA baze i jest jedynym jej pisarzem. Kidwatch pamieta tylko
 kursor dziennika (meta `mdm:events`) i znaczniki wyslanych alarmow.
+
+Domy (docs/architektura-domy.md §4.3, etap E3b). Serwer zna dom kazdego
+urzadzenia i rozroznia token INSTANCJI (`MDM_ADMIN_TOKEN`, wszystko) od tokenu
+DOMU (tylko jego urzadzenia). Czujka ma wiec trzy zakresy (`zakres_tokenu`):
+
+  * ZAKRES_INSTANCJA — dom trzyma token instancji. Dozwolone wylacznie Domu 1
+    i dziala dokladnie jak przed E3b (iPady, dziennik, alarmy serwera) —
+    pierwszy krok wdrozenia nie zmienia nic;
+  * ZAKRES_DOM — dom ma wlasny token: iPady i zdarzenia domu, bez alarmow
+    calego serwera (certyfikat APNs, uzgadnianie, pushe);
+  * ZAKRES_SERWER — czujka instancji z tokenem instancji: tylko alarmy serwera
+    i zdarzenia bez domu, do administratora (alarm instancji), aktywna, gdy
+    zaden dom nie trzyma tokenu instancji.
+
+Dom inny niz Dom 1 z tokenem instancji nie dostaje MDM wcale (fail-closed):
+widzialby iPady Domu 1. Druga bariera w panelu: `udid_w_domie`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import json
 import logging
+import os
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 
-from .config import MdmConfig
+from .config import SEKRETY_ZE_SRODOWISKA, MdmConfig
 from .models import Notification, NotifyKind
 from .store import Store
 
 log = logging.getLogger(__name__)
 
 CURSOR_KEY = "mdm:events"
+
+#: Dom wlasciciela — jedyny, ktoremu wolno trzymac token instancji.
+DOM_1 = 1
+ZAKRES_INSTANCJA = "instancja"
+ZAKRES_DOM = "dom"
+ZAKRES_SERWER = "serwer"
+
+
+def token_instancji() -> str | None:
+    """Token instancji serwera MDM (Sekret kidwatch-mdm-admin) z env."""
+    return os.environ.get(SEKRETY_ZE_SRODOWISKA[("mdm", "token")], "").strip() or None
+
+
+def zakres_tokenu(dom_id: int, token: str | None) -> str | None:
+    """Zakres czujki i posrednika panelu dla tokenu domu: ZAKRES_INSTANCJA
+    (Dom 1 z tokenem instancji — zachowanie sprzed E3b), ZAKRES_DOM albo
+    None — brak tokenu albo token instancji w innym domu (odmowa)."""
+    if not token:
+        return None
+    inst = token_instancji()
+    if inst is not None and hmac.compare_digest(token.encode(), inst.encode()):
+        if dom_id != DOM_1:
+            log.error("dom %d: token MDM to token instancji — widzialby iPady innych domow; "
+                      "MDM tego domu wylaczone (wydaj token domu: kidwatch-mdm token-domu %d)",
+                      dom_id, dom_id)
+            return None
+        return ZAKRES_INSTANCJA
+    return ZAKRES_DOM
+
+
+#: Zakresy czujek domow ustalone przez serwer (`/api/whoami`): dom -> zakres.
+#: Czujka instancji jest aktywna, gdy jakis dom ma token domu, a zaden — token
+#: instancji (wtedy alarmy serwera daje ten dom, jak przed E3b).
+ZAKRESY_CZUJEK: dict[int, str] = {}
+
+
+def czujka_instancji_potrzebna() -> bool:
+    z = set(ZAKRESY_CZUJEK.values())
+    return ZAKRES_DOM in z and ZAKRES_INSTANCJA not in z
+
+
+def zakres_z_whoami(dom_id: int, odpowiedz: dict) -> str | None:
+    """Zakres tokenu domu wg serwera: ZAKRES_INSTANCJA (tylko Dom 1),
+    ZAKRES_DOM (gdy serwer zna token jako token TEGO domu) albo None = odmowa."""
+    zakres = odpowiedz.get("zakres") if isinstance(odpowiedz, dict) else None
+    if zakres == "instancja":
+        return ZAKRES_INSTANCJA if dom_id == DOM_1 else None
+    if zakres == "dom" and odpowiedz.get("dom_id") == dom_id:
+        return ZAKRES_DOM
+    return None
+
+
+def urzadzenie_domu(device: dict, dom_id: int) -> bool:
+    """Dom urzadzenia wg serwera MDM (`/api/devices/<udid>`); serwer sprzed
+    E3b nie podaje `dom_id` — wszystko jest wtedy w Domu 1."""
+    return device.get("dom_id", DOM_1) == dom_id if isinstance(device, dict) else False
+
+
+def udid_w_domie(udid: str, dom_id: int, home, dom_udidu: Callable[[str], int | None]) -> bool:
+    """Druga bariera panelu (§4.3): czy UDID nalezy do domu, ZANIM panel
+    zawola serwer MDM. Niezalezna od filtra serwera — liczy z danych Kidwatcha.
+
+    `dom_udidu(udid)` — dom z tabeli `urzadzenia` (UDID jest tam globalnie
+    jednoznaczny) albo None. UDID przypisany innemu domowi = obcy zawsze.
+    Poza tym nalezy do domu, gdy jest w urzadzeniach jego konfiguracji.
+    Wyjatek Domu 1: iPady zapisane do MDM przed domami nie musza miec
+    `udid` w config.yaml — UDID, ktorego nie ma zaden dom, Dom 1 dalej
+    obsluguje (inaczej blad w tym filtrze odcialby Dom 1 od komend)."""
+    u = udid.strip().upper()
+    wlasciciel = dom_udidu(u)
+    if wlasciciel is not None:
+        return wlasciciel == dom_id
+    if any((getattr(d, "udid", None) or "").upper() == u for d in getattr(home, "devices", ())):
+        return True
+    return dom_id == DOM_1
 #: Identyfikator bazy serwera MDM, do ktorej odnosi sie kursor.
 INSTANCE_KEY = "mdm:instance"
 
@@ -350,10 +444,53 @@ def _stuck_hint(status: str, device_kind: str) -> str:
 
 
 class MdmWatcher:
-    def __init__(self, api: MdmApi, store: Store, cfg: MdmConfig) -> None:
+    def __init__(
+        self,
+        api: MdmApi,
+        store: Store,
+        cfg: MdmConfig,
+        zakres: str = ZAKRES_INSTANCJA,
+        dom_id: int | None = None,
+    ) -> None:
         self.api = api
         self.store = store
         self.cfg = cfg
+        #: ZAKRES_INSTANCJA (jak przed E3b), ZAKRES_DOM albo ZAKRES_SERWER.
+        #: Z `dom_id` to tylko przypuszczenie (porownanie z MDM_ADMIN_TOKEN) —
+        #: rozstrzyga serwer (`/api/whoami`) przy pierwszym odczycie.
+        self.zakres = zakres
+        self.dom_id = dom_id
+        self._zakres_ustalony = dom_id is None
+        #: Czujka wznowiona po przerwie: zalegle zdarzenia pomijamy (kursor na
+        #: biezacy koniec), zamiast wysylac je hurtem.
+        self.od_nowa = False
+        #: Czy czujka instancji byla aktywna w poprzednim obiegu (mdm_loop).
+        self.aktywna = False
+
+    def ustal_zakres(self) -> None:
+        """Zakres tokenu wg serwera (w watku fetch). Serwer sprzed E3b (404) —
+        zostaje przypuszczenie z MDM_ADMIN_TOKEN. Token instancji w domu
+        innym niz Dom 1 albo token obcego domu = MdmError 403 (bez danych)."""
+        if self._zakres_ustalony:
+            return
+        try:
+            odp = self.api.request("GET", "/api/whoami")
+        except MdmError as exc:
+            if exc.status != 404:
+                raise
+            log.info("mdm: serwer bez /api/whoami — dom %s: zakres %s z porownania tokenu",
+                     self.dom_id, self.zakres)
+        else:
+            zakres = zakres_z_whoami(self.dom_id, odp)
+            if zakres is None:
+                raise MdmError(403, f"dom {self.dom_id}: token MDM ma zakres {odp} — "
+                                    "czujka wylaczona (wydaj token domu)")
+            if zakres != self.zakres:
+                log.warning("mdm: dom %s: serwer mowi zakres %s (przypuszczenie: %s)",
+                            self.dom_id, zakres, self.zakres)
+            self.zakres = zakres
+        self._zakres_ustalony = True
+        ZAKRESY_CZUJEK[self.dom_id] = self.zakres
 
     # Podzial na fetch (tylko HTTP) i process (baza): mdm_loop wola fetch
     # w watku pomocniczym, zeby wolny serwer MDM nie trzymal petli asyncio,
@@ -366,6 +503,7 @@ class MdmWatcher:
         return None if raw is None else int(raw)
 
     def fetch(self, since: int | None, instance: str | None = None) -> dict:
+        self.ustal_zakres()
         health = self.api.health()
         head = health.get("last_event_id")
         server = health.get("instance")
@@ -397,13 +535,23 @@ class MdmWatcher:
         devices = data["devices"]
         by_udid = {d["udid"]: d for d in devices}
         out = self._reset(data, now)
-        out += self._events(by_udid, data["events"], data["since"], now)
-        out += self._silent(devices, now)
-        out += self._certificate(data["health"], now)
-        out += self._ade(data["health"], now)
-        out += self._reconcile(data["health"], now)
-        out += self._push(data["health"], devices, now)
-        out += self._stuck(devices, now)
+        events = data["events"]
+        if self.zakres == ZAKRES_SERWER:
+            # Zdarzenia z domem ida do czujek domow; serwer bez `dom_id` w
+            # zdarzeniach (sprzed E3b) — nic, zeby nie dublowac alarmow domu.
+            events = [e for e in events if "dom_id" in e and e["dom_id"] is None]
+        out += self._events(by_udid, events, data["since"], now, last_id=_max_id(data))
+        if self.zakres != ZAKRES_SERWER:
+            out += self._silent(devices, now)
+            out += self._stuck(devices, now)
+        if self.zakres != ZAKRES_DOM:
+            # Stan calego serwera: certyfikat, uzgadnianie, pushe. Z tokenem
+            # domu robi to czujka instancji — inaczej kazdy dom dostalby alarm
+            # o certyfikacie, ktorego nie odnowi.
+            out += self._certificate(data["health"], now)
+            out += self._ade(data["health"], now)
+            out += self._reconcile(data["health"], now)
+            out += self._push(data["health"], devices, now)
         server = data["health"].get("instance")
         if server and server != self.store.get_meta(INSTANCE_KEY):
             self.store.set_meta(INSTANCE_KEY, server)
@@ -413,13 +561,21 @@ class MdmWatcher:
         # czyli co minute (audyt 2026-10-10, W1). Zapis tu, w watku petli.
         return [n for n in out if self.store.mark_sent(n.dedup_key, now)]
 
+    def _kursor_obiegu(self) -> int | None:
+        if self.od_nowa:
+            self.od_nowa = False
+            return None  # jak pierwsze uruchomienie: kursor na biezacy koniec
+        return self.cursor()
+
     def poll(self, now: datetime) -> list[Notification]:
         """Wszystko w biezacym watku (CLI, testy)."""
-        return self.process(self.fetch(self.cursor(), self.store.get_meta(INSTANCE_KEY)), now)
+        return self.process(
+            self.fetch(self._kursor_obiegu(), self.store.get_meta(INSTANCE_KEY)), now
+        )
 
     async def poll_async(self, now: datetime) -> list[Notification]:
         data = await asyncio.to_thread(
-            self.fetch, self.cursor(), self.store.get_meta(INSTANCE_KEY)
+            self.fetch, self._kursor_obiegu(), self.store.get_meta(INSTANCE_KEY)
         )
         return self.process(data, now)
 
@@ -428,7 +584,8 @@ class MdmWatcher:
         if not reset:
             return []
         self.store.set_meta(CURSOR_KEY, str(data["head"]))
-        if reset == "first":
+        if reset == "first" or self.zakres == ZAKRES_SERWER:
+            # Nowa baza serwera — alarm daje czujka domu (zakladka MDM domu).
             return []
         log.warning(
             "mdm: %s bazy serwera — kursor %s -> %s",
@@ -458,10 +615,15 @@ class MdmWatcher:
         return udid or "MDM"
 
     def _events(
-        self, by_udid: dict[str, dict], events: list[dict], since: int, now: datetime
+        self,
+        by_udid: dict[str, dict],
+        events: list[dict],
+        since: int,
+        now: datetime,
+        last_id: int | None = None,
     ) -> list[Notification]:
         out: list[Notification] = []
-        last = since
+        last = max(since, last_id or 0)
         for event in events:
             last = max(last, int(event["id"]))
             device = by_udid.get(event.get("udid"))
@@ -686,18 +848,57 @@ class MdmWatcher:
         return out
 
 
+def _max_id(data: dict) -> int | None:
+    """Najwyzszy numer w porcji zdarzen PRZED filtrem czujki serwera — kursor
+    przesuwa sie takze po zdarzeniach domow, ktorych ta czujka nie zglasza."""
+    ids = [int(e["id"]) for e in data.get("events") or []]
+    return max(ids) if ids else None
+
+
+class AlarmyInstancji:
+    """Dispatcher czujki serwera (ZAKRES_SERWER): kazda notka jako alarm
+    instancji (`__main__.alarm_instancji`, do administratora). Bez kanalu —
+    sam log."""
+
+    def __init__(self, alarm) -> None:
+        self.alarm = alarm
+
+    async def send_all(self, notes) -> None:
+        for note in notes:
+            if self.alarm is None:
+                log.error("alarm MDM instancji (tylko log): %s — %s", note.title, note.text)
+                continue
+            try:
+                await self.alarm(note.title, note.text)
+            except Exception:
+                log.exception("alarm MDM instancji nie wyszedl: %s", note.title)
+
+
 async def mdm_loop(
     watcher: MdmWatcher,
     dispatcher,
     interval_seconds: float,
     sleep=asyncio.sleep,
     max_iterations: int | None = None,
+    aktywny: Callable[[], bool] | None = None,
 ) -> None:
-    """Odpytuje serwer MDM. Blad logujemy raz na rodzaj, jak czujka UniFi."""
+    """Odpytuje serwer MDM. Blad logujemy raz na rodzaj, jak czujka UniFi.
+    `aktywny()` False = obieg pominiety (czujka instancji, gdy alarmy serwera
+    daje dom z tokenem instancji). Po przerwie czujka startuje od biezacego
+    konca dziennika — zdarzenia z przerwy obsluzyly czujki domow."""
     last_error: str | None = None
     iteration = 0
     while max_iterations is None or iteration < max_iterations:
         iteration += 1
+        if aktywny is not None:
+            teraz_aktywna = aktywny()
+            if not teraz_aktywna:
+                watcher.aktywna = False
+                await sleep(interval_seconds)
+                continue
+            if not watcher.aktywna and watcher.cursor() is not None:
+                watcher.od_nowa = True
+            watcher.aktywna = True
         try:
             notes = await watcher.poll_async(datetime.now(UTC))
             if last_error is not None:

@@ -625,7 +625,8 @@ class Puste:
 
 
 @pytest.mark.parametrize("kek_env", [None, "", "zly-klucz-nie-base64"])
-def test_brak_kek_nie_blokuje_domu_1_z_yaml(tmp_path, monkeypatch, kek_env):
+def test_brak_kek_nie_blokuje_domu_1_z_yaml(tmp_path, monkeypatch, kek_env,
+                                            run_zatrzymany_po_awarii):
     monkeypatch.setattr(cli, "build_source", lambda cfg, store: Puste())
     monkeypatch.setenv("KIDWATCH_HEARTBEAT", str(tmp_path / "hb"))
     if kek_env is None:
@@ -633,11 +634,13 @@ def test_brak_kek_nie_blokuje_domu_1_z_yaml(tmp_path, monkeypatch, kek_env):
     else:
         monkeypatch.setenv("KIDWATCH_KEK", kek_env)
     cfg_path = _zapisz_konfig(tmp_path, _prosta(tmp_path))
-    # Koniec atrapy zrodla = koniec zadania = kod 1 (jak w E1): proces ruszyl.
-    assert cli.main(["--config", str(cfg_path), "run"]) == 1
+    # Proces ruszyl: koniec atrapy zrodla = restart domu (E3b), `run` konczy test.
+    assert cli.main(["--config", str(cfg_path), "run"]) == 0
+    assert [dom for dom, _ in run_zatrzymany_po_awarii] == [1]
 
 
-def test_run_dom_1_z_bazy_i_bez_kek(tmp_path, monkeypatch, kek, caplog, capsys):
+def test_run_dom_1_z_bazy_i_bez_kek(tmp_path, monkeypatch, kek, caplog, capsys,
+                                    run_zatrzymany_po_awarii):
     kanarek = "KANAREK-NEXTDNS-" + secrets.token_hex(10)
     monkeypatch.setenv("NEXTDNS_API_KEY", kanarek)
     monkeypatch.setenv("KIDWATCH_HEARTBEAT", str(tmp_path / "hb"))
@@ -653,7 +656,7 @@ def test_run_dom_1_z_bazy_i_bez_kek(tmp_path, monkeypatch, kek, caplog, capsys):
 
     monkeypatch.setattr(cli, "build_source", zrodlo)
     caplog.set_level(logging.DEBUG)
-    assert cli.main(["--config", str(cfg_path), "run"]) == 1
+    assert cli.main(["--config", str(cfg_path), "run"]) == 0  # ruszyl (restart domu, E3b)
     assert widziane["klucz"] == kanarek and widziane["straznik"] is not None
     assert "Dom 1: konfiguracja z bazy" in caplog.text
 
@@ -668,7 +671,7 @@ def test_run_dom_1_z_bazy_i_bez_kek(tmp_path, monkeypatch, kek, caplog, capsys):
     # Powrot do config.yaml bez KEK: dziala jak przed E2.
     assert cli.main(["--config", str(cfg_path), "dom-zrodlo", "1", "yaml"]) == 0
     monkeypatch.setenv("NEXTDNS_API_KEY", kanarek)
-    assert cli.main(["--config", str(cfg_path), "run"]) == 1
+    assert cli.main(["--config", str(cfg_path), "run"]) == 0
     assert widziane["straznik"] is None
 
 

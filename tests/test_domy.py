@@ -21,6 +21,7 @@ import yaml
 from pydantic import ValidationError
 
 import kidwatch.__main__ as cli
+from conftest import zatrzymaj_run_po_restarcie
 from kidwatch import domy, uprawnienia
 from kidwatch.classifier import Classifier
 from kidwatch.config import Config, DeviceConfig, HomeConfig, InstanceConfig
@@ -683,7 +684,8 @@ async def test_dzien_przez_srodowisko_domu_1_daje_te_same_powiadomienia(tmp_path
 
 
 def test_run_zaklada_dom_1_przy_starcie(tmp_path, monkeypatch):
-    """`run` przez nadzorce: Dom 1 w panel-auth.db (0600), koniec zadania = kod 1."""
+    """`run` przez nadzorce: Dom 1 w panel-auth.db (0600); koniec zadania =
+    restart domu (izolacja awarii E3b), nie koniec procesu."""
 
     class Puste:
         name = "atrapa"
@@ -697,12 +699,14 @@ def test_run_zaklada_dom_1_przy_starcie(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli, "build_source", lambda cfg, store: Puste())
     monkeypatch.setenv("KIDWATCH_HEARTBEAT", str(tmp_path / "hb"))
+    zaplanowane = zatrzymaj_run_po_restarcie(monkeypatch)
     cfg_path = _konfiguracja_dnia(tmp_path)
     stara = os.umask(0o022)
     try:
-        assert cli.main(["--config", str(cfg_path), "run"]) == 1
+        assert cli.main(["--config", str(cfg_path), "run"]) == 0
     finally:
         os.umask(stara)
+    assert [dom for dom, _ in zaplanowane] == [1]
     assert stat.S_IMODE((tmp_path / "panel-auth.db").stat().st_mode) == 0o600
     [dom] = RejestrDomow(tmp_path / "panel-auth.db").domy()
     assert (dom.id, dom.zrodlo_konfiguracji) == (1, "yaml")

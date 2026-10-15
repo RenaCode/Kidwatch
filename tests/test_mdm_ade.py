@@ -510,7 +510,8 @@ def test_sync_defines_profile_once_and_assigns_device(sync, apple):
     sync.next_sync = 0
     assert sync.sync()["assigned"] == 0
     assert len(apple.profiles) == 1
-    assert sync.health()["devices"] == {"dziecko1": "ok"}
+    # /api/health jest bez tokenu: same liczby, bez etykiet dzieci (E3b).
+    assert sync.health()["devices"] == {"ok": 1}
 
 
 def test_sync_reports_missing_device_once(sync, apple):
@@ -683,3 +684,46 @@ def test_http_route_and_health(svc, chain):
     finally:
         mdm.shutdown()
         admin.shutdown()
+
+
+# ====================================================================== domy
+SERIAL_2 = "TESTSERIAL02"
+UDID_2 = "00008030-0000CCCC0000DDDD"
+
+
+def test_ade_enrollment_lands_in_home_of_policy_entry(svc, chain):
+    """Numer seryjny wpisu `2/...` zapisuje iPada do Domu 2 — jak zaproszenie
+    tokenem Domu 2. Token domu 1 go nie widzi, zdarzenia ida do Domu 2."""
+    svc.policy.devices["2/dziecko1"] = DevicePolicy(name="iPad szwagra", serial=SERIAL_2)
+    resp = svc.ade_enroll(machine_info(chain, serial=SERIAL_2, udid=UDID_2))
+    ipad = FakeIpad(resp.body, UDID_2)
+    svc.checkin(*ipad.msg(MessageType="Authenticate", Topic=TOPIC))
+    row = svc.store.device(UDID_2)
+    assert row["dom_id"] == 2 and row["label"] == "2/dziecko1"
+    assert svc.store.device_in(UDID_2, 1) is None
+    kinds = {r["kind"] for r in svc.store.events(0, 500, dom_id=2)}
+    assert {"ade_enrollment", "authenticate"} <= kinds
+    assert not [r for r in svc.store.events(0, 500, dom_id=1) if r["kind"] == "ade_enrollment"]
+
+
+def test_sync_events_go_to_home_of_entry(tmp_path, apple):
+    policy = Policy(
+        devices={
+            "dziecko1": DevicePolicy(name="A", serial=SERIAL),
+            "2/dziecko1": DevicePolicy(name="B", serial=SERIAL_2),
+        }
+    )
+    sync = ade.AdeSync(
+        store=Store(tmp_path / "d.db"), policy=policy, public_url=URL, client=client_for(apple)
+    )
+    apple.devices = [{"serial_number": "STRANGER0001", "model": "iPhone"}]
+    sync.sync()
+    dom2 = [json.loads(r["detail"]) for r in sync.store.events(0, 500, dom_id=2)]
+    dom1 = [json.loads(r["detail"]) for r in sync.store.events(0, 500, dom_id=1)]
+    assert [d["label"] for d in dom2] == ["2/dziecko1"]
+    assert [d["label"] for d in dom1] == ["dziecko1"]
+    # Nieznane urzadzenie organizacji: zdarzenie serwera (bez domu) — tylko
+    # czujka instancji, do administratora.
+    server = [r for r in sync.store.events(0, 500) if r["kind"] == "ade_unknown_device"]
+    assert server and server[0]["dom_id"] is None
+    assert sync.health()["devices"] == {"missing": 2}

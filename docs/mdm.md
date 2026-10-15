@@ -154,6 +154,8 @@ Plan zachowania zapisów gier („pranie” kopii przez inne urządzenie) jest w
        dns_url: https://dns.nextdns.io/<profil>/iPad-Dziecka-1
    ```
 
+   iPad innego domu: wpis `<dom>/<etykieta>` (np. `2/dziecko1`) z `serial` — zapis ADE trafia wtedy do tego domu (jak zaproszenie tokenem domu), a jego alarmy do czujki tego domu. Token ADE jest **jeden na instancję** (jedna organizacja Apple Business); numer seryjny musi być unikalny w całej polityce. Alarmy organizacji (brak tokenu, token wygasa, synchronizacja, nieznane urządzenie, odrzucony podpis) idą do czujki instancji — administratora.
+
    `kidwatch-mdm check-policy` przed podmianą Sekretu. Bez `serial` zapis ADE zostanie odrzucony (alarm „zapis ADE nieznanego urządzenia”).
 2. **Dodaj iPada do organizacji:** Apple Configurator na Macu, kabel → „Przygotuj” → Ręczna konfiguracja → **Dodaj do Apple Business** (iPad zostaje wymazany; przez pierwsze 30 dni można go odłączyć z Ustawień). **NIE** odznaczaj „Zezwalaj na parowanie z innymi komputerami”.
 3. **Apple Business** → Urządzenia → ten iPad → **Przypisz do usługi `kidwatch-mdm`**. Serwer przy najbliższej synchronizacji (do 30 min; restart poda = od razu) przypisze mu swój profil ADE. Gotowość = alarm „zapis automatyczny gotowy”, a w `/api/health` `ade.devices.<etykieta> = "ok"`.
@@ -178,19 +180,41 @@ Token przychodzi sam z Sekretu `kidwatch-mdm-admin` (chart kidwatch, `mdmAdminSe
 - **zakładka MDM w panelu**: iPady i iPhone'y (nadzór, system, kontakt, błędy push), odśwież / zablokuj ekran / restart (iPhone bez nadzoru: bez restartu), wymuszona aktualizacja, link do zapisu nowego urządzenia, dziennik zdarzeń;
 - **alarmy** (trasa bramki `kidwatch:czujka`, nie do rodziny): profil zdjęty, utrata nadzoru, zniknięty profil, iPad bez kontaktu > 24 h, odrzucone pushe, certyfikat APNs < 30 dni; nowa/usunięta aplikacja idzie jak dotąd jako `kidwatch:alarm`.
 
+## Domy (etap E3b, `docs/architektura-domy.md` §4.3)
+
+Jeden serwer, jeden certyfikat APNs i jedna CA dla wszystkich domów Kidwatcha, ale każde urządzenie należy do **jednego domu** (`devices.dom_id`, domyślnie 1 — wszystko zapisane przed E3b jest w Domu 1 bez żadnej akcji).
+
+- **Token instancji** — `KIDWATCH_MDM_ADMIN_TOKEN` (Sekret `kidwatch-mdm-admin`, bez zmian): widzi i steruje wszystkim, zakłada tokeny domów. Do czasu wydania tokenu Domu 1 Kidwatch używa właśnie jego — zachowanie jak przed E3b.
+- **Token domu** — tylko urządzenia `dom_id = <dom>`: lista i dziennik filtrowane, obcy UDID = **404** (jak nieistniejący), zaproszenie zapisuje urządzenie do domu **tokenu** (pole w ciele niczego nie zmienia), wersja systemu per dom, `/api/policy` bez wpisów innych domów. W bazie serwera leży tylko SHA-256 tokenu.
+- Kidwatch: token domu w integracji `mdm` tego domu (panel → Integracje, administrator instalacji). Dom inny niż Dom 1 z tokenem instancji nie dostaje MDM wcale (widziałby iPady Domu 1). Panel sprawdza dodatkowo, że UDID należy do domu, **zanim** zawoła serwer (`urzadzenia` w `panel-auth.db`; Dom 1 obsługuje też iPady, których żaden dom nie ma w konfiguracji — zapisane przed domami).
+- Alarmy całego serwera (certyfikat APNs, uzgadnianie, pushe) przy tokenie domu daje **czujka instancji** Kidwatcha (token instancji, alarm do administratora), a czujka domu — tylko iPady i zdarzenia swojego domu.
+- Polityka: etykieta urządzenia `<dom>/<etykieta>` (Dom 1 — bez prefiksu), sekcja `domy:` z nadpisaniami `restrictions`/`blocked_apps` per dom (`charts/kidwatch-mdm/files/policy.example.yaml`).
+
+```sh
+kubectl -n default exec deploy/kidwatch-mdm -- kidwatch-mdm token-domu 1 --opis "Dom 1"  # token RAZ na stdout
+kubectl -n default exec deploy/kidwatch-mdm -- kidwatch-mdm tokeny                       # bez wartości
+kubectl -n default exec deploy/kidwatch-mdm -- kidwatch-mdm token-odwolaj <id>
+kubectl -n default exec deploy/kidwatch-mdm -- kidwatch-mdm enroll --dom 2 dziecko1      # etykieta 2/dziecko1
+```
+
+Wycofanie obrazu serwera: kolumny `dom_id` i tabela tokenów są tylko dopisane, stary obraz czyta bazę bez zmian (urządzenia innych domów widzi wtedy jako zwykłe), ale **nie zna tokenów domów** — przed cofnięciem obrazu Kidwatch musi wrócić na token instancji.
+
 ## API dla Kidwatch (port 8081, `Authorization: Bearer <token>`)
 
 | Metoda | Ścieżka | Co |
 |---|---|---|
-| GET | `/api/health` | bez tokenu; stan certyfikatu APNs, liczba iPadów, `ade` (token, synchronizacja, stan iPadów z `serial`) |
-| GET | `/api/devices` | lista urządzeń (`kind`: `ipad`/`iphone`, nadzór, system, ostatni kontakt, błąd push, synchronizacja DDM) |
+| GET | `/api/health` | bez tokenu; stan certyfikatu APNs, liczba iPadów, `ade` (token, synchronizacja, liczba iPadów z `serial` w każdym stanie) |
+| GET | `/api/whoami` | zakres tokenu: `{"zakres": "instancja"}` albo `{"zakres": "dom", "dom_id": N}` |
+| GET | `/api/devices` | lista urządzeń (`dom_id`, `kind`: `ipad`/`iphone`, nadzór, system, ostatni kontakt, błąd push, synchronizacja DDM); token domu — tylko jego |
 | GET | `/api/devices/<udid>` | szczegóły: informacje, aplikacje, profile, status DDM, historia komend |
 | POST | `/api/devices/<udid>/refresh` | odśwież stan teraz |
 | POST | `/api/devices/<udid>/commands` | `{"request_type": "DeviceLock", "Message": "..."}` albo `RestartDevice` (iPhone bez nadzoru: 409) |
 | POST | `/api/enrollments` | `{"label": "dziecko1"}` → link do profilu zapisu (24 h, jednorazowy) |
-| GET/PUT | `/api/os-update` | `{"target_version": "27.1", "deadline": "2026-10-20T20:00:00"}`, `{"clear": true}`, `{"disabled": true}` |
+| GET/PUT | `/api/os-update` | `{"target_version": "27.1", "deadline": "2026-10-20T20:00:00"}`, `{"clear": true}`, `{"disabled": true}`; per dom tokenu (instancja: Dom 1 albo `?dom=N`) |
 | GET | `/api/events?since=<id>` | dziennik: `checkout`, `profile_missing`, `apps_installed`, `command_error`, `push_token_dead`, `os_update_failed`, `signature_rejected`, `policy_entry_rejected`, `kind_mismatch`, `ade_*`… |
-| GET | `/api/policy` | polityka w użyciu |
+| GET | `/api/policy` | polityka w użyciu (token domu: bez wpisów innych domów) |
+| GET/POST | `/api/tokens` | tylko token instancji: lista tokenów domów (bez wartości) / `{"dom_id": 2, "opis": "..."}` → token pokazany raz |
+| DELETE | `/api/tokens/<id>` | tylko token instancji: odwołanie tokenu domu |
 
 ## Czego serwer świadomie nie robi
 

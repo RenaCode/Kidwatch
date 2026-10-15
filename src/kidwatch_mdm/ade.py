@@ -53,7 +53,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.hazmat.primitives.serialization import pkcs7
 
 from . import apple_ca, profiles
-from .policy import Policy
+from .policy import Policy, dom_etykiety
 from .store import Store, from_iso, iso, now_utc
 
 log = logging.getLogger(__name__)
@@ -567,12 +567,18 @@ class AdeSync:
             "profile_uuid": self.store.setting("ade_profile_uuid"),
             "last_sync_ok_at": self.store.setting("ade_last_sync_ok_at"),
             "last_sync_error": self.last_error,
-            "devices": {
-                label: self.store.setting(f"ade_state:{label}")
-                for label, dev in self.policy.devices.items()
-                if dev.serial
-            },
+            # Same liczby: /api/health jest bez tokenu, a etykiety dzieci innych
+            # domow nie wychodza poza ich dom (E3b). Szczegoly ida zdarzeniami.
+            "devices": self._state_counts(),
         }
+
+    def _state_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for label, dev in self.policy.devices.items():
+            if dev.serial:
+                state = self.store.setting(f"ade_state:{label}") or "unknown"
+                counts[state] = counts.get(state, 0) + 1
+        return counts
 
     def _ensure_profile(self) -> str:
         profile = build_profile(self.policy, self.public_url)
@@ -637,14 +643,18 @@ class AdeSync:
             return
         self.store.set_setting(key, state)
         info = {"label": label, "serial": serial, "before": before, **(detail or {})}
-        if state == MISSING:
-            self.store.event("ade_device_missing", detail=info)
-        elif state == UNASSIGNED and before == OK:
-            self.store.event("ade_profile_lost", detail=info)
-        elif state == ASSIGN_FAILED:
-            self.store.event("ade_assign_failed", detail=info)
-        elif state == OK:
-            self.store.event("ade_device_ready", detail=info)
+        # Zdarzenie w domu wpisu (E3b): alarm dostaje czujka tego domu, nie
+        # wszystkie domy instancji.
+        dom = dom_etykiety(label)
+        kind = {
+            MISSING: "ade_device_missing",
+            ASSIGN_FAILED: "ade_assign_failed",
+            OK: "ade_device_ready",
+        }.get(state)
+        if state == UNASSIGNED and before == OK:
+            kind = "ade_profile_lost"
+        if kind:
+            self.store.event(kind, detail=info, dom_id=dom)
 
     def sync(self, now: datetime | None = None) -> dict[str, int]:
         now = now or now_utc()

@@ -4,10 +4,19 @@ Osobna baza od kidwatch.db, na osobnym PVC: to osobny kontener i osobny
 pisarz. Jedno polaczenie chronione blokada — przy kilku iPadach rownoleglosc
 zadan jest znikoma, a jedno polaczenie wyklucza `database is locked` miedzy
 watkami serwera HTTP i watkiem uzgadniania.
+
+Domy (docs/architektura-domy.md §4.3, etap E3b): kazde zaproszenie i kazde
+urzadzenie ma `dom_id` (DEFAULT 1 — wszystko zapisane przed E3b jest w Domu 1
+bez zadnej akcji), zdarzenia niosa dom urzadzenia (NULL = zdarzenie serwera,
+np. odrzucony podpis). Tokeny API domow leza tu jako SHA-256; token instancji
+(KIDWATCH_MDM_ADMIN_TOKEN) zostaje w zmiennej srodowiska jak dotad. Kolumny sa
+tylko dopisywane z wartoscia domyslna, wiec obraz sprzed E3b czyta te baze bez
+zmian (wycofanie), a jego zapisy laduja w Domu 1.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import plistlib
 import secrets
@@ -34,7 +43,9 @@ CREATE TABLE IF NOT EXISTS enrollments (
     -- Zapis ADE: UDID z podpisanego przez Apple MachineInfo. Authenticate
     -- z innym UDID jest odrzucany. 'link' (zaproszenie) albo 'ade'.
     expected_udid TEXT,
-    source     TEXT NOT NULL DEFAULT 'link'
+    source     TEXT NOT NULL DEFAULT 'link',
+    -- Dom z TOKENU, ktorym utworzono zaproszenie (nie z ciala zadania).
+    dom_id     INTEGER NOT NULL DEFAULT 1
 );
 
 -- Kazde pobranie profilu wystawia nowy certyfikat. Do czasu zwiazania
@@ -76,7 +87,9 @@ CREATE TABLE IF NOT EXISTS devices (
     ddm_token        TEXT,
     push_error       TEXT,
     push_error_at    TEXT,
-    last_push_at     TEXT
+    last_push_at     TEXT,
+    -- Dom z zaproszenia przy Authenticate. Token domu widzi tylko swoje.
+    dom_id           INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS commands (
@@ -123,10 +136,36 @@ CREATE TABLE IF NOT EXISTS events (
     at     TEXT NOT NULL,
     udid   TEXT,
     kind   TEXT NOT NULL,
-    detail TEXT
+    detail TEXT,
+    -- Dom urzadzenia; NULL = zdarzenie serwera (widzi je tylko token instancji).
+    dom_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS ix_events_at ON events (at);
+
+-- Tokeny API domow (E3b): sam SHA-256, token pokazany raz przy utworzeniu.
+CREATE TABLE IF NOT EXISTS tokeny_domow (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    hash       TEXT NOT NULL UNIQUE,
+    dom_id     INTEGER NOT NULL,
+    opis       TEXT,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT
+);
 """
+
+#: Kolumny `dom_id` dopisywane do bazy sprzed E3b: (tabela, definicja).
+DOM_COLUMNS = (
+    ("enrollments", "dom_id INTEGER NOT NULL DEFAULT 1"),
+    ("devices", "dom_id INTEGER NOT NULL DEFAULT 1"),
+    ("events", "dom_id INTEGER"),
+)
+
+#: Dom 1 — dom wlasciciela; wszystko zapisane przed E3b nalezy do niego.
+DOM_1 = 1
+
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 FINAL = ("acknowledged", "error", "format_error", "cancelled")
 
@@ -164,6 +203,7 @@ class Store:
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        self._migrate_domy()
         self._migrate()
         # Identyfikator TEJ bazy: nowa baza (nowy PVC, ponowny init) = nowy
         # identyfikator. Kidwatch po nim poznaje, ze numeracja zdarzen ruszyla
@@ -172,6 +212,24 @@ class Store:
         self.conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('instance', ?)",
             (json.dumps(str(uuid.uuid4())),),
+        )
+
+    def _migrate_domy(self) -> None:
+        """Kolumny `dom_id` w bazie sprzed E3b i dom zdarzen urzadzen.
+
+        Uzupelnienie zdarzen idzie przy kazdym starcie: zdarzenia zapisane
+        obrazem sprzed E3b (wycofanie) nie maja domu, a urzadzenia ich maja.
+        Zdarzenie bez znanego urzadzenia zostaje zdarzeniem serwera."""
+        for table, column in DOM_COLUMNS:
+            have = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            if "dom_id" not in have:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_events_dom ON events (dom_id, id)"
+        )
+        self.conn.execute(
+            "UPDATE events SET dom_id = (SELECT d.dom_id FROM devices d WHERE d.udid = events.udid)"
+            " WHERE dom_id IS NULL AND udid IS NOT NULL"
         )
 
     def _migrate(self) -> None:
@@ -211,6 +269,7 @@ class Store:
         ttl: timedelta,
         now: datetime | None = None,
         *,
+        dom_id: int = DOM_1,
         expected_udid: str | None = None,
         source: str = "link",
     ) -> str:
@@ -218,9 +277,9 @@ class Store:
         token = secrets.token_urlsafe(24)
         with self.tx() as c:
             c.execute(
-                "INSERT INTO enrollments (token, label, created_at, expires_at, expected_udid, "
-                "source) VALUES (?,?,?,?,?,?)",
-                (token, label, iso(now), iso(now + ttl), expected_udid, source),
+                "INSERT INTO enrollments (token, label, created_at, expires_at, dom_id, "
+                "expected_udid, source) VALUES (?,?,?,?,?,?,?)",
+                (token, label, iso(now), iso(now + ttl), dom_id, expected_udid, source),
             )
         return token
 
@@ -237,7 +296,7 @@ class Store:
     def identity(self, fp: str) -> sqlite3.Row | None:
         return self.one(
             "SELECT i.fingerprint, i.token, e.label, e.udid AS bound_udid, e.expires_at, "
-            "e.expected_udid, e.source "
+            "e.dom_id, e.expected_udid, e.source "
             "FROM identities i JOIN enrollments e ON e.token = i.token WHERE i.fingerprint = ?",
             (fp,),
         )
@@ -246,8 +305,19 @@ class Store:
     def device(self, udid: str) -> sqlite3.Row | None:
         return self.one("SELECT * FROM devices WHERE udid = ?", (udid,))
 
-    def devices(self) -> list[sqlite3.Row]:
-        return self.query("SELECT * FROM devices ORDER BY label")
+    def devices(self, dom_id: int | None = None) -> list[sqlite3.Row]:
+        """Urzadzenia; z `dom_id` — tylko tego domu (token domu)."""
+        if dom_id is None:
+            return self.query("SELECT * FROM devices ORDER BY label")
+        return self.query("SELECT * FROM devices WHERE dom_id = ? ORDER BY label", (dom_id,))
+
+    def device_in(self, udid: str, dom_id: int | None) -> sqlite3.Row | None:
+        """Urzadzenie widziane z zakresu tokenu: None = instancja (wszystkie).
+        Cudze urzadzenie wyglada jak nieistniejace — 404, nie 403."""
+        row = self.device(udid)
+        if row is None or (dom_id is not None and row["dom_id"] != dom_id):
+            return None
+        return row
 
     def device_by_cert(self, fp: str) -> sqlite3.Row | None:
         return self.one("SELECT * FROM devices WHERE cert_fp = ?", (fp,))
@@ -259,21 +329,38 @@ class Store:
         with self.tx() as c:
             c.execute(f"UPDATE devices SET {cols} WHERE udid = :udid", {**fields, "udid": udid})  # noqa: S608
 
-    def event(self, kind: str, udid: str | None = None, detail: Any = None) -> None:
+    def event(
+        self, kind: str, udid: str | None = None, detail: Any = None, *, dom_id: int | None = None
+    ) -> None:
+        """Zdarzenie do dziennika. Dom: podany wprost albo dom urzadzenia;
+        bez obu — zdarzenie serwera (NULL, tylko dla tokenu instancji)."""
         text = detail if isinstance(detail, str) or detail is None else json.dumps(detail)
         with self.tx() as c:
             c.execute(
-                "INSERT INTO events (at, udid, kind, detail) VALUES (?,?,?,?)",
-                (iso(now_utc()), udid, kind, text),
+                "INSERT INTO events (at, udid, kind, detail, dom_id) VALUES (?,?,?,?, "
+                "COALESCE(?, (SELECT dom_id FROM devices WHERE udid = ?)))",
+                (iso(now_utc()), udid, kind, text, dom_id, udid),
             )
 
-    def last_events(self, count: int) -> list[sqlite3.Row]:
-        rows = self.query("SELECT * FROM events ORDER BY id DESC LIMIT ?", (count,))
+    def last_events(self, count: int, dom_id: int | None = None) -> list[sqlite3.Row]:
+        if dom_id is None:
+            rows = self.query("SELECT * FROM events ORDER BY id DESC LIMIT ?", (count,))
+        else:
+            rows = self.query(
+                "SELECT * FROM events WHERE dom_id = ? ORDER BY id DESC LIMIT ?", (dom_id, count)
+            )
         return list(reversed(rows))
 
-    def events(self, since_id: int = 0, limit: int = 200) -> list[sqlite3.Row]:
+    def events(
+        self, since_id: int = 0, limit: int = 200, dom_id: int | None = None
+    ) -> list[sqlite3.Row]:
+        if dom_id is None:
+            return self.query(
+                "SELECT * FROM events WHERE id > ? ORDER BY id LIMIT ?", (since_id, limit)
+            )
         return self.query(
-            "SELECT * FROM events WHERE id > ? ORDER BY id LIMIT ?", (since_id, limit)
+            "SELECT * FROM events WHERE id > ? AND dom_id = ? ORDER BY id LIMIT ?",
+            (since_id, dom_id, limit),
         )
 
     def last_event_id(self) -> int:
@@ -441,6 +528,51 @@ class Store:
             c.execute(
                 "DELETE FROM profile_state WHERE udid = ? AND identifier = ?", (udid, identifier)
             )
+
+    # ------------------------------------------------------------ tokeny domow
+    def create_home_token(self, dom_id: int, opis: str | None = None) -> tuple[int, str]:
+        """Nowy token API domu: (id, token). Token wraca TYLKO tu — w bazie
+        zostaje jego SHA-256."""
+        if not isinstance(dom_id, int) or isinstance(dom_id, bool) or dom_id < 1:
+            raise ValueError("dom_id: liczba calkowita >= 1")
+        token = secrets.token_urlsafe(32)
+        with self.tx() as c:
+            cur = c.execute(
+                "INSERT INTO tokeny_domow (hash, dom_id, opis, created_at) VALUES (?,?,?,?)",
+                (token_hash(token), dom_id, opis, iso(now_utc())),
+            )
+            token_id = int(cur.lastrowid)
+        self.event("token_created", detail={"id": token_id}, dom_id=dom_id)
+        return token_id, token
+
+    def home_token_dom(self, token: str) -> int | None:
+        """Dom tokenu albo None (nieznany lub odwolany)."""
+        row = self.one(
+            "SELECT dom_id FROM tokeny_domow WHERE hash = ? AND revoked_at IS NULL",
+            (token_hash(token),),
+        )
+        return int(row["dom_id"]) if row else None
+
+    def home_tokens(self) -> list[dict]:
+        return [
+            dict(r)
+            for r in self.query(
+                "SELECT id, dom_id, opis, created_at, revoked_at FROM tokeny_domow ORDER BY id"
+            )
+        ]
+
+    def revoke_home_token(self, token_id: int) -> bool:
+        with self.tx() as c:
+            row = c.execute(
+                "SELECT dom_id FROM tokeny_domow WHERE id = ? AND revoked_at IS NULL", (token_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            c.execute(
+                "UPDATE tokeny_domow SET revoked_at = ? WHERE id = ?", (iso(now_utc()), token_id)
+            )
+        self.event("token_revoked", detail={"id": token_id}, dom_id=int(row["dom_id"]))
+        return True
 
     # ------------------------------------------------------------ ustawienia
     def setting(self, key: str, default: Any = None) -> Any:

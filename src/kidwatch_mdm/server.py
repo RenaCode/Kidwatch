@@ -7,6 +7,16 @@ wiec API sterujacego iPadami na zewnatrz.
 
 Bez frameworka, tak jak panel Kidwatch: kilka endpointow nie uzasadnia
 dodatkowej zaleznosci w obrazie.
+
+Zakres tokenu (docs/architektura-domy.md §4.3, etap E3b):
+
+  * token INSTANCJI (KIDWATCH_MDM_ADMIN_TOKEN) — jak przed E3b: wszystkie
+    urzadzenia i zdarzenia, zaproszenia i wersja systemu Domu 1 (inny dom:
+    `?dom=<n>`), oraz zakladanie i odwolywanie tokenow domow (/api/tokens);
+  * token DOMU (POST /api/tokens, w bazie tylko SHA-256) — wylacznie
+    urzadzenia `devices.dom_id = <dom>`: lista i dziennik filtrowane, obcy
+    UDID = 404 (jak nieistniejacy), zaproszenie w domu tokenu, wersja systemu
+    domu, polityka bez wpisow innych domow. /api/tokens dla niego nie istnieje.
 """
 
 from __future__ import annotations
@@ -17,6 +27,7 @@ import logging
 import re
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -24,7 +35,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from . import ade, profiles
-from .policy import OsUpdate
+from .policy import DOM_1, OsUpdate
 from .service import JSON, MDMService, Response, ServiceError
 from .store import iso
 
@@ -48,6 +59,22 @@ API_COMMANDS: dict[str, Callable[[dict], dict]] = {
 SUPERVISED_COMMANDS = frozenset({"RestartDevice"})
 
 UDID_RE = r"(?P<udid>[0-9A-Fa-f-]{8,64})"
+
+
+@dataclass(frozen=True)
+class Zakres:
+    """Kto pyta: `dom_id` None = token instancji, liczba = token tego domu."""
+
+    dom_id: int | None
+
+    @property
+    def instancja(self) -> bool:
+        return self.dom_id is None
+
+    @property
+    def dom(self) -> int:
+        """Dom, ktorego dotycza zaproszenie i wersja systemu (instancja: Dom 1)."""
+        return DOM_1 if self.dom_id is None else self.dom_id
 
 
 def _send(handler: BaseHTTPRequestHandler, resp: Response) -> None:
@@ -126,6 +153,7 @@ def make_admin_handler(service: MDMService, token: str):
         pending, oldest = store.pending_summary(row["udid"])
         return {
             "udid": row["udid"],
+            "dom_id": row["dom_id"],
             "label": row["label"],
             "name": service.policy.device(row["label"]).name,
             "device_name": row["device_name"],
@@ -212,10 +240,16 @@ def make_admin_handler(service: MDMService, token: str):
         def log_message(self, fmt: str, *args) -> None:
             log.debug("admin %s " + fmt, self.client_address[0], *args)
 
-        def _authorized(self) -> bool:
+        def _zakres(self) -> Zakres | None:
+            """Zakres tokenu z naglowka albo None (brak, zly, odwolany)."""
             got = self.headers.get("Authorization") or ""
-            expected = f"Bearer {token}"
-            return hmac.compare_digest(got.encode(), expected.encode())
+            if hmac.compare_digest(got.encode(), f"Bearer {token}".encode()):
+                return Zakres(None)
+            if got.startswith("Bearer ") and len(got) > len("Bearer "):
+                dom_id = store.home_token_dom(got.removeprefix("Bearer "))
+                if dom_id is not None:
+                    return Zakres(dom_id)
+            return None
 
         def _payload(self) -> dict:
             raw = _read_body(self, MAX_API_BODY)
@@ -232,30 +266,45 @@ def make_admin_handler(service: MDMService, token: str):
         def _route(self, method: str, path: str, query: str) -> Response:
             if path == "/api/health" and method == "GET":
                 return _json_response(200, health())
-            if not self._authorized():
+            zakres = self._zakres()
+            if zakres is None:
                 return _json_response(401, {"error": "brak lub zly token"})
+            params = dict(p.split("=", 1) for p in query.split("&") if "=" in p)
+            # Filtr domu: None = instancja (wszystko), liczba = tylko ten dom.
+            dom_id = zakres.dom_id
+            obcy = _json_response(404, {"error": "nieznane urzadzenie"})
 
+            if path == "/api/whoami" and method == "GET":
+                return _json_response(
+                    200,
+                    {"zakres": "instancja"} if zakres.instancja
+                    else {"zakres": "dom", "dom_id": dom_id},
+                )
             if path == "/api/devices" and method == "GET":
-                return _json_response(200, [device_summary(r) for r in store.devices()])
+                return _json_response(200, [device_summary(r) for r in store.devices(dom_id)])
             if m := re.fullmatch(rf"/api/devices/{UDID_RE}", path):
-                row = store.device(m["udid"])
+                row = store.device_in(m["udid"], dom_id)
                 if row is None:
-                    return _json_response(404, {"error": "nieznane urzadzenie"})
+                    return obcy
                 if method == "GET":
                     return _json_response(200, device_detail(row))
             if (m := re.fullmatch(rf"/api/devices/{UDID_RE}/refresh", path)) and method == "POST":
-                if store.device(m["udid"]) is None:
-                    return _json_response(404, {"error": "nieznane urzadzenie"})
+                if store.device_in(m["udid"], dom_id) is None:
+                    return obcy
                 service.refresh(m["udid"])
                 return _json_response(202, {"queued": True})
             if (m := re.fullmatch(rf"/api/devices/{UDID_RE}/commands", path)) and method == "POST":
+                # Najpierw dom urzadzenia, potem cialo: obcy UDID nie dowie sie
+                # nawet, czy komenda bylaby dozwolona.
+                row = store.device_in(m["udid"], dom_id)
+                if row is None:
+                    return obcy
                 data = self._payload()
                 rtype = data.get("request_type")
                 if rtype not in API_COMMANDS:
                     return _json_response(
                         400, {"error": f"dozwolone komendy: {', '.join(API_COMMANDS)}"}
                     )
-                row = store.device(m["udid"])
                 if (
                     rtype in SUPERVISED_COMMANDS
                     and row is not None
@@ -270,43 +319,74 @@ def make_admin_handler(service: MDMService, token: str):
                 cmd = service.enqueue_api(m["udid"], rtype, API_COMMANDS[rtype](data))
                 return _json_response(202, {"command_uuid": cmd})
             if path == "/api/enrollments" and method == "POST":
+                # Dom z TOKENU, nie z ciala (§4.3): pole `dom_id` w ciele nic nie zmienia.
                 label = str(self._payload().get("label") or "").strip()
                 if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", label):
                     return _json_response(400, {"error": "label: male litery, cyfry, - i _"})
-                return _json_response(201, service.create_enrollment(label))
+                return _json_response(201, service.create_enrollment(label, zakres.dom))
             if path == "/api/os-update":
+                dom = zakres.dom
+                if zakres.instancja and "dom" in params:
+                    try:
+                        dom = int(params["dom"])
+                    except ValueError:
+                        return _json_response(400, {"error": "dom musi byc liczba"})
+                key = service.os_update_key(dom)
                 if method == "GET":
                     return _json_response(
-                        200,
-                        {"effective": service.os_update(), "override": store.setting("os_update")},
+                        200, {"effective": service.os_update(dom), "override": store.setting(key)}
                     )
                 if method == "PUT":
                     data = self._payload()
                     if data.get("clear"):
-                        store.set_setting("os_update", None)  # wraca polityka z pliku
+                        store.set_setting(key, None)  # wraca polityka z pliku
                     elif data.get("disabled"):
-                        store.set_setting("os_update", {})
+                        store.set_setting(key, {})
                     else:
                         try:
-                            store.set_setting(
-                                "os_update", OsUpdate.model_validate(data).model_dump()
-                            )
+                            store.set_setting(key, OsUpdate.model_validate(data).model_dump())
                         except ValidationError as exc:
                             return _json_response(400, {"error": exc.errors(include_url=False)})
-                    store.event("os_update_set", detail=service.os_update())
+                    store.event("os_update_set", detail=service.os_update(dom), dom_id=dom)
                     service.reconcile()
-                    return _json_response(200, {"effective": service.os_update()})
+                    return _json_response(200, {"effective": service.os_update(dom)})
             if path == "/api/events" and method == "GET":
-                params = dict(p.split("=", 1) for p in query.split("&") if "=" in p)
                 try:
                     since = int(params.get("since", 0))
                     last = int(params["last"]) if "last" in params else None
                 except ValueError:
                     return _json_response(400, {"error": "since/last musza byc liczbami"})
-                rows = store.last_events(min(last, 500)) if last else store.events(since)
+                rows = (
+                    store.last_events(min(last, 500), dom_id)
+                    if last
+                    else store.events(since, dom_id=dom_id)
+                )
                 return _json_response(200, [dict(r) for r in rows])
             if path == "/api/policy" and method == "GET":
-                return _json_response(200, service.policy.model_dump())
+                if zakres.instancja:
+                    return _json_response(200, service.policy.model_dump())
+                return _json_response(200, service.policy.widok_domu(zakres.dom))
+            if zakres.instancja and path == "/api/tokens":
+                if method == "GET":
+                    return _json_response(200, store.home_tokens())
+                if method == "POST":
+                    data = self._payload()
+                    dom = data.get("dom_id")
+                    if not isinstance(dom, int) or isinstance(dom, bool) or dom < 1:
+                        return _json_response(400, {"error": "dom_id: liczba calkowita >= 1"})
+                    opis = str(data.get("opis") or "")[:100] or None
+                    token_id, new = store.create_home_token(dom, opis)
+                    log.info("admin: token domu %d utworzony (id %d)", dom, token_id)
+                    return _json_response(201, {"id": token_id, "dom_id": dom, "token": new})
+            if (
+                zakres.instancja
+                and method == "DELETE"
+                and (m := re.fullmatch(r"/api/tokens/(?P<id>[0-9]{1,9})", path))
+            ):
+                if not store.revoke_home_token(int(m["id"])):
+                    return _json_response(404, {"error": "nie ma takiego tokenu"})
+                log.info("admin: token domu id %s odwolany", m["id"])
+                return _json_response(200, {"revoked": True})
             return _json_response(404, {"error": "nie ma takiego zasobu"})
 
         def _handle(self) -> None:
