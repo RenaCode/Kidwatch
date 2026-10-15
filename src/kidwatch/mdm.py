@@ -250,12 +250,88 @@ def _describe(
             )
             + "profil zapisu mogl powstac bez blokady usuniecia — zapisz iPada ponownie.",
         )
+    if kind.startswith("ade_"):
+        return _describe_ade(kind, detail)
     if kind in ("cert_mismatch", "enrollment_reuse", "unknown_identity"):
         return (
             NotifyKind.MDM,
             4,
             "MDM: odrzucona proba podszycia",
             f"Zdarzenie {kind}: wiadomosc z poprawnym podpisem, ale nie od tego urzadzenia.",
+        )
+    return None
+
+
+def _describe_ade(kind: str, detail: Any) -> tuple[NotifyKind, int, str, str] | None:
+    """Zdarzenia zapisu automatycznego (Apple Business, kidwatch_mdm/ade.py).
+    Etykieta iPada jest w detail — zdarzenia synchronizacji nie maja UDID."""
+    d = detail if isinstance(detail, dict) else {}
+    label = d.get("label") or "iPad"
+    if kind == "ade_device_missing":
+        return (
+            NotifyKind.MDM,
+            4,
+            f"{label}: brak iPada w Apple Business",
+            "iPad z polityki nie jest przypisany do serwera kidwatch-mdm w Apple Business "
+            "(usuniety z organizacji, przypisany do innej uslugi albo jeszcze nie dodany). "
+            "Po wymazaniu NIE wroci sam do MDM.",
+        )
+    if kind == "ade_profile_lost":
+        return (
+            NotifyKind.MDM,
+            4,
+            f"{label}: utracony profil zapisu automatycznego",
+            "Apple Business nie ma juz naszego profilu dla tego iPada. Serwer przypisze go "
+            "ponownie; jesli nie wyjdzie, przyjdzie osobny alarm.",
+        )
+    if kind == "ade_assign_failed":
+        return (
+            NotifyKind.MDM,
+            4,
+            f"{label}: Apple odrzucil przypisanie profilu ADE",
+            f"Odpowiedz Apple: {d.get('status') or '?'}. Sprawdz, czy iPad jest przypisany "
+            "do uslugi kidwatch-mdm (Apple Business > Urzadzenia).",
+        )
+    if kind == "ade_device_ready" and d.get("before") is not None:
+        return (
+            NotifyKind.MDM,
+            2,
+            f"{label}: zapis automatyczny gotowy",
+            "iPad ma przypisany profil kidwatch-mdm w Apple Business: po wymazaniu sam wroci "
+            "pod nadzor.",
+        )
+    if kind == "ade_not_configured":
+        labels = ", ".join(d.get("labels") or [])
+        return (
+            NotifyKind.MDM,
+            4,
+            "MDM: brak tokenu Apple Business",
+            f"Polityka ma numery seryjne ({labels}), ale serwer nie ma tokenu ADE — iPad "
+            "po wymazaniu nie wroci do MDM. Krok 5 w docs/mdm.md.",
+        )
+    if kind == "ade_unknown_serial":
+        return (
+            NotifyKind.MDM,
+            4,
+            "MDM: zapis ADE nieznanego urzadzenia",
+            f"Urzadzenie {d.get('product') or ''} (nr seryjny {d.get('serial') or '?'}) "
+            "chcialo sie zapisac, a nie ma go w polityce. Dopisz `serial` do wpisu iPada.",
+        )
+    if kind == "ade_unknown_device":
+        return (
+            NotifyKind.MDM,
+            2,
+            "MDM: nowe urzadzenie w Apple Business",
+            f"{d.get('model') or 'Urzadzenie'} (nr seryjny {d.get('serial') or '?'}) jest "
+            "przypisane do kidwatch-mdm, ale nie ma go w polityce.",
+        )
+    if kind in ("ade_enroll_rejected", "ade_udid_mismatch"):
+        return (
+            NotifyKind.MDM,
+            4,
+            "MDM: odrzucony zapis ADE",
+            f"Zdarzenie {kind}: zadanie zapisu nie przeszlo weryfikacji Apple albo profil "
+            "trafil do innego urzadzenia.",
         )
     return None
 
@@ -324,6 +400,7 @@ class MdmWatcher:
         out += self._events(by_udid, data["events"], data["since"], now)
         out += self._silent(devices, now)
         out += self._certificate(data["health"], now)
+        out += self._ade(data["health"], now)
         out += self._reconcile(data["health"], now)
         out += self._push(data["health"], devices, now)
         out += self._stuck(devices, now)
@@ -468,6 +545,49 @@ class MdmWatcher:
             )
         ]
 
+
+    def _ade(self, health: dict, now: datetime) -> list[Notification]:
+        """Token Apple Business wygasa co rok, a synchronizacja moze padac po
+        cichu — zapisane iPady dzialaja, ale po wymazaniu nie wroca."""
+        ade = health.get("ade") or {}
+        if not ade.get("configured"):
+            return []
+        out: list[Notification] = []
+        days = ade.get("days_left")
+        if days is not None and days <= self.cfg.cert_warn_days:
+            year, week, _ = now.isocalendar()
+            bucket = now.date().isoformat() if days <= 7 else f"{year}-w{week}"
+            out.append(
+                Notification(
+                    kind=NotifyKind.MDM,
+                    title=f"Token Apple Business (ADE) wygasa za {days} dni",
+                    text=(
+                        "Apple Business > Uslugi zarzadzania > kidwatch-mdm > Pobierz token, "
+                        "potem `kidwatch-mdm ade import --force` i podmiana Sekretu "
+                        "kidwatch-mdm-ade. Po wygasnieciu iPady po wymazaniu nie wroca do MDM."
+                    ),
+                    dedup_key=f"mdm-ade-token:{bucket}",
+                    ts=now,
+                    priority=5 if days <= 7 else 4,
+                    tags=("mdm",),
+                )
+            )
+        error = ade.get("last_sync_error")
+        ok = ade.get("last_sync_ok_at")
+        stale = ok is None or now - datetime.fromisoformat(ok) >= timedelta(hours=6)
+        if error and stale:
+            out.append(
+                Notification(
+                    kind=NotifyKind.MDM,
+                    title="MDM: synchronizacja z Apple Business nie dziala",
+                    text=f"Ostatni blad: {error}",
+                    dedup_key=f"mdm-ade-sync:{now.date().isoformat()}",
+                    ts=now,
+                    priority=4,
+                    tags=("mdm",),
+                )
+            )
+        return out
 
     def _reconcile(self, health: dict, now: datetime) -> list[Notification]:
         """Uzgadnianie serwera padajace przy kazdym obiegu: pod zdrowy, a nikt

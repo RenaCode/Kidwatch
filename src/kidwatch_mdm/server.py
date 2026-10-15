@@ -23,7 +23,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from . import profiles
+from . import ade, profiles
 from .policy import OsUpdate
 from .service import JSON, MDMService, Response, ServiceError
 from .store import iso
@@ -33,6 +33,8 @@ log = logging.getLogger(__name__)
 #: Odpowiedz InstalledApplicationList potrafi miec setki KB; 10 MB to zapas.
 MAX_MDM_BODY = 10 * 1024 * 1024
 MAX_API_BODY = 64 * 1024
+#: MachineInfo z lancuchem certyfikatow Apple to kilka KB.
+MAX_ADE_BODY = 64 * 1024
 
 #: Komendy, ktore Kidwatch moze zlecic wprost. Reszta (ograniczenia, DDM)
 #: wynika z polityki i idzie przez uzgadnianie — nie przez reczne komendy.
@@ -92,6 +94,9 @@ def make_mdm_handler(service: MDMService):
                 elif self.command == "PUT" and path == "/mdm/connect":
                     body = _read_body(self, MAX_MDM_BODY)
                     resp = service.connect(body, self.headers.get("Mdm-Signature"))
+                elif self.command == "POST" and path == ade.ENROLL_PATH:
+                    # Kreator iPada z Apple Business: MachineInfo podpisane CMS.
+                    resp = service.ade_enroll(_read_body(self, MAX_ADE_BODY))
                 elif self.command in ("GET", "HEAD") and (
                     m := re.fullmatch(r"/mdm/enroll/(?P<token>[A-Za-z0-9_-]{16,64})", path)
                 ):
@@ -179,6 +184,8 @@ def make_admin_handler(service: MDMService, token: str):
                 "days_left": days,
             },
             "devices": len(store.devices()),
+            # Apple Business: wygasniecie tokenu (raz w roku) i stan synchronizacji.
+            "ade": service.ade.health() if service.ade else {"configured": False},
             "time": datetime.now(UTC).isoformat(timespec="seconds"),
             # Identyfikator bazy i najwyzszy numer zdarzenia: Kidwatch po nich
             # poznaje nowa albo cofnieta baze i przestawia kursor dziennika.

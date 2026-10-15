@@ -30,7 +30,11 @@ CREATE TABLE IF NOT EXISTS enrollments (
     -- Ustawiane przy pierwszym Authenticate. Potem token nie wyda juz nowej
     -- tozsamosci, a urzadzenie z innym UDID nie moze sie nim zapisac.
     udid       TEXT,
-    bound_at   TEXT
+    bound_at   TEXT,
+    -- Zapis ADE: UDID z podpisanego przez Apple MachineInfo. Authenticate
+    -- z innym UDID jest odrzucany. 'link' (zaproszenie) albo 'ade'.
+    expected_udid TEXT,
+    source     TEXT NOT NULL DEFAULT 'link'
 );
 
 -- Kazde pobranie profilu wystawia nowy certyfikat. Do czasu zwiazania
@@ -160,6 +164,7 @@ class Store:
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         # Identyfikator TEJ bazy: nowa baza (nowy PVC, ponowny init) = nowy
         # identyfikator. Kidwatch po nim poznaje, ze numeracja zdarzen ruszyla
         # od 1 i jego kursor nic tu nie znaczy. Kopia odtworzona z backupu
@@ -168,6 +173,17 @@ class Store:
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('instance', ?)",
             (json.dumps(str(uuid.uuid4())),),
         )
+
+    def _migrate(self) -> None:
+        """Kolumny dodane po pierwszym wdrozeniu: CREATE IF NOT EXISTS nie
+        zmienia istniejacej tabeli na PVC."""
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(enrollments)")}
+        if "expected_udid" not in cols:
+            self.conn.execute("ALTER TABLE enrollments ADD COLUMN expected_udid TEXT")
+        if "source" not in cols:
+            self.conn.execute(
+                "ALTER TABLE enrollments ADD COLUMN source TEXT NOT NULL DEFAULT 'link'"
+            )
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
@@ -189,13 +205,22 @@ class Store:
             return self.conn.execute(sql, params).fetchone()
 
     # ------------------------------------------------------------- zapisy
-    def create_enrollment(self, label: str, ttl: timedelta, now: datetime | None = None) -> str:
+    def create_enrollment(
+        self,
+        label: str,
+        ttl: timedelta,
+        now: datetime | None = None,
+        *,
+        expected_udid: str | None = None,
+        source: str = "link",
+    ) -> str:
         now = now or now_utc()
         token = secrets.token_urlsafe(24)
         with self.tx() as c:
             c.execute(
-                "INSERT INTO enrollments (token, label, created_at, expires_at) VALUES (?,?,?,?)",
-                (token, label, iso(now), iso(now + ttl)),
+                "INSERT INTO enrollments (token, label, created_at, expires_at, expected_udid, "
+                "source) VALUES (?,?,?,?,?,?)",
+                (token, label, iso(now), iso(now + ttl), expected_udid, source),
             )
         return token
 
@@ -211,7 +236,8 @@ class Store:
 
     def identity(self, fp: str) -> sqlite3.Row | None:
         return self.one(
-            "SELECT i.fingerprint, i.token, e.label, e.udid AS bound_udid, e.expires_at "
+            "SELECT i.fingerprint, i.token, e.label, e.udid AS bound_udid, e.expires_at, "
+            "e.expected_udid, e.source "
             "FROM identities i JOIN enrollments e ON e.token = i.token WHERE i.fingerprint = ?",
             (fp,),
         )
