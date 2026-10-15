@@ -170,14 +170,21 @@ def decrypt_server_token(p7m: bytes, cert_path: Path, key_path: Path) -> AdeToke
     except UnsupportedAlgorithm:
         content = _decrypt_openssl(der, cert_path, key_path)
     except ValueError as exc:
-        raise AdeError(
-            f"to nie jest token zaszyfrowany tym certyfikatem ({cert_path.name}): {exc}"
-        ) from exc
+        # Apple koduje koperte BER z nieokreslona dlugoscia (30 80), a
+        # cryptography przyjmuje tylko DER — openssl czyta oba.
+        try:
+            content = _decrypt_openssl(der, cert_path, key_path)
+        except AdeError as exc2:
+            raise AdeError(
+                f"to nie jest token zaszyfrowany tym certyfikatem ({cert_path.name}): "
+                f"{exc}; {exc2}"
+            ) from exc
     return AdeTokens.from_json(_token_json(content))
 
 
 def _decrypt_openssl(der: bytes, cert_path: Path, key_path: Path) -> bytes:
-    """Zapas na szyfr, ktorego nie obsluguje `cryptography` (np. 3DES)."""
+    """Zapas na szyfr albo kodowanie BER, ktorych nie obsluguje `cryptography`
+    (np. 3DES, koperta z nieokreslona dlugoscia — tak przychodzi token Apple)."""
     openssl = shutil.which("openssl")
     if not openssl:
         raise AdeError("szyfr tokenu nieobslugiwany przez cryptography, a openssl niedostepny")

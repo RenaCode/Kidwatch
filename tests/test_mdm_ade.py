@@ -14,6 +14,8 @@ import datetime as dt
 import functools
 import json
 import plistlib
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 import httpx
@@ -131,6 +133,30 @@ def test_server_token_decrypts_with_generated_keypair(tmp_path):
     assert tokens.expires_at().year == 2027
     # Sekrety nie moga wyciec przez repr do logu ani wyjatku.
     assert "CS_test" not in repr(tokens) and "AS_test" not in repr(tokens)
+
+
+@pytest.mark.skipif(not shutil.which("openssl"), reason="brak openssl")
+def test_server_token_in_ber_with_crlf_like_apple(tmp_path):
+    """Prawdziwy token z Apple Business (15.10): koperta BER z nieokreslona
+    dlugoscia (30 80) i MIME z CRLF. Sam cryptography odrzucal ja jako
+    `InvalidLength` i import twierdzil, ze to token dla innego certyfikatu."""
+    cert_path = ade.generate_keypair(tmp_path)
+    inner = (
+        "Content-Type: text/plain;charset=UTF-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\n"
+        "-----BEGIN MESSAGE-----\r\n"
+        + json.dumps(json.loads(TOKENS.to_json()))
+        + "\r\n-----END MESSAGE-----\r\n"
+    ).encode()
+    proc = subprocess.run(
+        ["openssl", "cms", "-encrypt", "-stream", "-binary", "-outform", "DER",
+         "-aes256", str(cert_path)],
+        input=inner, capture_output=True, check=True,
+    )
+    ber = proc.stdout
+    assert ber[:2] == b"\x30\x80"  # nieokreslona dlugosc jak u Apple
+    smime = _smime(ber).replace(b"\n", b"\r\n")
+    tokens = ade.decrypt_server_token(smime, cert_path, tmp_path / ade.KEY_FILE)
+    assert tokens == TOKENS
 
 
 def test_server_token_for_other_certificate_is_rejected(tmp_path):
