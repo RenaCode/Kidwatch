@@ -111,13 +111,15 @@ class NextDnsConfig(_ZSekretami):
     #: zamykane przez serwer mniej wiecej w tym samym rytmie; otwierane razem
     #: wpadalyby w 429 parami i przedluzaly sobie nawzajem blokade.
     connect_spacing_seconds: float = Field(default=5.0, ge=0)
-    #: Odstep po RUTYNOWYM zamknieciu strumienia przez serwer (co ~90 s).
-    #: Produkcja 2026-10-16, 6 h: 237 zamkniec, 204 odpowiedzi 429 — ponowne
-    #: otwarcie po 1 s dostawalo 429 w ~85% przypadkow, a proba po 20 s zwykle
-    #: juz przechodzila. Czekanie 20 s od razu daje to samo opoznienie zdarzen
-    #: co dotychczasowa sciezka (1 s + 429 + 20 s), bez 429 i bez szumu w logu.
+    #: Odstep po RUTYNOWYM zamknieciu strumienia przez serwer.
+    #: Produkcja 2026-10-16, 6 h: 237 zamkniec, 204 odpowiedzi 429 przy
+    #: ponowieniu po 1 s. Po wdrozeniu 20 s (#76) przez 30 min: 26 x 429 na
+    #: 25 otwarc — KAZDA proba 20 s po zamknieciu dostawala 429, a kolejna,
+    #: ok. 40 s po zamknieciu, przechodzila. Serwer liczy zamkniety strumien
+    #: jeszcze przez 20-40 s, wiec 45 s jest pierwszym odstepem, ktory na
+    #: tych danych omija 429 (i jest krotszy od dzisiejszych 20 s + 429 + 20 s).
     #: Zdarzenia z przerwy nie gina — wznawiamy od kursora `id`.
-    reconnect_after_close_seconds: float = Field(default=20.0, ge=0)
+    reconnect_after_close_seconds: float = Field(default=45.0, ge=0)
     #: Gorna granica dla naglowka Retry-After (gdyby serwer podal absurdalny
     #: czas). Ponizej progu czujki ciszy strumienia, zeby po jej alarmie
     #: zrodlo samo probowalo dalej.
