@@ -239,7 +239,8 @@ class MDMService:
             label=row["label"],
             device_name=dev.name,
             # Przed zapisem znamy tylko polityke — iPhone musi miec `kind: iphone`
-            # w polityce, zanim powstanie zaproszenie (docs/iphone.md).
+            # w polityce, zanim powstanie zaproszenie
+            # (renacode-infra: docs/projekty/kidwatch/iphone.md).
             kind=dev.kind,
         )
         self.store.record_identity(token, prof.cert_fingerprint, now)

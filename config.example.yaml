@@ -63,7 +63,7 @@ devices:
   # `Telefon--Dziecka-2-<ID profilu>.dns.nextdns.io` — NextDNS zamienia `--`
   # na spacje, wiec w logach i tutaj nazwa to "Telefon Dziecka 2". Bez udid,
   # host i known_apps (to odczyt iOS). Ten sam nextdns_profile co iPady
-  # dziecka. Instrukcja: docs/telefon-android.md
+  # dziecka. Instrukcja: renacode-infra: docs/projekty/kidwatch/telefon-android.md
   # - display_name: "Telefon Dziecka 2"
   #   child: "Dziecko 2"
   #   kind: phone
@@ -71,7 +71,7 @@ devices:
   #   unifi_mac: "02:00:00:00:00:03"   # MAC z Wi-Fi telefonu (losowy per siec)
   # iPhone dziecka (zwykle bez nadzoru): profil NextDNS zainstalowany RECZNIE
   # (tools/gen_profile.py --kind iphone) — tylko tak obejmuje tez siec
-  # komorkowa. Odczyt wprost (udid/host) jak u iPada. Instrukcja: docs/iphone.md
+  # komorkowa. Odczyt wprost (udid/host) jak u iPada. Instrukcja: renacode-infra: docs/projekty/kidwatch/iphone.md
   # - display_name: "iPhone Dziecka 1"
   #   child: "Dziecko 1"
   #   kind: iphone
@@ -108,7 +108,7 @@ tv:
 # ------------------------------------------------ wlasny serwer MDM (osobny pod)
 # Zakladka MDM w panelu i czujka: profil zdjety, iPad bez kontaktu, nowa
 # aplikacja, certyfikat APNs przed wygasnieciem. Token: MDM_ADMIN_TOKEN
-# (Sekret kidwatch-mdm-admin). Instrukcja: docs/mdm.md.
+# (Sekret kidwatch-mdm-admin). Instrukcja: renacode-infra: docs/projekty/kidwatch/mdm.md.
 mdm:
   enabled: false
   url: http://kidwatch-mdm-admin:8081
@@ -229,7 +229,7 @@ watchdog:
 # ------------------------------------------------- komendy z WhatsAppa
 # Rodzic pisze do bota ("koniec Dziecko A", "+15", "stan" albo zwyklym
 # zdaniem), bot pyta "Zrozumialem: ...? Odpowiedz TAK 1234" i dopiero po
-# kodzie wykonuje. Szczegoly: docs/whatsapp-komendy.md. Wymaga bramki ze
+# kodzie wykonuje. Szczegoly: renacode-infra: docs/projekty/kidwatch/whatsapp-komendy.md. Wymaga bramki ze
 # skrzynka WhatsApp (W1) i jawnym odbiorca. Wolny tekst rozpoznaje Gemini:
 # KIDWATCH_LLM_GEMINI_KEY w kidwatch-secrets (dzis klucz WSPOLNY z innymi
 # aplikacjami — 429 to chwilowa niedostepnosc, dokladne komendy dzialaja).

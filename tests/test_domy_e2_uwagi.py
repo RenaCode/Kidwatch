@@ -1,5 +1,5 @@
 # ruff: noqa: F811 — fixtury dom1/kek importowane z test_domy_e2
-"""Uwagi z przegladu PR #50 (przeglad-e2-poprawki.md, U1–U10).
+"""Uwagi z przegladu PR #50 (U1–U10).
 
 Jak test_domy_e2.py: dane generyczne, sekrety losowane, bez sieci."""
 
@@ -15,6 +15,7 @@ import time
 import pytest
 
 import kidwatch.__main__ as cli
+from conftest import plik_dokumentacji
 from kidwatch.domy import DOM_1
 from kidwatch.sejf import Sejf
 from test_domy_e2 import (  # noqa: F401 — fixtury
@@ -104,7 +105,7 @@ async def test_adb_kolejny_adres_przy_timeoucie_adb_shell_i_zamyka(tmp_path, mon
 
 # ======================================================================= U3
 def test_runbook_usuniecie_poprzedniego_tylko_po_potwierdzeniu():
-    tekst = (ROOT / "docs/sejf-domow.md").read_text()
+    tekst = plik_dokumentacji("sejf-domow.md").read_text()
     rotacja = tekst[tekst.index("## 7. Rotacja KEK"):tekst.index("## 8.")]
     linie = [linia for linia in rotacja.splitlines() if "KIDWATCH_KEK_POPRZEDNI" in linia
              and "remove" in linia]
@@ -126,7 +127,7 @@ def test_kp_zwraca_kod_klucze_potwierdz(tmp_path):
         if os.environ.get("CI"):
             pytest.fail("brak zsh — workflow CI musi go instalowac (apt-get install zsh)")
         pytest.skip("brak zsh")
-    tekst = (ROOT / "docs/sejf-domow.md").read_text()
+    tekst = plik_dokumentacji("sejf-domow.md").read_text()
     definicja = tekst[tekst.index("kp() {"):]
     definicja = definicja[:definicja.index("}\n") + 1]
     atrapa = tmp_path / "kubectl"
@@ -150,7 +151,7 @@ def test_domy_pokazuje_wymuszenie(dom1, kek, monkeypatch, capsys):
 
 # ======================================================================= U5
 def test_runbook_ostrzega_ze_starsze_obrazy_ignoruja_wymuszenie():
-    tekst = (ROOT / "docs/sejf-domow.md").read_text()
+    tekst = plik_dokumentacji("sejf-domow.md").read_text()
     cofniecie = tekst[tekst.index("## 4. Cofnięcie"):tekst.index("## 5.")]
     assert "sha-c38b19c" in cofniecie and "ignoruje" in cofniecie
 
@@ -194,7 +195,7 @@ def test_testy_e2_nie_polegaja_na_pustej_liscie_bledow():
 # ================================================================= U9, U10
 def test_kp_bez_globalnej_zmiennej_z_kluczem():
     """N3: `local K` — po Ctrl-C klucz nie zostaje w powloce."""
-    tekst = (ROOT / "docs/sejf-domow.md").read_text()
+    tekst = plik_dokumentacji("sejf-domow.md").read_text()
     definicja = tekst[tekst.index("kp() {"):]
     assert definicja.startswith("kp() { local K rc;")
 
@@ -202,7 +203,7 @@ def test_kp_bez_globalnej_zmiennej_z_kluczem():
 def test_schowek_czyszczony_przed_kp():
     """N1: klucz wrzucony do schowka trzeba usunac przed `kp`, inaczej `kp`
     potwierdza schowek, a nie wpis w menedzerze hasel."""
-    tekst = (ROOT / "docs/sejf-domow.md").read_text()
+    tekst = plik_dokumentacji("sejf-domow.md").read_text()
     for start, kp in (("## 2. Klucz KEK", "## 3."), ("## 7. Rotacja KEK", "kp &&")):
         sekcja = tekst[tekst.index(start):]
         wrzut = sekcja.index("| pbcopy")
@@ -210,7 +211,7 @@ def test_schowek_czyszczony_przed_kp():
 
 
 def test_runbook_powloka_i_schowek():
-    tekst = (ROOT / "docs/sejf-domow.md").read_text()
+    tekst = plik_dokumentacji("sejf-domow.md").read_text()
     assert "zsh" in tekst
     assert 'printf \'%s\\n\' "$NOWY"' not in tekst and 'printf \'%s\\n\' "$KEK"' not in tekst
     assert "pbcopy" in tekst

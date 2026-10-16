@@ -1,4 +1,4 @@
-/* Domy (docs/architektura-domy.md §4.1): kazda trasa danych domu ma dom
+/* Domy (renacode-infra: docs/projekty/kidwatch/architektura-domy.md §4.1): kazda trasa danych domu ma dom
    w SCIEZCE - /api/domy/<id>/... Front zna liste domow konta z /api/auth/me
    (`domy`: id, nazwa, rola, administracja, uprawnienia W TYM domu).
 

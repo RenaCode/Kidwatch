@@ -13,10 +13,12 @@ iPhone dziecka (`kind: iphone`) jest zwykle BEZ nadzoru — nadzor wymaga
 wymazania telefonu. Dostaje wiec wylacznie to, co dziala bez nadzoru:
 zadnych domyslnych blokad iPada, zadnych wspolnych nadpisan, zadnego
 `blockedAppBundleIDs`; wlasne `restrictions` urzadzenia tylko z kluczy, ktore
-schemat Apple dopuszcza bez nadzoru (docs/iphone.md). Zostaja inwentarz,
+schemat Apple dopuszcza bez nadzoru (renacode-infra: docs/projekty/kidwatch/iphone.md). Zostaja
+inwentarz,
 blokada ekranu (restart wymaga nadzoru), status DDM i wymuszenie wersji systemu.
 
-Domy (docs/architektura-domy.md §4.3, etap E3b): klucz urzadzenia w `devices`
+Domy (renacode-infra: docs/projekty/kidwatch/architektura-domy.md §4.3, etap E3b): klucz urzadzenia
+w `devices`
 to `<dom>/<etykieta>` (np. `2/dziecko1`), a Dom 1 zachowuje stare etykiety bez
 prefiksu. Sekcja `domy` daje nadpisania `restrictions`/`blocked_apps` per dom,
 dokladane miedzy wspolne a wlasne urzadzenia — jak wspolne, nie moga zdjac

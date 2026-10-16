@@ -1,4 +1,4 @@
-"""Etap E4: zaproszenia do domu (docs/architektura-domy.md §7 E4).
+"""Etap E4: zaproszenia do domu (renacode-infra: docs/projekty/kidwatch/architektura-domy.md §7 E4).
 
 Kazda bariera ma test i kanarek: ten sam sprawdzian z bariera wylaczona
 mutacja w kodzie MUSI znalezc naruszenie — inaczej jego cisza niczego by

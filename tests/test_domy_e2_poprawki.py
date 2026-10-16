@@ -1,5 +1,5 @@
 # ruff: noqa: F811 — fixtury dom1/kek importowane z test_domy_e2
-"""Poprawki E2 po przegladzie (przeglad-e2.md): wyjscie z CrashLoopa bez
+"""Poprawki E2 po przegladzie PR #49: wyjscie z CrashLoopa bez
 `kubectl exec` (P1), test odtworzenia, ktory nie potwierdza niczego, gdy
 nie ma czego sprawdzic (P2), potwierdzenie kopii KEK przed usunieciem
 klucza poprzedniego (R1/R2), token aplikacji TV przy ponownym imporcie
@@ -23,6 +23,7 @@ import httpx
 import pytest
 
 import kidwatch.__main__ as cli
+from conftest import plik_dokumentacji
 from kidwatch.domy import DOM_1, RejestrDomow
 from kidwatch.sejf import Sejf
 from kidwatch.sources import unifi as unifi_mod
@@ -91,10 +92,13 @@ def test_chart_ma_opcjonalny_klucz_wymuszenia():
     assert "key: KIDWATCH_DOM_1_ZRODLO" in blok and "optional: true" in blok
 
 
+def test_chart_odtworzenia_sekretu_zna_kek():
+    assert "KIDWATCH_KEK" in (ROOT / "charts/kidwatch/values.yaml").read_text()
+
+
 def test_dokumentacja_odtworzenia_sekretu_zna_kek():
-    for plik in ("docs/uruchomienie-od-zera.md", "charts/kidwatch/values.yaml"):
-        assert "KIDWATCH_KEK" in (ROOT / plik).read_text(), plik
-    runbook = (ROOT / "docs/sejf-domow.md").read_text()
+    assert "KIDWATCH_KEK" in plik_dokumentacji("uruchomienie-od-zera.md").read_text()
+    runbook = plik_dokumentacji("sejf-domow.md").read_text()
     assert "KIDWATCH_DOM_1_ZRODLO" in runbook
 
 
@@ -166,7 +170,7 @@ def test_potwierdzenie_kopii_kek_przerywa_bez_dowodu(dom1, kek, monkeypatch, cap
 
 
 def test_runbook_rotacji_najpierw_test_potem_usuwanie():
-    tekst = (ROOT / "docs/sejf-domow.md").read_text()
+    tekst = plik_dokumentacji("sejf-domow.md").read_text()
     rotacja = tekst[tekst.index("## 7. Rotacja KEK"):tekst.index("## 8.")]
     assert rotacja.index("klucze-potwierdz") < rotacja.index("remove")
     assert "kopie" in rotacja and "sprzed rotacji" in rotacja

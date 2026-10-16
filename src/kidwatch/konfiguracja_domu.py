@@ -1,7 +1,7 @@
 """Konfiguracja domu z bazy panelu: HomeConfig <-> tabele (etap E2).
 
-Projekt: docs/architektura-domy.md §2.5, §3, §6 p. 4. Runbook:
-docs/sejf-domow.md.
+Projekt: renacode-infra: docs/projekty/kidwatch/architektura-domy.md §2.5, §3, §6 p. 4. Runbook:
+renacode-infra: docs/projekty/kidwatch/sejf-domow.md.
 
   * `plan_z_home` — HomeConfig (dzis: Dom 1 z config.yaml) + jego sekrety
     -> PlanDomu: `domy.ustawienia`, `dzieci`, `urzadzenia`, `integracje`.

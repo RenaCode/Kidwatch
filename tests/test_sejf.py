@@ -1,4 +1,5 @@
-"""Sejf domow (E2, docs/architektura-domy.md §3): KEK/DEK, AAD, rotacja.
+"""Sejf domow (E2, renacode-infra: docs/projekty/kidwatch/architektura-domy.md §3): KEK/DEK, AAD,
+rotacja.
 
 Klucze i sekrety wylacznie losowane w tescie (§3.4)."""
 

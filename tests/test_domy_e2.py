@@ -1,4 +1,5 @@
-"""Etap E2 domow (docs/architektura-domy.md §3, §6 p. 4, §7 E2): integracje
+"""Etap E2 domow (renacode-infra: docs/projekty/kidwatch/architektura-domy.md §3, §6 p. 4, §7 E2):
+integracje
 per dom, sekrety w bazie (KEK/DEK, AAD), dom-importuj, straznik sieci.
 
 Dane wylacznie generyczne (tests/test_repo_prywatnosc.py): „Dziecko 1”,

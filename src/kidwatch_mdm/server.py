@@ -8,7 +8,7 @@ wiec API sterujacego iPadami na zewnatrz.
 Bez frameworka, tak jak panel Kidwatch: kilka endpointow nie uzasadnia
 dodatkowej zaleznosci w obrazie.
 
-Zakres tokenu (docs/architektura-domy.md §4.3, etap E3b):
+Zakres tokenu (renacode-infra: docs/projekty/kidwatch/architektura-domy.md §4.3, etap E3b):
 
   * token INSTANCJI (KIDWATCH_MDM_ADMIN_TOKEN) — jak przed E3b: wszystkie
     urzadzenia i zdarzenia, zaproszenia i wersja systemu Domu 1 (inny dom:

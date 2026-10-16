@@ -1,4 +1,4 @@
-"""Uwagi z przegladu E5 (audyt3/przeglad-e5.md, U1-U4) — po stronie serwera MDM.
+"""Uwagi z przegladu E5 (przeglad PR #51, U1-U4) — po stronie serwera MDM.
 
 iPady bajt w bajt pilnuje dalej test_mdm_iphone.py (migawka sprzed E5); tu
 tylko przypadki, ktorych migawka nie zawiera.

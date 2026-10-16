@@ -1,4 +1,5 @@
-"""Izolacja awarii petli domu (E3b, docs/architektura-domy.md §5.1).
+"""Izolacja awarii petli domu (E3b, renacode-infra: docs/projekty/kidwatch/architektura-domy.md
+§5.1).
 
 Dom 1 i dom testowy pod jednym nadzorca. Petla domu testowego rzuca
 wyjatek: Dom 1 chodzi dalej, proces nie konczy sie, dom testowy wraca po

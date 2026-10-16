@@ -1,4 +1,5 @@
-"""Strażnik sieci domu (E2, docs/architektura-domy.md §3.6, §4.4 p. 7): SSRF.
+"""Strażnik sieci domu (E2, renacode-infra: docs/projekty/kidwatch/architektura-domy.md §3.6, §4.4
+p. 7): SSRF.
 
 Adresy: pule dokumentacyjne (RFC 5737/3849), prywatne z RFC 1918 jako
 przyklady sieci zabronionych i publiczne adresy resolwera Quad9 (9.9.9.9,

@@ -1,4 +1,4 @@
-"""iPhone dziecka jako urzadzenie z DNS (etap E5, docs/iphone.md).
+"""iPhone dziecka jako urzadzenie z DNS (etap E5, renacode-infra: docs/projekty/kidwatch/iphone.md).
 
 iPhone idzie droga iPada: profil NextDNS z nazwa urzadzenia, odczyt wprost
 przez lockdown z LAN domu. Rozni sie tym, co czyta czlowiek — a ze iPhone

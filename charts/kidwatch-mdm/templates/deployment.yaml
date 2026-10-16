@@ -147,7 +147,7 @@ spec:
             secretName: {{ .Values.ingress.tlsSecret }}
             defaultMode: 0400
             optional: true
-        # Token ADE z `kidwatch-mdm ade import` (docs/mdm.md, Krok 5).
+        # Token ADE z `kidwatch-mdm ade import` (renacode-infra: docs/projekty/kidwatch/mdm.md, Krok 5).
         - name: ade
           secret:
             secretName: {{ .Values.adeSecret }}

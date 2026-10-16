@@ -73,9 +73,9 @@ tailscale:
 # TV_SONY_PSK (Sony REST: antena i HDMI; bez niego tylko stan zasilania TV),
 # KIDWATCH_KEK (sejf integracji domow, 32 B w base64 — generuje wlasciciel,
 # kopia POZA kopia PVC; bez niego Dom 1 z config.yaml dziala jak dotad):
-# docs/sejf-domow.md. UWAGA: gdy Dom 1 ma juz konfiguracje w bazie, odtworzony
+# renacode-infra: docs/projekty/kidwatch/sejf-domow.md. UWAGA: gdy Dom 1 ma juz konfiguracje w bazie, odtworzony
 # Sekret BEZ KIDWATCH_KEK = pod w CrashLoop; wyjscie bez exec: klucz
-# KIDWATCH_DOM_1_ZRODLO=yaml w tym samym Sekrecie (docs/sejf-domow.md pkt 4).
+# KIDWATCH_DOM_1_ZRODLO=yaml w tym samym Sekrecie (renacode-infra: docs/projekty/kidwatch/sejf-domow.md pkt 4).
 secretName: kidwatch-secrets
 
 # Rekordy parowania <UDID>.plist, wygenerowane JEDNORAZOWO na Macu po kablu.
@@ -177,7 +177,7 @@ sso:
   # dla tego hosta w authelia.yaml. Grupa tylko wpuszcza: co konto moze, mowi
   # jego czlonkostwo w domach w bazie panelu (`user-add --rola podglad` dla
   # rodziny, README "Roles"). `admins` (konto administracyjne, decyzja 5 w
-  # docs/architektura-domy.md §8) od etapu E3a: rola administratora instalacji
+  # renacode-infra: docs/projekty/kidwatch/architektura-domy.md §8) od etapu E3a: rola administratora instalacji
   # wymaga flagi `kidwatch user-admin <login> on` w bazie ORAZ tej grupy
   # w naglowku — sama grupa niczego nie nadaje. `kidwatch-goscie` (E4, decyzja 3)
   # to osoby spoza rodziny zaproszone do domu: Authelia wpuszcza je WYLACZNIE

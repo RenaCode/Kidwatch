@@ -45,7 +45,8 @@ GROUPS_ENV = "SSO_GRUPY"
 
 DEFAULT_PORTAL = "https://auth.renacode.com"
 #: Grupy Authelii z dostepem do panelu: konto codzienne wlasciciela, rodzina,
-#: goscie z zaproszen (od E4) i (od E3a, docs/architektura-domy.md §8 decyzja 5 po korekcie z 11.10)
+#: goscie z zaproszen (od E4) i (od E3a, renacode-infra: docs/projekty/kidwatch/architektura-domy.md
+#: §8 decyzja 5 po korekcie z 11.10)
 #: konto administracyjne `admins`. Wpuszczenie to nie uprawnienia: rola
 #: administratora instalacji wymaga flagi `users.admin_instancji` w bazie,
 #: a grupa `admins` jest dla niej tylko warunkiem koniecznym

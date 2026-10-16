@@ -149,7 +149,8 @@ class DeviceConfig(_Base):
     #: Link). Wszystkie ida przez DNS; telefon z Androidem nie ma odczytu wprost
     #: (udid/host/known_apps to uslugi lockdown iOS), iPhone ma — jak iPad.
     #: Zmienia teksty pushy i podpowiedzi czujek — patrz devicekind.py,
-    #: docs/telefon-android.md i docs/iphone.md.
+    #: renacode-infra: docs/projekty/kidwatch/telefon-android.md i
+    #: renacode-infra: docs/projekty/kidwatch/iphone.md.
     kind: DeviceKindName = "ipad"
 
     # --- odczyt wprost z iPada (opcjonalny; bez tego dziala sama warstwa DNS)
@@ -925,7 +926,8 @@ def _panel_auth_path(panel: PanelConfig, store: StoreConfig) -> str:
 class InstanceConfig(_Base):
     """Czesc konfiguracji wspolna dla calej instalacji, niezalezna od domu:
     panel, baza Domu 1 i domyslna retencja, bramka powiadomien, adres serwera
-    MDM, mapa aplikacji, katalog rekordow parowania (docs/architektura-domy.md
+    MDM, mapa aplikacji, katalog rekordow parowania
+    (renacode-infra: docs/projekty/kidwatch/architektura-domy.md
     §2.5). Pola maja te same nazwy i znaczenie co w `Config`."""
 
     notifiers: InstanceNotifiersConfig = Field(default_factory=InstanceNotifiersConfig)
@@ -1117,7 +1119,8 @@ _TYLKO_INSTANCJA: dict = {
 
 class Config(HomeConfig):
     """Plik config.yaml: dom (Dom 1) i instancja w jednym. Plik bez sekcji
-    domow jest poprawny na zawsze (docs/architektura-domy.md §6)."""
+    domow jest poprawny na zawsze (renacode-infra: docs/projekty/kidwatch/architektura-domy.md
+    §6)."""
 
     notifiers: NotifiersConfig = Field(default_factory=NotifiersConfig)
     device_read: DeviceReadConfig = Field(default_factory=DeviceReadConfig)

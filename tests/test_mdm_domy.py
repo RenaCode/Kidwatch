@@ -1,4 +1,5 @@
-"""kidwatch-mdm per dom (E3b, docs/architektura-domy.md §4.3, §4.4 p. 4 i 8).
+"""kidwatch-mdm per dom (E3b, renacode-infra: docs/projekty/kidwatch/architektura-domy.md §4.3, §4.4
+p. 4 i 8).
 
 Serwer z dwoma domami: iPad A w Domu 1 (zapisany tokenem instancji, jak przed
 E3b), iPad B w Domu 2 (zaproszenie tokenem Domu 2). Token domu nie widzi

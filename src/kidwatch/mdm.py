@@ -11,7 +11,8 @@ Dwie rzeczy:
 Serwer MDM ma WLASNA baze i jest jedynym jej pisarzem. Kidwatch pamieta tylko
 kursor dziennika (meta `mdm:events`) i znaczniki wyslanych alarmow.
 
-Domy (docs/architektura-domy.md §4.3, etap E3b). Serwer zna dom kazdego
+Domy (renacode-infra: docs/projekty/kidwatch/architektura-domy.md §4.3, etap E3b). Serwer zna dom
+kazdego
 urzadzenia i rozroznia token INSTANCJI (`MDM_ADMIN_TOKEN`, wszystko) od tokenu
 DOMU (tylko jego urzadzenia). Czujka ma wiec trzy zakresy (`zakres_tokenu`):
 
@@ -195,7 +196,8 @@ def build_api(cfg: MdmConfig) -> MdmApi | None:
 
 # ================================================================= czujka
 #: Co iPhone bez nadzoru daje przez MDM — powtarzane w tekstach, zeby alarm
-#: nie obiecywal blokad, ktorych iOS nie wykona (docs/iphone.md). Bez restartu:
+#: nie obiecywal blokad, ktorych iOS nie wykona (renacode-infra: docs/projekty/kidwatch/iphone.md).
+#: Bez restartu:
 #: RestartDevice wymaga nadzoru (mdm/commands/device.restart.yaml).
 _IPHONE_MOZE = "lista aplikacji, blokada ekranu i aktualizacje"
 
@@ -264,7 +266,7 @@ def _describe(
             if not supervised
             else (
                 "iPhone jest nadzorowany, ale polityka iPhone'a nie wysyla blokad "
-                "nadzoru — to osobna decyzja (docs/iphone.md)."
+                "nadzoru — to osobna decyzja (renacode-infra: docs/projekty/kidwatch/iphone.md)."
                 if iphone
                 else "iPad jest nadzorowany — blokady dzialaja."
             ),
@@ -401,7 +403,8 @@ def _describe_ade(kind: str, detail: Any) -> tuple[NotifyKind, int, str, str] | 
             4,
             "MDM: brak tokenu Apple Business",
             f"Polityka ma numery seryjne ({labels}), ale serwer nie ma tokenu ADE — iPad "
-            "po wymazaniu nie wroci do MDM. Krok 5 w docs/mdm.md.",
+            "po wymazaniu nie wroci do MDM. Krok 5 w "
+            "renacode-infra: docs/projekty/kidwatch/mdm.md.",
         )
     if kind == "ade_unknown_serial":
         return (

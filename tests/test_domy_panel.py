@@ -1,4 +1,5 @@
-"""Etap E3a domow: izolacja panelu i API (docs/architektura-domy.md §4.4).
+"""Etap E3a domow: izolacja panelu i API
+(renacode-infra: docs/projekty/kidwatch/architektura-domy.md §4.4).
 
 Dwa BLIZNIACZE domy — te same nazwy dzieci, urzadzen i identyfikatorow
 zrodla, rozne tylko znaczniki w danych (aplikacja i tytul `TYLKO-A`

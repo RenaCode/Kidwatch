@@ -5,7 +5,8 @@ pisarz. Jedno polaczenie chronione blokada — przy kilku iPadach rownoleglosc
 zadan jest znikoma, a jedno polaczenie wyklucza `database is locked` miedzy
 watkami serwera HTTP i watkiem uzgadniania.
 
-Domy (docs/architektura-domy.md §4.3, etap E3b): kazde zaproszenie i kazde
+Domy (renacode-infra: docs/projekty/kidwatch/architektura-domy.md §4.3, etap E3b): kazde zaproszenie
+i kazde
 urzadzenie ma `dom_id` (DEFAULT 1 — wszystko zapisane przed E3b jest w Domu 1
 bez zadnej akcji), zdarzenia niosa dom urzadzenia (NULL = zdarzenie serwera,
 np. odrzucony podpis). Tokeny API domow leza tu jako SHA-256; token instancji

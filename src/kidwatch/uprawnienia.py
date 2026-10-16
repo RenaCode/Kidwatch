@@ -37,7 +37,7 @@ WHATSAPP_KOMENDY = "whatsapp.komendy"
 KONTA = "konta.zarzadzanie"
 #: Powiadomienia techniczne (czujka, awarie, inne) per konto (odbiorcy.py).
 POWIADOMIENIA_TECHNICZNE = "powiadomienia.techniczne"
-#: Dzieci i urzadzenia domu (docs/architektura-domy.md §2.3).
+#: Dzieci i urzadzenia domu (renacode-infra: docs/projekty/kidwatch/architektura-domy.md §2.3).
 DOM_URZADZENIA = "dom.urzadzenia"
 #: Ustawienia i sekrety integracji domu (zapis i maska, nigdy odczyt wartosci).
 DOM_INTEGRACJE = "dom.integracje"
@@ -77,7 +77,8 @@ ZAKRESY: dict[str, str] = {
 UPRAWNIENIA_DOMU = frozenset(u for u, z in ZAKRESY.items() if z == ZAKRES_DOM)
 UPRAWNIENIA_INSTANCJI = frozenset(u for u, z in ZAKRESY.items() if z == ZAKRES_INSTANCJA)
 
-#: Role w DOMU (docs/architektura-domy.md §2.3, tabela `czlonkostwa`).
+#: Role w DOMU (renacode-infra: docs/projekty/kidwatch/architektura-domy.md §2.3, tabela
+#: `czlonkostwa`).
 #: `wlasciciel-domu` ma zbior roli konta `wlasciciel` (takze
 #: `whatsapp.konfiguracja` — tylko dla lustra obrazu sprzed domow; w panelu
 #: to uprawnienie ma zakres instancji i daje je WYLACZNIE aktywny

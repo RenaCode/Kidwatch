@@ -181,7 +181,8 @@ def declarations(
     nich — inaczej moglby odrzucic cala deklaracje przez jeden klucz.
 
     iPhone ZAWSZE dostaje wersje bez nadzoru (takze bez deklaracji DNS: DNS
-    iPhone'a idzie recznym profilem NextDNS, docs/iphone.md). Nadzorowany
+    iPhone'a idzie recznym profilem NextDNS, renacode-infra: docs/projekty/kidwatch/iphone.md).
+    Nadzorowany
     iPhone to osobna decyzja, nie skutek uboczny jednego pola z DeviceInformation.
     """
     dev = policy.device(label)
