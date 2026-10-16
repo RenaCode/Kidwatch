@@ -45,7 +45,8 @@ def test_summary_z_CLI_nie_zajmuje_klucza_dedupu_podsumowania(tmp_path, capsys):
 def test_run_restartuje_dom_gdy_padnie_zadanie(tmp_path, monkeypatch):
     """Regresja: koniec petli zrodla konczyl proces z kodem 0 — w k8s
     wygladalo to jak czyste zatrzymanie, nie awaria. Od E3b (izolacja awarii,
-    docs/architektura-domy.md §5.1) koniec petli to awaria DOMU: nadzorca
+    renacode-infra: docs/projekty/kidwatch/architektura-domy.md §5.1) koniec petli to awaria DOMU:
+    nadzorca
     planuje restart tego domu, a proces (panel, inne domy) zyje dalej; tetno
     procesu dotyka nadzorca. Bez izolacji (E1) — kod 1: test_domy.py."""
     import kidwatch.__main__ as cli  # noqa: PLC0415

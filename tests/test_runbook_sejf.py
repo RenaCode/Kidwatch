@@ -1,4 +1,5 @@
-"""Runbook docs/sejf-domow.md wklejany do PRAWDZIWEGO interaktywnego zsh.
+"""Runbook sejf-domow.md (renacode-infra: docs/projekty/kidwatch/sejf-domow.md)
+wklejany do PRAWDZIWEGO interaktywnego zsh.
 
 Właściciel wkleja bloki do zsh, domyślnie bez `interactivecomments`: `#`
 nie jest wtedy komentarzem, a polecenie w odwrotnych apostrofach
@@ -19,7 +20,8 @@ Komentarzy w blokach pilnuje dlatego osobny test statyczny
     dalszego polecenia.
 
 Bez sieci i bez prawdziwego kubectl/schowka. Bez zsh: w CI błąd, lokalnie
-pominięcie (jak test kp w test_domy_e2_uwagi.py)."""
+pominięcie (jak test kp w test_domy_e2_uwagi.py). Runbook jest w prywatnym
+repo: bez KIDWATCH_DOCS testy są pomijane (conftest.plik_dokumentacji)."""
 
 from __future__ import annotations
 
@@ -34,8 +36,13 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-RUNBOOK = ROOT / "docs/sejf-domow.md"
+from conftest import plik_dokumentacji
+
+
+def _runbook() -> str:
+    return plik_dokumentacji("sejf-domow.md").read_text()
+
+
 ZNACZNIK = "@@P@@"
 KLUCZ = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE="
 
@@ -204,7 +211,7 @@ def _uruchom(srodowisko, blok: str, *, kp_rc: int = 0, przy_read=None):
     env = {"PATH": f"{srodowisko['bin']}:/usr/bin:/bin", "HOME": str(srodowisko["tmp"]),
            "TERM": "xterm", "ATRAPY_LOG": str(log), "KP_RC": str(kp_rc),
            "ZSH": srodowisko["zsh"], "LANG": "C.UTF-8"}
-    definicje = bloki(RUNBOOK.read_text())[0][1]
+    definicje = bloki(_runbook())[0][1]
     sesja = Zsh(srodowisko["tmp"], env)
     try:
         wyjscie = sesja.wklej(definicje, lambda n: None, limit_read=0)
@@ -224,7 +231,7 @@ def _uruchom_bash(srodowisko, blok: str, *, kp_rc: int = 0):
            "ZSH": srodowisko["zsh"], "LANG": "C.UTF-8"}
     sesja = Zsh(srodowisko["tmp"], env, [bash, "--norc", "--noprofile", "-i"])
     try:
-        wyjscie = sesja.wpisz(bloki(RUNBOOK.read_text())[0][1])
+        wyjscie = sesja.wpisz(bloki(_runbook())[0][1])
         wyjscie += sesja.wpisz(blok)
     finally:
         sesja.zamknij()
@@ -235,7 +242,7 @@ def test_bloki_ze_schowkiem_w_bashu_nic_nie_robia(srodowisko):
     """W bashu `read -rs '?…'` nie czeka (błąd), a bash 3.2 nie ma bracketed
     paste — blok musi to wykryć i nie wrzucać klucza do schowka ani do
     Sekretu."""
-    ze_schowkiem = [(n, b) for n, b in bloki(RUNBOOK.read_text()) if "| pbcopy" in b]
+    ze_schowkiem = [(n, b) for n, b in bloki(_runbook()) if "| pbcopy" in b]
     assert len(ze_schowkiem) == 2
     for linia, blok in ze_schowkiem:
         wyjscie, log = _uruchom_bash(srodowisko, blok)
@@ -244,7 +251,7 @@ def test_bloki_ze_schowkiem_w_bashu_nic_nie_robia(srodowisko):
 
 
 def test_kp_and_w_bashu_nie_wykonuje_dalszego(srodowisko):
-    for linia, blok in [(n, b) for n, b in bloki(RUNBOOK.read_text())
+    for linia, blok in [(n, b) for n, b in bloki(_runbook())
                         if re.search(r"(?m)^kp &&", b)]:
         polecenie = re.search(r"(?m)^kp && kubectl -n default (\w+)", blok).group(1)
         _, log = _uruchom_bash(srodowisko, blok, kp_rc=0)
@@ -259,10 +266,10 @@ def _bez_bledow_powloki(wyjscie: str, gdzie: str) -> None:
 
 
 def test_kazdy_blok_runbooka_w_interaktywnym_zsh(srodowisko):
-    wszystkie = bloki(RUNBOOK.read_text())
+    wszystkie = bloki(_runbook())
     assert len(wszystkie) >= 10
     for linia, blok in wszystkie:
-        gdzie = f"docs/sejf-domow.md:{linia}"
+        gdzie = f"sejf-domow.md:{linia}"
         stany_przy_read: list[list[str]] = []
         wyjscie, log = _uruchom(srodowisko, blok,
                                 przy_read=lambda n, tekst, s=stany_przy_read: s.append(
@@ -282,15 +289,15 @@ def test_kazdy_blok_runbooka_w_interaktywnym_zsh(srodowisko):
 
 
 def test_kp_and_tylko_po_potwierdzeniu(srodowisko):
-    z_and = [(n, b) for n, b in bloki(RUNBOOK.read_text()) if re.search(r"(?m)^kp &&", b)]
+    z_and = [(n, b) for n, b in bloki(_runbook()) if re.search(r"(?m)^kp &&", b)]
     assert len(z_and) >= 2  # przełączenie Domu 1 (restart) i rotacja (remove)
     for linia, blok in z_and:
         m = re.search(r"(?m)^kp && kubectl -n default (\w+)", blok)
-        assert m, f"docs/sejf-domow.md:{linia}: `kp && …` nie jako polecenie"
+        assert m, f"sejf-domow.md:{linia}: `kp && …` nie jako polecenie"
         polecenie = m.group(1)
         for kod, ma_byc in ((1, False), (0, True)):
             wyjscie, log = _uruchom(srodowisko, blok, kp_rc=kod)
-            _bez_bledow_powloki(wyjscie, f"docs/sejf-domow.md:{linia}")
+            _bez_bledow_powloki(wyjscie, f"sejf-domow.md:{linia}")
             i_kp = next(i for i, w in enumerate(log) if "klucze-potwierdz" in w)
             po = [w for w in log[i_kp + 1:] if w.startswith(f"kubectl -n default {polecenie}")]
             assert bool(po) is ma_byc, (linia, kod, log)
@@ -298,7 +305,7 @@ def test_kp_and_tylko_po_potwierdzeniu(srodowisko):
 
 def test_runbook_bez_komentarzy_w_blokach():
     """Statycznie: żadnego `#`-komentarza w bloku (poza cudzysłowem/JSON)."""
-    for linia, blok in bloki(RUNBOOK.read_text()):
+    for linia, blok in bloki(_runbook()):
         for wiersz in blok.splitlines():
             bez_cudzyslowow = re.sub(r"'[^']*'|\"[^\"]*\"", "", wiersz)
             assert not re.search(r"(^|\s)#", bez_cudzyslowow), (linia, wiersz)

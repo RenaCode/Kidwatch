@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import os
 from datetime import UTC, datetime, time, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -28,6 +29,24 @@ from kidwatch.models import DnsEvent
 from kidwatch.store import Store
 
 TZ = ZoneInfo("Europe/Warsaw")
+
+
+def plik_dokumentacji(nazwa: str) -> Path:
+    """Plik dokumentacji wewnetrznej (runbooki), np. "sejf-domow.md".
+
+    Dokumentacja jest od 16.10 w prywatnym repo renacode-infra
+    (docs/projekty/kidwatch/), nie tutaj. Testy jej tresci biegna, gdy
+    KIDWATCH_DOCS wskazuje ten katalog; bez zmiennej sa POMIJANE z powodem
+    widocznym w `pytest -rs`. Zmienna ustawiona, a pliku brak = blad, nie
+    pominiecie."""
+    katalog = os.environ.get("KIDWATCH_DOCS")
+    if not katalog:
+        pytest.skip(f"dokumentacja w renacode-infra: docs/projekty/kidwatch/{nazwa} "
+                    "(ustaw KIDWATCH_DOCS na ten katalog)")
+    sciezka = Path(katalog) / nazwa
+    if not sciezka.is_file():
+        pytest.fail(f"KIDWATCH_DOCS={katalog}: brak pliku {nazwa}")
+    return sciezka
 
 APP_MAP = """
 noise:

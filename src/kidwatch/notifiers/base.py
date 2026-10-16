@@ -299,7 +299,8 @@ class Outbox:
 
     @property
     def tylko_konta(self) -> bool:
-        """Dom inny niz Dom 1 (docs/architektura-domy.md §4.2): trasy bramki
+        """Dom inny niz Dom 1 (renacode-infra: docs/projekty/kidwatch/architektura-domy.md §4.2):
+        trasy bramki
         znaja tylko odbiorcow Domu 1, wiec bez trybu kont jego notki NIE
         moga isc do bramki."""
         return self.dom_id is not None and self.dom_id != DOM_TRAS

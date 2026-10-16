@@ -1,6 +1,7 @@
 """Domy (gospodarstwa): model w panel-auth.db, migracja do Domu 1, srodowisko domu.
 
-Projekt: docs/architektura-domy.md. Ten modul to etap E1 — model i migracja
+Projekt: renacode-infra: docs/projekty/kidwatch/architektura-domy.md. Ten modul to etap E1 — model i
+migracja
 bez zmiany zachowania. Instalacja ma dalej jeden dom (Dom 1) z konfiguracja
 z config.yaml, ale:
 
@@ -2171,7 +2172,8 @@ class Nadzorca:
                   "zrestartuje poda)", dom_id)
         await self._alarm(f"Dom {dom_id}: monitoring zatrzymany",
                           "Ani nowa, ani poprzednia, ani ostatnia dobra konfiguracja domu nie "
-                          "wstaje. Proces konczy sie; sprawdz log i docs/sejf-domow.md.")
+                          "wstaje. Proces konczy sie; sprawdz log i "
+                          "renacode-infra: docs/projekty/kidwatch/sejf-domow.md.")
         return None
 
     async def _zatrzymaj(self, rt: HomeRuntime) -> None:

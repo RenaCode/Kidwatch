@@ -8,16 +8,18 @@ na urzadzeniu szukac wylaczonego DNS.
 Telefon z Androidem (zwykle pod Google Family Link) wysyla DNS przez
 Prywatny DNS (DNS-over-TLS) na host `<nazwa>-<profil>.dns.nextdns.io`.
 NextDNS zamienia `--` w nazwie na spacje, wiec `Telefon--Dziecka-1-abc123`
-pokazuje sie w logach jako "Telefon Dziecka 1" (docs/telefon-android.md).
+pokazuje sie w logach jako "Telefon Dziecka 1"
+(renacode-infra: docs/projekty/kidwatch/telefon-android.md).
 Telewizor ma osobna sciezke (sources/tv*.py) i nie jest tu rodzajem; w bazie
 panelu dostaje `rodzaj = 'tv'` (RODZAJ_W_BAZIE), zeby byl przypisany do domu.
 
 iPhone idzie droga iPada (profil NextDNS z nazwa urzadzenia, odczyt wprost
 przez lockdown z LAN domu), ale zwykle jest BEZ nadzoru: ograniczenia MDM sa
 ignorowane, profil DNS da sie zdjac, a telefon czesto chodzi po sieci
-komorkowej. Teksty mowia to wprost (docs/iphone.md).
+komorkowej. Teksty mowia to wprost (renacode-infra: docs/projekty/kidwatch/iphone.md).
 
-Model domow (docs/architektura-domy.md §2.4) nazywa telefon `phone-android`.
+Model domow (renacode-infra: docs/projekty/kidwatch/architektura-domy.md §2.4) nazywa telefon
+`phone-android`.
 W konfiguracji obie nazwy znacza to samo; wewnatrz i w API panelu zostaje
 `phone`, dopoki front nie zna nowej nazwy. Tabela `urzadzenia` w bazie
 panelu uzywa nazw z modelu domow (RODZAJ_W_BAZIE).

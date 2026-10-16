@@ -84,7 +84,7 @@ spec:
                   key: token
                   optional: true
             # Klucz szyfrujacy sekrety integracji domow (src/kidwatch/sejf.py,
-            # docs/sejf-domow.md). OPCJONALNY: bez niego Dom 1 z config.yaml
+            # renacode-infra: docs/projekty/kidwatch/sejf-domow.md). OPCJONALNY: bez niego Dom 1 z config.yaml
             # dziala jak dotad, nie startuja tylko domy z konfiguracja w bazie.
             # Ten sam Sekret co envFrom nizej — jawnie, zeby bylo widac, skad.
             - name: KIDWATCH_KEK
@@ -104,7 +104,7 @@ spec:
               value: /run/kidwatch
             # Droga powrotu bez `kubectl exec`: wartosc `yaml` wymusza dla Domu 1
             # config.yaml mimo trybu `baza` w bazie (pod w CrashLoop, np. po
-            # utracie KIDWATCH_KEK). Patch Sekretu + restart, docs/sejf-domow.md.
+            # utracie KIDWATCH_KEK). Patch Sekretu + restart, renacode-infra: docs/projekty/kidwatch/sejf-domow.md.
             - name: KIDWATCH_DOM_1_ZRODLO
               valueFrom:
                 secretKeyRef:

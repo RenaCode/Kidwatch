@@ -1,6 +1,7 @@
 """Sejf sekretow domow: szyfrowanie kopertowe KEK -> DEK -> sekrety integracji.
 
-Projekt: docs/architektura-domy.md §3, runbook: docs/sejf-domow.md.
+Projekt: renacode-infra: docs/projekty/kidwatch/architektura-domy.md §3, runbook:
+renacode-infra: docs/projekty/kidwatch/sejf-domow.md.
 
     KEK (32 B, Sekret k8s: kidwatch-secrets/KIDWATCH_KEK, base64)
      └─ DEK domu (32 B, losowy)    domy.dek_zaszyfrowany

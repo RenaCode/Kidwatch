@@ -1,4 +1,4 @@
-"""Zaproszenia do domu (etap E4, docs/architektura-domy.md §7 E4).
+"""Zaproszenia do domu (etap E4, renacode-infra: docs/projekty/kidwatch/architektura-domy.md §7 E4).
 
 PRZEPLYW. Osoba z `dom.zaproszenia` w domu (domyslnie `wlasciciel-domu`,
 takze aktywny administrator instalacji) tworzy zaproszenie: rola, waznosc

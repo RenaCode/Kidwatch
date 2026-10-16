@@ -7,20 +7,19 @@ top of that: a web panel with history, a usage chart, an "all screens" view
 (iPads and TV on one daily timeline), trends and CSV export, NextDNS-based
 "game time" controls, and optional Android TV (ADB) and UniFi sensors.
 
-Full cluster deployment guide (in Polish):
-[`docs/uruchomienie-od-zera.md`](docs/uruchomienie-od-zera.md).
+Internal documentation (deployment, runbooks) is kept in the author's private
+infrastructure repository.
 
 **At a glance**
 
 - **Data source:** DNS query logs from [NextDNS](https://nextdns.io) (live
   stream), or AdGuard Home's query log. No app on the iPad, no jailbreak.
-  Android phones (Family Link) via Private DNS — see
-  [`docs/telefon-android.md`](docs/telefon-android.md).
+  Android phones (Family Link) via Private DNS.
 - **Own MDM server (optional, `kidwatch-mdm`):** a separate container written
   from scratch — installed apps with alerts on new ones, device state, remote
   screen lock, OS update enforcement, and on **supervised** iPads: VPN and
   Private Relay blocked, DNS that can't be turned off, a profile that can't be
-  removed. See [Own MDM server](#own-mdm-server-kidwatch-mdm).
+  removed.
 - **Notifications:** session start and end, new apps, night use, daily and
   weekly summaries, game time, TV viewing — via ntfy, Home Assistant or the
   WhatsApp/e-mail gateway.
@@ -174,8 +173,7 @@ name) and add the device with `kind: phone` to `devices`. Sessions, night
 alerts, the silence watchdog, game time and the panel then treat it like an
 iPad, with phone wording. Family Link **cannot** lock the Private DNS setting
 (only a device owner can), so the watchdog is what catches it being turned
-off. Research, step-by-step setup and limits (in Polish):
-[`docs/telefon-android.md`](docs/telefon-android.md).
+off.
 
 ---
 
@@ -253,14 +251,6 @@ Google TV (ADB), UniFi ───────────────────
 
 If it did, a session would never end — an iPad queries Apple constantly. A
 session ends at the last **non-system** activity.
-
-A lying iPad woken up by something other than the child — plugging in a cable,
-an iCloud sync, an MDM refresh — produces minutes of real traffic. Apple
-services that sit on third-party CDNs under Apple-named hosts
-(`*.apple.com.edgekey.net`, `apple-relay.cloudflare.com`, Privacy Pass) and the
-own MDM server (`mdm.renacode.com`) are therefore noise; on 2026-10-09 they
-opened a phantom session and let a Netflix background refresh through as an
-"app" push. `tests/test_szum_wybudzenia.py` replays that real sequence.
 
 ### A restart doesn't duplicate pushes
 
@@ -378,370 +368,6 @@ The start push then carries the actual start time. An unconfirmed session is
 closed silently and kept in the database (`sessions.confirmed=0`) for
 diagnostics only — it does not count toward summaries, reports, charts,
 aggregates or the night alert.
-
-Why moments rather than queries: a YouTube background refresh on an idle iPad
-(production, 10.2026) is `youtubei.googleapis.com`, `redirector` and a few
-`rr*.googlevideo.com` in the same second, sometimes one more `rr*` after 1–2
-minutes — then silence. That's two moments, not three. Watching pulls
-segments every dozen or so seconds and confirms after ~1 minute; a game with
-traffic every 30–60 s after 1–2 minutes.
-
-A 5-minute rather than 3-minute window: a game in play talks to its backend
-every ~3–3.5 min (an Asphalt recording in `tests/fixtures/day.jsonl`), and
-with 3 minutes a real half-hour session would never confirm.
-
-### Panel accounts
-
-Panel accounts are managed from the CLI (in the cluster via
-`kubectl exec deploy/kidwatch -c kidwatch -- python -m kidwatch …`):
-
-```bash
-python -m kidwatch user-add <login> [--password-stdin] [--rola podglad] [--bez-domu]  # random password printed ONCE
-python -m kidwatch user-rola <login> wlasciciel|podglad   # change role in Dom 1, clear overrides, log out
-python -m kidwatch user-uprawnienia <login> [+perm] [-perm] [=perm]  # per-account overrides, log out
-python -m kidwatch user-reset <login> [--password-stdin]  # new password, unlock, log out everywhere
-python -m kidwatch user-reset <login> --totp              # remove 2FA (lost phone)
-python -m kidwatch user-del <login>
-python -m kidwatch user-login <login> <new> [--zapisz]  # rename in place (same id); dry run without --zapisz
-python -m kidwatch user-list
-python -m kidwatch konta-migruj [--przypisz N=login …] [--zapisz [--wlacz]]  # gateway recipients -> accounts
-python -m kidwatch konta-tryb [trasy|konta]               # show / switch notification mode
-python -m kidwatch user-admin <login> on|off [--tylko-sso]  # installation administrator (see below)
-python -m kidwatch dom-dodaj <nazwa> [--strefa Europe/Warsaw]  # new household, empty event DB
-python -m kidwatch dom-czlonek <dom> <login> wlasciciel-domu|zarzadca|podglad  # role in a household
-python -m kidwatch dom-czlonek <dom> <login> --usun        # remove from a household
-```
-
-**Households** (`docs/architektura-domy.md`). Roles live per household
-(`wlasciciel-domu`, `zarzadca`, `podglad`); data routes are
-`/api/domy/<id>/…` and an account without membership gets **404** for that
-household. The pre-household routes (`/api/day` …) still work as an alias of
-the account's only household (409 when it sees more than one). The web UI
-shows a household switcher only when the account has more than one.
-
-The **installation administrator** is a separate account (Authelia group
-`admins`), not the owner's private account: `user-add <login> --bez-domu`,
-log in with that password **right away** and enable panel 2FA on the "Brak
-domu" screen, then `user-admin <login> on` — it refuses an account without
-2FA (`--tylko-sso` for an account that only ever logs in through Authelia:
-the mode is stored in the database, password login to that account is
-refused and a password session never carries the role, even with 2FA)
-and always removes the account from all households, so it gets no household
-notifications. It sees every household, but only when the flag is
-set in the panel database **and** the request comes through Authelia with
-`admins` in `Remote-Groups` (or, on the break-glass password login, with
-panel 2FA enabled). Every visit to a household it is not a member of is
-written to the household's audit log (Settings → Dziennik domu): one `GET`
-entry per session and household per 15 minutes, every `POST`. The WhatsApp
-bot is shared by the installation: **only the active installation
-administrator** may configure it (QR, sender, gateway recipients, test) —
-no household role grants it, and every change is logged as an installation
-event. Sending notifications through the gateway does not depend on it.
-The same applies to a household's **integrations** (NextDNS, AdGuard, UniFi,
-TV, MDM, ntfy, Home Assistant): only the active installation administrator
-sees Settings → Integracje, for households whose configuration lives in the
-database (`docs/sejf-domow.md` §10). Secrets are write-only (the screen shows
-masks), every change needs the password or a 2FA code and is logged without
-values, and the household switches to the new configuration within ~10 s
-without a pod restart (or the screen says the change takes effect after a
-restart).
-Without SSO the administrator account logs in with its panel password and
-must enable panel 2FA first (the "no household" screen offers it); this
-needs `PANEL_TOTP_KEY` in the `kidwatch-secrets` Secret.
-
-**WhatsApp commands** (`docs/whatsapp-komendy.md`, off by default:
-`whatsapp_komendy.enabled`). A household guardian (permission
-`whatsapp.komendy` — `wlasciciel-domu`; `zarzadca` only by explicit grant)
-writes to the bot: `stan`, `koniec`, `zablokuj ipad`, `+15`, `-15`,
-`odblokuj`, `cisza 2h`, or free text recognised by an LLM (Gemini,
-`KIDWATCH_LLM_GEMINI_KEY` — for now shared with other apps, so a 429 is
-treated as temporary unavailability; Anthropic optional) strictly into that
-closed list. Every change
-needs a one-time 4-digit code (`TAK 1234`, 2 min); relaxing actions have a
-daily per-child limit and need another household member with a
-notification channel; every executed command is copied to all other members
-with a channel (viewers too), unknown numbers get no reply. Log and an emergency switch for the
-installation administrator: Settings → "Komendy z WhatsAppa".
-
-**Invitations** (Settings → **Zaproszenia**, permission `dom.zaproszenia` —
-`wlasciciel-domu` and the active installation administrator; code:
-`src/kidwatch/zaproszenia.py`). Pick a role (never higher than your own
-role in that household), validity (default 72 h, at most 7 days) and,
-recommended with SSO, the invitee's expected SSO login. The panel shows the
-link `https://<panel>/zaproszenie#<token>` **once** — the token lives in the
-URL fragment (not in Traefik logs or `Referer`), the database keeps only its
-SHA-256, and it never appears in logs or the audit log (only `#<id>`).
-The invitee opens the link:
-
-- **through Authelia** (SSO on — the normal path): they log in with an
-  Authelia account in group `kidwatch-goscie` (see "Adding a person from
-  outside the family" below), read the privacy notice and accept. If
-  `Remote-User` has no panel account yet, it is created **at that moment** —
-  the only case of an SSO account created on the fly, and only with a valid
-  token — with a random break-glass password nobody sees. With an expected
-  login set, any other `Remote-User` gets 403;
-- **without SSO**: a "set password" screen (`MIN_PASSWORD_LEN`, Argon2id),
-  then panel 2FA must be enabled before any household data opens (needs
-  `PANEL_TOTP_KEY`; without it the account is not created);
-- **already logged in** (an account from another household): the membership
-  is added to that account; a password session needs panel 2FA.
-
-Accepting = confirming the privacy notice (the installation administrator
-sees all household data, every visit audited; the cluster operator has
-technical access to the database and key). Creating one needs a fresh password or 2FA
-confirmation. An invitation is single-use, can be revoked at any time,
-stops working as soon as the inviter loses the right to issue it (removed
-from the household, `dom.zaproszenia` revoked, role lowered below the
-invited role), dies after 5 failed unauthenticated attempts (wrong login on
-the no-SSO screen, used/expired/revoked token — a wrong account logged in
-through Authelia is refused without burning the link), and every address is limited to 10 failed
-attempts per 15 minutes (also for tokens that do not exist). It grants
-membership only in its household — never the inviter's other households —
-does not change the role of an existing member and cannot be accepted by
-the installation-administrator account. The inviter is notified through the
-gateway only when the gateway supports an explicit recipient (`odbiorca`);
-otherwise the acceptance is only in the household audit log. Expired and
-revoked invitations are deleted after 30 days. An invitee who joined through
-SSO has no known panel password: to confirm sensitive changes (e.g. their
-own notification channels) they enable panel 2FA in Settings and confirm
-with a code.
-
-Members can also be managed in the panel (Settings → **Konta**, permission
-`konta.zarzadzanie` in that household): add (random password shown once),
-remove from the household (the account is deleted once it has no household
-left), role, per-account permissions, another member's preferences in that
-household and — only when the actor manages every household of that person —
-their channels. Every change there requires the acting account's password or
-2FA code. You cannot remove yourself, and a household's last account with
-`konta.zarzadzanie` cannot be removed, demoted or stripped of it.
-
-### Panel behind SSO (Authelia)
-
-With `sso.enabled: true` in the chart, Traefik puts Authelia (password + 2FA,
-renacode-infra) in front of the panel **and** the same switch sets
-`SSO_NAGLOWKI=1` in the pod. Only then does the panel trust the
-`Remote-User` header from Authelia (contract: renacode-infra
-`docs/sso-tozsamosc.md`, code: `src/kidwatch/panel_sso.py`):
-
-- `Remote-User` must equal an **existing** panel login (`user-add`), lowercase
-  `[a-z0-9._-]`. No accounts are created on the fly — an unknown login gets
-  403 with a readable message and an "SSO log out" button — with one
-  exception: accepting a valid household invitation (see "Invitations"
-  above). A new person needs either an Authelia account and `user-add` with
-  the same login, or an Authelia account and an invitation.
-  An existing account whose login differs from Authelia (e.g. before SSO is
-  switched on): `user-login <old> <new>` renames it in place — password,
-  2FA, household memberships, roles, admin flag, notification channels and
-  history stay (same account id); every place that stores the login as text
-  (audit, request queues, outbox, per-account dedup, notification history)
-  is rewritten in the same run, sessions are closed. Dry run by default.
-  Procedure: (1) run without `--zapisz` and check the line
-  `dom N: outbox.odbiorca` — notifications waiting for this account; best
-  done when it is 0 (they are not lost either way: the running process
-  reloads accounts before dropping a queue it no longer recognises);
-  (2) run with `--zapisz` — **no pod restart needed**, the panel and the
-  notification queue read accounts from the database on every request;
-  (3) `user-list`: failed password attempts already recorded for the NEW
-  login are merged into the account (the stricter lock wins) — if it shows
-  as locked, `user-reset`; (4) running the same command again is safe and
-  finishes anything left after an interrupted run (the old account no
-  longer exists, the new one does AND the audit log has the `konto.login`
-  "old -> new" entry newer than the new account, at most 24 h old, and the
-  old login has left no audit/request traces after it → only the text
-  traces are rewritten; `--dokoncz` forces this). Without that proof — e.g. the old
-  account was deleted and the new login belongs to someone else — it
-  refuses, even with `--dokoncz`, so a deleted person's traces never land
-  on another account. With SSO the Authelia login is the target —
-  change only Kidwatch, never the Authelia account, to match.
-- `Remote-Groups` must contain `wlasciciel`, `rodzina`, `kidwatch-goscie` or
-  `admins` (chart `sso.grupy` → `SSO_GRUPY`; must match the Authelia rule
-  for this host). `kidwatch-goscie` is for people from outside the family
-  invited to a household: Authelia admits that group **only** to this host.
-  Groups only gate entry; what an account may do comes from its household
-  memberships in the panel database (see "Roles" below). `admins` is
-  additionally required for the installation-administrator flag to take
-  effect; an `admins` login without a panel account gets 403 like any other.
-- The session is marked `sso` and is created **without** the panel password
-  or panel TOTP (Authelia already enforced 2FA). Account lockout from wrong
-  panel passwords does not block SSO, and SSO does not lift it.
-- Sensitive actions still need the panel password or panel 2FA code exactly
-  as before (password change, disabling 2FA, WhatsApp sender/recipients, bot
-  QR) — an SSO session is not a fresh confirmation. MDM commands, game time
-  and TV pause need a session + CSRF and the matching permission (see
-  "Roles and permissions" below), as with a password session.
-- "Wyloguj (SSO)" deletes the panel session and goes to
-  `https://auth.renacode.com/logout?rd=https://<host>/`, which ends the
-  Authelia session for all RenaCode apps.
-- Break-glass: without the header (`kubectl port-forward` when Authelia is
-  down) the normal password + TOTP login works unchanged. An `sso` session is
-  valid only together with the matching `Remote-User`: a copied SSO cookie
-  opens nothing over port-forward, and turning SSO off ends all SSO sessions.
-- Without `SSO_NAGLOWKI=1` all `Remote-*` headers are ignored. Never set it by
-  hand: without the Traefik middleware a client can send `Remote-User`
-  itself. The chart always sets the variable explicitly (`"0"` without SSO),
-  so a key in the Secret cannot switch it on.
-
-Adding a family member (two steps, same lowercase login in both places):
-
-1. Authelia account in group `rodzina` (renacode-infra, `authelia-uzytkownicy`).
-2. Panel account with the view-only role, password from stdin:
-   ```bash
-   read -rs HASLO && printf '%s\n' "$HASLO" | kubectl -n default exec -i deploy/kidwatch \
-     -c kidwatch -- python -m kidwatch user-add <login> --rola podglad --password-stdin; unset HASLO
-   ```
-   The password is the break-glass login and the confirmation for their own
-   password/2FA changes. `user-add` warns when the login could never match
-   `Remote-User`.
-
-Adding a person from outside the family (another household, E4):
-
-1. The installation administrator creates an Authelia account in group
-   `kidwatch-goscie` only (renacode-infra, `authelia-uzytkownicy`,
-   procedure "Nowa osoba" in `docs/zadania-wlasciciela.md`) — it opens the
-   Kidwatch panel and nothing else.
-2. The household owner creates an invitation with that login as the expected
-   login (the screen warns when it is left empty under SSO) and sends the
-   link. No `user-add`: the panel account appears when the invitation is
-   accepted.
-3. Tell the invitee to log in at `https://auth.renacode.com` (and register
-   2FA) **before** opening the link — or simply open the link a second time:
-   the first Authelia login redirect drops the `#token` part of the address,
-   and the page then asks to open the link again.
-
-**Roles and permissions** (from the panel database, never from
-`Remote-Groups`; code: `src/kidwatch/uprawnienia.py`). Every panel route is
-declared once with one permission (`POST_TRASY` / `GET_TRASY` in
-`panel.py`) and checked in one place; `/api/auth/me` returns the account's
-`uprawnienia` and the web UI hides buttons by permission, not by role name.
-A test walks the router tables: a new route without a permission decision
-fails CI, and every route the `podglad` role lacks is checked for 403.
-
-| Permission | What it opens | `wlasciciel` (default; all accounts that existed before roles) | `podglad` |
-|---|---|---|---|
-| `konto.wlasne` | own password and 2FA (cannot be revoked) | yes | yes |
-| `podglad.historia` | Pulpit, Ekrany, Użycie, Trendy, Dzień, Powiadomienia, device and TV-pause state, CSV export | yes | yes |
-| `tv.pauza` | TV monitoring pause / resume | yes | no (403, buttons hidden; the pause banner stays visible) |
-| `czas_gry.zmiana` | game time (block/allow/bonus) | yes | no |
-| `mdm.podglad` | MDM section: iPads, UDIDs, events | yes | no (section hidden) |
-| `mdm.komendy` | MDM refresh/lock/restart, enrollment link, forced iPadOS update | yes | no |
-| `tv.aplikacja` | Kidwatch TV app (state, install, pairing) | yes | no |
-| `whatsapp.konfiguracja` | WhatsApp/notification channels, recipients, bot QR | only the active installation administrator (see Households) | no |
-
-In a household the same table applies per membership: `wlasciciel-domu`
-has everything `wlasciciel` had, `zarzadca` everything except account
-management, integrations and invitations, `podglad` as above. The new
-`dom.integracje` permission is used by the integrations screen (together
-with the installation-administrator role), `dom.zaproszenia` by
-invitations; `dom.urzadzenia` is reserved for the household devices screen.
-
-Logging out needs no permission. `python -m kidwatch user-rola <login>
-wlasciciel|podglad` changes a role, clears that account's overrides and logs
-it out. Single permissions can be granted above or revoked below the role:
-
-```bash
-python -m kidwatch user-uprawnienia <login>                         # show effective permissions
-python -m kidwatch user-uprawnienia <login> +tv.pauza               # e.g. let a viewer pause TV
-python -m kidwatch user-uprawnienia <login> -mdm.komendy            # owner without MDM commands
-python -m kidwatch user-uprawnienia <login> =tv.pauza               # back to what the role gives
-```
-
-Overrides live in the `user_uprawnienia` table of `panel-auth.db` (created on
-start, existing accounts keep their role and get no overrides), every change
-logs the account out so the UI redraws its buttons, and `user-list` shows
-them next to the role.
-
-### Profile: password and WhatsApp
-
-Avatar in the header → **Profil**: two-factor authentication, password change
-(old + new, min. 12 characters; logs out other sessions) and **Powiadomienia /
-WhatsApp**: gateway channel status, linking WhatsApp via QR (from WAHA,
-refreshed every 20 s until `WORKING`; this is where the bot number is
-connected), sending a test, disconnecting, and the list of **WhatsApp
-recipients**. The panel calls the gateway server-side with
-`BRAMKA_KLUCZ_ADMIN` (notifications are sent with the separate
-`BRAMKA_KLUCZ`); the browser knows neither.
-
-Recipients (at most 5): number with country code, label (≤ 40 characters),
-a **"Dostaje"** (receives) column and an "active" switch. Changes are local
-until you save the list — saving the **whole** list requires the password or
-a 2FA code (the list is shared by all RenaCode apps, a session alone is not
-enough). A wrong confirmation counts toward account lockout; an invalid list
-(bad number, duplicate) is rejected earlier with 400, without checking the
-password. The test button sends a WhatsApp-only test to active recipients
-with "everything" routing and shows how many it reached (with the masked
-number of anyone it didn't reach).
-
-**"Dostaje"** is gateway routing: "Wszystko" (everything) — every RenaCode
-app, kidwatch watchdog alerts and the test message; "Tylko kidwatch
-(dzieci)" — regular kidwatch notifications **without** watchdog alerts
-(kidwatch sends those with `kategoria: czujka`). A new row defaults to
-kidwatch-only. An alert no one receives on WhatsApp goes by e-mail to the
-gateway owner. With a gateway that predates routing the column shows
-"wszystko" and saving doesn't send the routing field.
-
-The gateway sends to all active recipients of a route at once; a partial
-delivery is a success with no e-mail, an e-mail goes out only when nobody was
-reached. Numbers are visible only to the logged-in account owner in the
-profile; panel and gateway logs show only the last three digits. Endpoint:
-`POST /api/profile/whatsapp/recipients`
-`{"recipients": [{"number", "label", "active", "sources"?: ["*"] | ["kidwatch"]}], "confirm": "<password or code>"}`
-(the old single-number `POST /api/profile/whatsapp/recipient` remains).
-It requires a gateway with `POST /v1/whatsapp/odbiorcy` — with an older
-gateway the profile shows its single recipient, but saving the list fails.
-
-### Notifications per account
-
-Each panel account is a notification recipient with its own profile, stored
-in `panel-auth.db` (never in the repo, values or logs — logs and the panel
-show only masked numbers/addresses):
-
-- **channels**: WhatsApp number and/or e-mail, and the route (`auto` =
-  WhatsApp, e-mail when it fails; `whatsapp`; `email`). Changing a channel
-  requires the password or a 2FA code — your own under Settings → **Moje
-  powiadomienia**, someone else's only with `konta.zarzadzanie`;
-- **categories**: sessions, alarms (iPad at night, app installed/removed),
-  reports, game time, MDM, watchdog/failures, other. Each category needs a
-  permission: sessions/alarms/reports/game → `podglad.historia`, MDM →
-  `mdm.podglad`, watchdog/other → `powiadomienia.techniczne` (owners only by
-  default). Revoking a permission stops the category immediately, whatever
-  the account has saved;
-- **quiet hours** (e.g. 22:00–07:00): session info is dropped, reports and
-  technical alerts wait for the end of quiet, priority-5 alarms go through
-  (unless the account turns that off);
-- **children**: notifications about another child's device are skipped;
-  TV, combined reports and technical alerts concern the whole home.
-
-The outbox splits every notification into one queue per account (plus one
-for home channels — ntfy and Home Assistant get everything once, as before).
-Each account gets an event at most once (`<dedup>@<login>` in `sent`), a
-failing number blocks only that account's queue, and the panel history keeps
-one row per event with per-account results (`bramka:<login>`).
-
-**What stays per home**: the WhatsApp bot (sender), UniFi, MDM, TV, the
-NextDNS account, ntfy/Home Assistant — one device or service per home;
-splitting them per person would duplicate state with no gain.
-
-**Mode.** Per-account routing (`konta`) is used only when (1) the owner
-switched it on (`konta-tryb konta`, `konta-migruj --zapisz --wlacz` or the
-panel), (2) `notifiers.bramka.per_konto` is not `false`, and (3) the gateway
-declares explicit recipients in `GET /v1/stan` (`"funkcje": ["odbiorca"]`).
-Otherwise kidwatch keeps the old route mode (`trasy`): one request per event,
-the gateway's recipient list decides. An older gateway would ignore the
-`odbiorca` field and deliver every per-account request to everyone, which is
-why (3) is checked (every 10 min) rather than assumed.
-
-**Migration** from the gateway list: `konta-migruj` reads
-`GET /v1/whatsapp`, maps the single `*` recipient to the single owner, other
-positions need `--przypisz N=login`, and prints a before/after table of
-WhatsApp numbers for every notification kind. `--zapisz` stores channels and
-categories (granting e.g. `powiadomienia.techniczne` to a viewer who used to
-receive `kidwatch:czujka`); `--wlacz` switches the mode only when the table
-has no differences and no active recipient is left without an account.
-`konta-tryb trasy` switches back at any time.
-
-Gateway request in `konta` mode: `POST /v1/wyslij` with
-`"odbiorca": {"kanal": "auto"|"whatsapp"|"email", "whatsapp"?: "48…", "email"?: "…"}`
-— delivered only to that recipient, bypassing the gateway's routes.
 
 ### Notification content
 
@@ -1004,8 +630,8 @@ restart needed. It is the only reliable way to get good game coverage.
 | `unifi [--fingerprint]` | who is on home Wi-Fi per UniFi; `--fingerprint` prints the controller's SHA-256 certificate fingerprint for `unifi.cert_sha256` |
 | `device`, `device-watch` | one-off / looping read of iPad state over lockdown (`device_read`, requires pairing and the same LAN) |
 | `user-add`, `user-reset`, `user-del`, `user-login`, `user-list`, `user-rola`, `user-uprawnienia` | panel accounts, roles and permissions |
-| `domy [--sprawdz] [--baza <copy>]` | households in `panel-auth.db` and their members (runs the idempotent migration to "Dom 1"; see `docs/architektura-domy.md`); `--sprawdz` decrypts every integration with `KIDWATCH_KEK` and prints how many keys/integrations it verified — zero is a failure (backup restore test) |
-| `dom-importuj 1 --podglad\|--zapisz` | move Dom 1 from `config.yaml` + env secrets into the encrypted database, after a field-by-field comparison (`docs/sejf-domow.md`) |
+| `domy [--sprawdz] [--baza <copy>]` | households in `panel-auth.db` and their members (runs the idempotent migration to "Dom 1"; see renacode-infra: `docs/projekty/kidwatch/architektura-domy.md`); `--sprawdz` decrypts every integration with `KIDWATCH_KEK` and prints how many keys/integrations it verified — zero is a failure (backup restore test) |
+| `dom-importuj 1 --podglad\|--zapisz` | move Dom 1 from `config.yaml` + env secrets into the encrypted database, after a field-by-field comparison (renacode-infra: `docs/projekty/kidwatch/sejf-domow.md`) |
 | `dom-zrodlo <dom> yaml\|baza` | where a household takes its configuration from (rollback: `dom-zrodlo 1 yaml`) |
 | `dom-sieci <dom> [--dodaj CIDR] [--usun CIDR] [--host H]` | networks/API hosts a household's integrations may connect to (SSRF guard, instance admin only) |
 | `klucze-rotuj`, `dom-klucz-rotuj <dom>` | re-wrap household keys after a `KIDWATCH_KEK` rotation; new data key for one household |
@@ -1017,111 +643,7 @@ Global options: `--config <path>` (default `$KIDWATCH_CONFIG` or
 
 ---
 
-## Own MDM server (kidwatch-mdm)
-
-An optional, separate container (`src/kidwatch_mdm/`, `Dockerfile.mdm`,
-`charts/kidwatch-mdm`) — an MDM server written from scratch, managed from the
-Kidwatch panel. Full setup (APNs certificate via mdmcert.download, secrets,
-Argo CD, enrolling iPads), in Polish: [`docs/mdm.md`](docs/mdm.md).
-
-| | unsupervised iPad | supervised iPad |
-|---|---|---|
-| installed apps, alert on new / removed | ✅ | ✅ |
-| state (OS, battery, storage, last contact) | ✅ | ✅ |
-| remote screen lock with a message | ✅ | ✅ |
-| alert when the MDM profile is removed | ✅ (the child can remove it) | profile can't be removed |
-| OS update enforcement with a deadline (DDM) | ✅ | ✅ + automatic installs |
-| VPN / Private Relay blocked, no wiping, no own profiles | ❌ ignored by iOS | ✅ |
-| DNS that can't be turned off | ❌ not sent (see above) | ✅ |
-
-How it works:
-
-- **Identity per device.** Each enrollment profile carries a fresh client
-  certificate from the server's own CA; every message from the iPad is signed
-  (`Mdm-Signature`) and checked: issuer, body signature, binding to the UDID.
-- **Signed enrollment profile.** Signed on the fly with the server's Let's
-  Encrypt certificate, so iOS shows it as *Verified*.
-- **Policy validated against Apple's schema** at startup — an unknown key
-  stops the server instead of silently not protecting. Keys that only work
-  under supervision are sent only after the iPad reports `IsSupervised`.
-- **Two ports.** The MDM port is exposed only under `/mdm/`; the admin API
-  (token) is reachable only from the Kidwatch pod (NetworkPolicy).
-- **Kidwatch integration** (`mdm.enabled`): an *MDM* tab in the panel
-  (proxied, CSRF-protected; the API token never reaches the browser) and the
-  alerts listed in the message table above.
-- **Per home** (multi-home stage E3b): every device belongs to a home. A home
-  token (`kidwatch-mdm token-domu <home>`) sees and commands only that home's
-  devices (a foreign UDID is a 404); the instance token keeps full scope. The
-  Kidwatch panel checks independently that a UDID belongs to the home before
-  calling the server. See [`docs/mdm.md`](docs/mdm.md), "Domy".
-
 ## Deployment
-
-### k3s + Argo CD
-
-Helm chart in `charts/kidwatch`. The author's Argo CD application lives in a
-private infrastructure repo. Deploying without that infrastructure (your own
-image, ntfy instead of the gateway, your own domain) is described in
-[`docs/uruchomienie-od-zera.md`](docs/uruchomienie-od-zera.md), section
-"Bez infrastruktury RenaCode". Argo CD watches `charts/kidwatch/values.yaml`,
-and CI (`.github/workflows/docker-publish.yml`) runs tests, ruff, the front-end
-tests/build and `helm lint`, then builds the image to GHCR and bumps its tag in
-that file on every push to `main` — together with the `kidwatch-mdm` image
-and `charts/kidwatch-mdm/values.yaml`. There is no SSH or `kubectl apply`.
-
-The GHCR image is private: the chart expects an `imagePullSecrets` entry
-`ghcr-pull` (set `imagePullSecrets: []` and your own `image.repository` when
-building your own image).
-
-Secrets are created **once, by hand** — Argo CD doesn't sync them. Commands
-are in [`docs/uruchomienie-od-zera.md`](docs/uruchomienie-od-zera.md) (step 7):
-
-| Secret | contents | required |
-|---|---|---|
-| `kidwatch-secrets` | `NEXTDNS_API_KEY`, `BRAMKA_KLUCZ`, `BRAMKA_KLUCZ_ADMIN`, `PANEL_TOTP_KEY`, optionally `UNIFI_API_KEY` (or `NTFY_TOPIC` instead of the gateway keys) | yes |
-| `kidwatch-config` | the real `config.yaml` (uploaded by `tools/wgraj_konfiguracje.sh`) | yes |
-| `kidwatch-adb` | `adbkey`, `adbkey.pub` accepted by the TV | with the TV sensor |
-| `kidwatch-pairing` | pairing records `<UDID>.plist` | no (mounted only with `deviceRead.enabled: true`; disabled in the cluster) |
-
-A pairing record contains the **host's private key** — whoever has it is a
-trusted computer for the iPad. `.gitignore` blocks `*.plist` so it can't land
-in the repo.
-
-Things worth knowing:
-
-- **`replicaCount: 1` + `strategy: Recreate` are a correctness requirement.**
-  SQLite has one writer; two pods would diverge session state and duplicate
-  pushes. For the same reason the panel runs as a thread in the same process,
-  not in a separate pod.
-- **Disable pruning in the Argo CD application.** The database PVC has
-  `helm.sh/resource-policy: keep`; automatic deletion could remove the volume
-  with its state, and then the service would send every push again.
-- **`Synced` doesn't mean "the process reads the new config".** The pod has a
-  `checksum/config` annotation over `files/config.yaml`, but the real config
-  is in the `kidwatch-config` Secret, which the checksum doesn't cover — after
-  changing it, `tools/wgraj_konfiguracje.sh` validates the file locally,
-  uploads it and restarts the pod.
-- **`charts/kidwatch/files/app_map.yaml` is a copy** of the root file (a chart
-  can't reach outside its directory). After changing the map:
-  `cp app_map.yaml charts/kidwatch/files/app_map.yaml`. `tests/test_deploy.py`
-  catches drift.
-- **NetworkPolicy** (`networkPolicy.enabled`, on by default): ingress only
-  from Traefik to the panel port; optional egress restriction to the home
-  network (`networkPolicy.egress.siecDomowa` / `wDomu`, empty in the public
-  repo and injected by the deployment).
-- **Ingress** uses Traefik with per-client rate limits (`ingress.limity`,
-  requires the `traefik.io/v1alpha1` CRDs) and optional alias hosts that
-  301-redirect to the main host (`ingress.aliasy`).
-
-### Tailscale — disabled
-
-The chart has a Tailscale sidecar (`tailscale.enabled`, default `false`) left
-over from when iPad reads were meant to go over a tailnet. Verified
-2026-10-02: iOS accepts lockdown (port 62078) only from the same local
-network, so neither Tailscale nor a WireGuard tunnel home works
-(`ConnectionResetError`). Tailscale is not deployed and not needed. The pod
-reaches the TV and UniFi through a VPS ↔ home WireGuard tunnel
-(`docs/uruchomienie-od-zera.md`, step 4).
 
 ### docker compose
 
@@ -1178,15 +700,6 @@ would give an illusion of protection — and nothing is worse here than a false
 sense of visibility.
 
 Other generator options: `--org` (organisation name in the profile).
-
-### Note for the future: the payload is `deprecated`
-
-`com.apple.dnsSettings.managed` is marked **deprecated as of OS 27**. Its
-successor is the DDM declaration `com.apple.configuration.network.dns-settings`
-(introduced in 27.0), delivered by an MDM server. *Deprecated* doesn't mean
-*removed* — the old payload works. The `--also-declaration` flag writes a JSON
-file with the DDM declaration next to the profile, ready for when that
-changes.
 
 ---
 

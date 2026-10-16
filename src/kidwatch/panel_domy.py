@@ -1,6 +1,7 @@
 """Panel: kontekst domu zadania — kto widzi ktory dom i z jakimi uprawnieniami.
 
-docs/architektura-domy.md §2.3, §4.1. Kazda trasa danych domu ma dom
+renacode-infra: docs/projekty/kidwatch/architektura-domy.md §2.3, §4.1. Kazda trasa danych domu ma
+dom
 w SCIEZCE (`/api/domy/<id>/...`), nigdy w ciasteczku ani w ciele zadania.
 Ten modul rozstrzyga, czy sesja ma do niego dostep:
 

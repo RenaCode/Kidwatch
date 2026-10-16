@@ -1,4 +1,4 @@
-"""kidwatch-mdm i iPhone dziecka (etap E5, docs/iphone.md).
+"""kidwatch-mdm i iPhone dziecka (etap E5, renacode-infra: docs/projekty/kidwatch/iphone.md).
 
 Dwie rzeczy naraz:
 
@@ -198,7 +198,8 @@ def test_walidacja_odrzuca_klucze_nadzoru_dla_iphone_a(tmp_path, dev, blad):
     path = tmp_path / "policy.yaml"
     raw = policy.model_dump()
     # Wpis iPhone'a z dns_url przy bledzie zatrzymuje start (przeglad #53, B1);
-    # kwarantanna tylko dla wpisu bez dns_url, jak w docs/iphone.md.
+    # kwarantanna tylko dla wpisu bez dns_url, jak w
+    # renacode-infra: docs/projekty/kidwatch/iphone.md.
     raw["devices"]["iphone1"]["dns_url"] = None
     path.write_text(json.dumps(raw), encoding="utf-8")
     # Po przegladzie E5 (U2): wpis iPhone'a w kwarantannie, start nie pada.

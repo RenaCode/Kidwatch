@@ -46,7 +46,7 @@ ingress:
 #    Utrata ca.key = wszystkie iPady do ponownego zapisu.
 caSecret: kidwatch-mdm-ca
 #
-# 2) Certyfikat push APNs (kidwatch-mdm apns ..., docs/mdm.md):
+# 2) Certyfikat push APNs (kidwatch-mdm apns ..., renacode-infra: docs/projekty/kidwatch/mdm.md):
 #      kubectl -n default create secret generic kidwatch-mdm-apns \
 #        --from-file=push.pem=<pobrany z identity.apple.com>.pem \
 #        --from-file=push.key=$HOME/.kidwatch-mdm/apns/push.key

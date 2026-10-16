@@ -1,4 +1,5 @@
-"""Etap E1 domow (docs/architektura-domy.md): model, migracja do Domu 1,
+"""Etap E1 domow (renacode-infra: docs/projekty/kidwatch/architektura-domy.md): model, migracja do
+Domu 1,
 podzial konfiguracji, srodowisko domu — bez zmiany zachowania.
 
 Dane wylacznie generyczne: publiczne repo (tests/test_repo_prywatnosc.py).

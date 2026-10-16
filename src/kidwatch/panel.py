@@ -20,7 +20,8 @@ Kazda trasa /api/* ma w POST_TRASY albo GET_TRASY jedno uprawnienie
 miejscu — _wymaga(). Konto `podglad` tylko oglada: kazda zmiana stanu poza
 wlasnym haslem i 2FA dostaje 403, takze pauza telewizora.
 
-DOMY (docs/architektura-domy.md §4.1, panel_domy.py). Trasy danych domu
+DOMY (renacode-infra: docs/projekty/kidwatch/architektura-domy.md §4.1, panel_domy.py). Trasy danych
+domu
 leza pod `/api/domy/<id>/...`: dom pochodzi ze sciezki, nigdy z ciasteczka
 ani z ciala. Najpierw dostep do domu (czlonkostwo albo aktywny administrator
 instalacji z wpisem w `audyt`) — bez niego 404, nie 403 — potem uprawnienie

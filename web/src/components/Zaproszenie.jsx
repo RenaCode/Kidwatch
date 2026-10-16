@@ -1,5 +1,5 @@
 /* Ekran przyjecia zaproszenia: https://<panel>/zaproszenie#<token>
-   (src/kidwatch/zaproszenia.py, docs/architektura-domy.md §7 E4).
+   (src/kidwatch/zaproszenia.py, renacode-infra: docs/projekty/kidwatch/architektura-domy.md §7 E4).
 
    Token z fragmentu adresu trafia do pamieci karty (sessionStorage - odswiezenie
    strony nie gubi go) i od razu znika z paska adresu i historii. Serwer mowi,

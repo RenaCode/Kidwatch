@@ -20,7 +20,8 @@ CO PER KONTO, A CO DLA DOMU (decyzja):
     tego samego iPada) bez zadnego zysku. ntfy i Home Assistant zostaja
     kanalami domowymi: dostaja kazde powiadomienie raz, jak dotad.
 
-DOMY (docs/architektura-domy.md §2.2, §4.2; od E3a). Kanaly (numer, e-mail,
+DOMY (renacode-infra: docs/projekty/kidwatch/architektura-domy.md §2.2, §4.2; od E3a). Kanaly
+(numer, e-mail,
 `kanal`) sa cecha OSOBY — jedno konto, jeden numer we wszystkich domach
 (`user_powiadomienia`). Preferencje (kategorie, cisza, dzieci, `aktywne`)
 sa per CZLONKOSTWO (`czlonkostwa_powiadomienia (dom_id, user_id)`), a tryb

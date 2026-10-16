@@ -318,7 +318,8 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
     return rt
 
 
-#: Klucz Sekretu wymuszajacy config.yaml dla Domu 1 (docs/sejf-domow.md, §4).
+#: Klucz Sekretu wymuszajacy config.yaml dla Domu 1
+#: (renacode-infra: docs/projekty/kidwatch/sejf-domow.md, §4).
 WYMUSZENIE_DOMU_1_ENV = "KIDWATCH_DOM_1_ZRODLO"
 
 
@@ -423,7 +424,7 @@ async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id:
     (`domy_kopia`), wpis w dzienniku, alarm instancji i stan dla panelu:
     proces zyje, panel dziala, a nadzorca przeladuje dom po poprawce. Bez
     kopii (albo gdy i ona nie wstaje) — jak przed E3a: log, alarm, kod 2
-    (droga powrotu do config.yaml: docs/sejf-domow.md pkt 4)."""
+    (droga powrotu do config.yaml: renacode-infra: docs/projekty/kidwatch/sejf-domow.md pkt 4)."""
     from .domy import StanDomu, blad_przejsciowy, opis_bledu  # noqa: PLC0415
     from .konfiguracja_domu import zbuduj_dom_z_kopii  # noqa: PLC0415
     from .sejf import Sejf  # noqa: PLC0415
@@ -488,12 +489,14 @@ async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id:
     if kopia is None:
         log.error("Dom %d: brak dzialajacej kopii konfiguracji%s. Powrot do config.yaml bez "
                   "exec: klucz %s=yaml w kidwatch-secrets + restart; z dzialajacym podem: "
-                  "kidwatch dom-zrodlo %d yaml (docs/sejf-domow.md)", dom_id,
+                  "kidwatch dom-zrodlo %d yaml "
+                  "(renacode-infra: docs/projekty/kidwatch/sejf-domow.md)", dom_id,
                   f" ({kopia_blad})" if kopia_blad else "", WYMUSZENIE_DOMU_1_ENV, dom_id)
         # CrashLoop: alarm z rosnacym odstepem (dziennik), nie przy kazdym restarcie.
         await alarmuj(f"Dom {dom_id}: Kidwatch nie wystartowal",
                       f"Konfiguracja z bazy (wersja {wersja}) nie wstaje: {do_alarmu}. "
-                      "Brak dzialajacej kopii — proces konczy sie (docs/sejf-domow.md pkt 4).")
+                      "Brak dzialajacej kopii — proces konczy sie "
+                      "(renacode-infra: docs/projekty/kidwatch/sejf-domow.md pkt 4).")
         return None
     runtime.wersja = kopia[0]
     przejsciowy = blad_przejsciowy(blad_startu)
@@ -600,7 +603,8 @@ async def cmd_run(args) -> int:
     cfg = Config.load(args.config)
     inst, home = cfg.split()
     rejestr = RejestrDomow(inst.panel_auth_path)
-    # Dom 1 i czlonkostwa w panel-auth.db (docs/architektura-domy.md §6).
+    # Dom 1 i czlonkostwa w panel-auth.db
+    # (renacode-infra: docs/projekty/kidwatch/architektura-domy.md §6).
     # W trybie `yaml` monitoring od nich nie zalezy, wiec blad bazy panelu
     # go nie zatrzyma (jak w E1).
     w_bazie: list[int] = []
@@ -1736,7 +1740,8 @@ async def cmd_konta_tryb(args) -> int:
 
 # ========================================================================= domy
 async def cmd_domy(args) -> int:
-    """Domy z panel-auth.db i ich czlonkowie (docs/architektura-domy.md).
+    """Domy z panel-auth.db i ich czlonkowie
+    (renacode-infra: docs/projekty/kidwatch/architektura-domy.md).
     Uruchamia migracje (idempotentna), wiec dziala tez przed pierwszym `run`.
     `--sprawdz`: odszyfrowanie wszystkich integracji (test kopii, §3.3)."""
     from .domy import ZRODLO_YAML, RejestrDomow  # noqa: PLC0415
@@ -1958,7 +1963,7 @@ async def cmd_klucze_rotuj(args) -> int:
     print(f"DEK-i przepakowane kluczem {sejf.kek_id}: "
           f"{', '.join(f'Dom {d}' for d in zmienione) or 'brak (wszystkie juz na nim)'}")
     print(f"Teraz usun {KEK_POPRZEDNI_ENV} z Sekretu i zrestartuj poda "
-          f"(docs/sejf-domow.md).")
+          f"(renacode-infra: docs/projekty/kidwatch/sejf-domow.md).")
     return 0
 
 
@@ -1966,7 +1971,7 @@ async def cmd_klucze_potwierdz(args) -> int:
     """Dowod, ze klucz z menedzera hasel (stdin) jest BIEZACYM kluczem bazy:
     otwiera kazdy klucz domu i kazda integracje. Bez tego dowodu polecenie
     ODMAWIA — runbook nie pozwala wtedy usunac KIDWATCH_KEK_POPRZEDNI ani
-    starego wpisu w menedzerze hasel (docs/sejf-domow.md, §7)."""
+    starego wpisu w menedzerze hasel (renacode-infra: docs/projekty/kidwatch/sejf-domow.md, §7)."""
     from .domy import RejestrDomow  # noqa: PLC0415
     from .sejf import BrakKek, Sejf, _klucz_z_base64  # noqa: PLC0415
 
@@ -2303,7 +2308,8 @@ def build_parser() -> argparse.ArgumentParser:
     domy_p.add_argument("--baza", metavar="PANEL_AUTH_DB",
                         help="inna baza panelu, np. kopia do testu odtworzenia (bez config.yaml)")
 
-    # Integracje domow i sejf (docs/sejf-domow.md). Tylko z CLI w podzie —
+    # Integracje domow i sejf (renacode-infra: docs/projekty/kidwatch/sejf-domow.md). Tylko z CLI w
+    # podzie —
     # to droga administratora instancji.
     imp = sub.add_parser("dom-importuj",
                          help="Dom 1: config.yaml + sekrety -> baza (porownanie pole w pole)")

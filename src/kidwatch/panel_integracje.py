@@ -7,7 +7,7 @@ wystarcza, potrzebna jest aktywna rola administratora (panel_domy.
 admin_aktywny: flaga + grupa `admins` albo TOTP). Tu sa walidacja,
 potwierdzenia i bezpieczniki, testowane bez serwera HTTP (jak panel_konta).
 
-ZASADY BEZPIECZENSTWA (docs/architektura-domy.md §3.1, §3.6)
+ZASADY BEZPIECZENSTWA (renacode-infra: docs/projekty/kidwatch/architektura-domy.md §3.1, §3.6)
   - Sekrety tylko do zapisu: odpowiedz niesie nazwy pol i maski
     (`sejf.maska`), nigdy wartosci. Pusty albo pominiety sekret = bez
     zmian; usuniecie to osobna akcja (`/integracje/usun-sekret`).

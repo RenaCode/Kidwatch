@@ -27,7 +27,8 @@ Stad podzial na dwa tryby. Domyslny (bez --supervised) zawiera wylacznie payload
 DNS, bo reszta kluczy na nienadzorowanym iPadzie jest ignorowana — wstawianie ich
 dawaloby zludzenie zabezpieczenia, ktorego nie ma.
 
-iPhone (`--kind iphone`, docs/iphone.md) dostaje DOKLADNIE ten sam profil co
+iPhone (`--kind iphone`, renacode-infra: docs/projekty/kidwatch/iphone.md) dostaje DOKLADNIE ten sam
+profil co
 zwykly iPad: sam payload DNS. Instalacja RECZNA jest tu wazniejsza niz na
 iPadzie — tylko ona obejmuje siec komorkowa, na ktorej telefon spedza duza
 czesc dnia. `--supervised` dla iPhone'a jest odrzucane: iPhone dziecka jest
@@ -211,7 +212,8 @@ def main(argv: list[str] | None = None) -> int:
         "--kind",
         choices=KINDS,
         default="ipad",
-        help="rodzaj urzadzenia (iphone: tylko bez nadzoru, docs/iphone.md)",
+        help="rodzaj urzadzenia (iphone: tylko bez nadzoru, "
+        "renacode-infra: docs/projekty/kidwatch/iphone.md)",
     )
     parser.add_argument(
         "--doh-url",
@@ -239,7 +241,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.kind == "iphone" and args.supervised:
         parser.error(
             "--supervised nie dla iPhone'a: iPhone dziecka jest zwykle bez nadzoru, "
-            "a klucze nadzoru zignoruje bez slowa (docs/iphone.md)"
+            "a klucze nadzoru zignoruje bez slowa "
+            "(renacode-infra: docs/projekty/kidwatch/iphone.md)"
         )
 
     profile = build_profile(
