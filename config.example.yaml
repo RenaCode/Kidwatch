@@ -19,6 +19,9 @@ source:
     # Przy kilku profilach (devices[].nextdns_profile) kazdy ma wlasny strumien.
     # Minimalny odstep miedzy ich otwarciami — razem wpadaja w 429.
     connect_spacing_seconds: 5
+    # Serwer zamyka strumien co ~90 s; natychmiastowe ponowienie dostaje 429.
+    # Odstep przed ponownym polaczeniem (wznowienie od kursora, bez strat).
+    reconnect_after_close_seconds: 20
 
   adguard:
     base_url: "http://192.168.1.10:3000"

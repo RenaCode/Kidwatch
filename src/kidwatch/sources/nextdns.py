@@ -20,7 +20,8 @@ import time
 import weakref
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -175,6 +176,30 @@ class ConnectGate:
 _BRAMKI: weakref.WeakValueDictionary[str, ConnectGate] = weakref.WeakValueDictionary()
 
 
+def _retry_after(response: httpx.Response, now: datetime | None = None) -> float | None:
+    """Naglowek Retry-After w sekundach (liczba albo data HTTP) lub None.
+
+    NextDNS go dotad nie wysylal (zmierzone 2026-10-02), ale jesli zacznie,
+    wie lepiej od naszego zgadywania, kiedy limit minie."""
+    value = response.headers.get("retry-after")
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        seconds = (when - (now or datetime.now(UTC))).total_seconds()
+    if seconds != seconds:  # NaN
+        return None
+    return max(seconds, 0.0)
+
+
 class NextDnsSource:
     name = "nextdns"
 
@@ -225,30 +250,51 @@ class NextDnsSource:
     async def events(self) -> AsyncIterator[DnsEvent]:
         """Nieskonczony strumien. Zerwane polaczenie jest ponawiane, nie zglaszane wyjatkiem."""
         backoff = 1.0
+        rate_limited = 0  # 429 z rzedu; zeruje je dopiero udane polaczenie
         while True:
             if self._gate is not None:
                 await self._gate.wait()
             try:
                 async for event in self._one_connection():
                     backoff = 1.0  # udany odbior zeruje kare
+                    rate_limited = 0
                     yield event
-                # Rutyna: NextDNS zamyka strumien co okolo minute. Kursor
-                # wznawia odczyt bez strat, wiec to nie jest ostrzezenie.
-                log.info(
-                    "strumien NextDNS %s zamkniety przez serwer — lacze ponownie",
+                # Rutyna: NextDNS zamyka strumien co okolo 90 s. Kursor
+                # wznawia odczyt bez strat, wiec to nie jest ostrzezenie —
+                # a na INFO dawalo ~40 linii na godzine.
+                rate_limited = 0
+                backoff = 1.0
+                delay = self.cfg.reconnect_after_close_seconds
+                log.debug(
+                    "strumien NextDNS %s zamkniety przez serwer — lacze ponownie za %.0f s",
                     self.profile_id,
+                    delay,
                 )
+                # Natychmiastowe ponowienie trafialo w 429 (patrz
+                # NextDnsConfig.reconnect_after_close_seconds).
+                await self._sleep(delay)
+                continue
             except asyncio.CancelledError:
                 raise
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code == 429:
-                    # Spodziewane po zamknieciu strumienia — patrz
-                    # NextDnsConfig.rate_limit_wait_seconds. Zdarzenia nie
-                    # gina, bo wznawiamy od kursora.
-                    wait = max(backoff, self.cfg.rate_limit_wait_seconds)
-                    log.info(
-                        "NextDNS %s: limit polaczen (429) — ponawiam za %.0f s",
+                    # Zdarzenia nie gina, bo wznawiamy od kursora.
+                    rate_limited += 1
+                    retry_after = _retry_after(exc.response)
+                    if retry_after is not None:
+                        # Dolne 1 s: "Retry-After: 0" w kolko nie moze krecic petla.
+                        wait = min(max(retry_after, 1.0), self.cfg.retry_after_max_seconds)
+                    else:
+                        # Bez Retry-After — patrz NextDnsConfig.rate_limit_wait_seconds.
+                        wait = max(backoff, self.cfg.rate_limit_wait_seconds)
+                    # Pojedyncze 429 po zamknieciu bywa (limit po stronie
+                    # NextDNS nie jest opisany), powtarzajace sie juz nie.
+                    # Prawdziwa awarie i tak zglosi czujka ciszy w silniku.
+                    log.log(
+                        logging.WARNING if rate_limited > 1 else logging.DEBUG,
+                        "NextDNS %s: limit polaczen (429, %d. z rzedu) — ponawiam za %.0f s",
                         self.profile_id,
+                        rate_limited,
                         wait,
                     )
                     if self._gate is not None:
