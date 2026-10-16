@@ -474,7 +474,7 @@ async def test_po_zamknieciu_przez_serwer_czeka_zanim_polaczy_ponownie():
     assert przebieg[0] == ("zapytanie", None)
     rodzaj, odstep = przebieg[1]
     assert rodzaj == "sen"
-    assert odstep >= 15.0  # 1 s nie wystarczal — patrz komentarz w konfiguracji
+    assert odstep >= 40.0  # 1 s i 20 s nie wystarczaly — patrz komentarz w konfiguracji
     assert przebieg[2] == ("zapytanie", "e1")
     assert odstep == NextDnsConfig(profile_id="abc").reconnect_after_close_seconds
 
