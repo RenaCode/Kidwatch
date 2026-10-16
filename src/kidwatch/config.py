@@ -111,6 +111,17 @@ class NextDnsConfig(_ZSekretami):
     #: zamykane przez serwer mniej wiecej w tym samym rytmie; otwierane razem
     #: wpadalyby w 429 parami i przedluzaly sobie nawzajem blokade.
     connect_spacing_seconds: float = Field(default=5.0, ge=0)
+    #: Odstep po RUTYNOWYM zamknieciu strumienia przez serwer (co ~90 s).
+    #: Produkcja 2026-10-16, 6 h: 237 zamkniec, 204 odpowiedzi 429 — ponowne
+    #: otwarcie po 1 s dostawalo 429 w ~85% przypadkow, a proba po 20 s zwykle
+    #: juz przechodzila. Czekanie 20 s od razu daje to samo opoznienie zdarzen
+    #: co dotychczasowa sciezka (1 s + 429 + 20 s), bez 429 i bez szumu w logu.
+    #: Zdarzenia z przerwy nie gina — wznawiamy od kursora `id`.
+    reconnect_after_close_seconds: float = Field(default=20.0, ge=0)
+    #: Gorna granica dla naglowka Retry-After (gdyby serwer podal absurdalny
+    #: czas). Ponizej progu czujki ciszy strumienia, zeby po jej alarmie
+    #: zrodlo samo probowalo dalej.
+    retry_after_max_seconds: float = Field(default=600.0, ge=1)
 
     def api_key(self) -> str:
         return self._sekret("nextdns", "api_key", "klucz API NextDNS", wymagany=True)

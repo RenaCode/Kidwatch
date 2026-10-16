@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 from datetime import UTC, datetime
 
 import httpx
@@ -440,3 +441,133 @@ def test_kursor_profilu_glownego_czyta_stary_klucz():
     assert nextdns_cursor(store, "zosia1", "glowny") is None
     store.set_cursor("nextdns:glowny", "nowy")
     assert nextdns_cursor(store, "glowny", "glowny") == "nowy"
+
+
+# ================================================ zamkniecie przez serwer i 429
+async def test_po_zamknieciu_przez_serwer_czeka_zanim_polaczy_ponownie():
+    """Produkcja 2026-10-16: serwer zamyka strumien co ~90 s, a natychmiastowe
+    ponowienie dostawalo 429 w ~85% przypadkow. Teraz najpierw odstep, potem
+    nowe polaczenie — i nadal od ostatniego id, bez utraty zdarzen."""
+    przebieg: list[tuple[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        przebieg.append(("zapytanie", request.url.params.get("id")))
+        body = sse_body([("e1", ENTRY)]) if len(przebieg) == 1 else sse_body(
+            [("e2", ENTRY | {"domain": "api.minecraft.net"})]
+        )
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
+
+    async def record_sleep(seconds: float) -> None:
+        przebieg.append(("sen", seconds))
+
+    src = NextDnsSource(
+        cfg=NextDnsConfig(profile_id="abc"),
+        api_key="k",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        sleep=record_sleep,
+    )
+    got = await collect(src, 2)
+    await src.aclose()
+
+    assert [e.domain for e in got] == ["r1.googlevideo.com", "api.minecraft.net"]
+    assert len(przebieg) == 3
+    assert przebieg[0] == ("zapytanie", None)
+    rodzaj, odstep = przebieg[1]
+    assert rodzaj == "sen"
+    assert odstep >= 15.0  # 1 s nie wystarczal — patrz komentarz w konfiguracji
+    assert przebieg[2] == ("zapytanie", "e1")
+    assert odstep == NextDnsConfig(profile_id="abc").reconnect_after_close_seconds
+
+
+async def test_429_honoruje_retry_after():
+    waits: list[float] = []
+    calls = {"n": 0}
+
+    async def record_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "7"})
+        return httpx.Response(
+            200, content=sse_body([("e1", ENTRY)]), headers={"content-type": "text/event-stream"}
+        )
+
+    src = NextDnsSource(
+        cfg=NextDnsConfig(profile_id="abc", rate_limit_wait_seconds=20.0),
+        api_key="k",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        sleep=record_sleep,
+    )
+    await collect(src, 1)
+    await src.aclose()
+    assert waits == [7.0]
+
+
+def test_retry_after_jako_data_http_i_smieci():
+    from kidwatch.sources.nextdns import _retry_after  # noqa: PLC0415
+
+    teraz = datetime(2026, 10, 16, 12, 0, 0, tzinfo=UTC)
+    data = httpx.Response(429, headers={"Retry-After": "Fri, 16 Oct 2026 12:00:30 GMT"})
+    assert _retry_after(data, now=teraz) == 30.0
+    assert _retry_after(httpx.Response(429), now=teraz) is None
+    assert _retry_after(httpx.Response(429, headers={"Retry-After": "wkrotce"})) is None
+    assert _retry_after(httpx.Response(429, headers={"Retry-After": "-5"})) == 0.0
+
+
+async def test_retry_after_ma_sufit():
+    waits: list[float] = []
+    calls = {"n": 0}
+
+    async def record_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "86400"})
+        return httpx.Response(
+            200, content=sse_body([("e1", ENTRY)]), headers={"content-type": "text/event-stream"}
+        )
+
+    src = NextDnsSource(
+        cfg=NextDnsConfig(profile_id="abc", retry_after_max_seconds=600.0),
+        api_key="k",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        sleep=record_sleep,
+    )
+    await collect(src, 1)
+    await src.aclose()
+    assert waits == [600.0]
+
+
+async def test_pojedyncze_429_nie_szumi_a_powtarzajace_sie_ostrzega(caplog):
+    """Jedno 429 to rutyna — DEBUG. Kolejne z rzedu to juz cos innego: WARNING.
+    Zamkniecie przez serwer tez nie trafia na INFO (~40 linii na godzine)."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] in (2, 3):  # po zamknieciu: dwa 429 z rzedu
+            return httpx.Response(429)
+        return httpx.Response(
+            200, content=sse_body([(f"e{calls['n']}", ENTRY)]),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    src = NextDnsSource(
+        cfg=NextDnsConfig(profile_id="abc"),
+        api_key="k",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        sleep=_no_sleep,
+    )
+    with caplog.at_level(logging.DEBUG, logger="kidwatch.sources.nextdns"):
+        await collect(src, 2)
+    await src.aclose()
+
+    wpisy = [(r.levelno, r.getMessage()) for r in caplog.records
+             if r.name == "kidwatch.sources.nextdns"]
+    limity = [lvl for lvl, msg in wpisy if "429" in msg]
+    assert limity == [logging.DEBUG, logging.WARNING]
+    assert not [msg for lvl, msg in wpisy if lvl == logging.INFO]
