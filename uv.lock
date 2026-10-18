@@ -247,6 +247,15 @@ wheels = [
 ]
 
 [[package]]
+name = "bytestruct"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1b/e4/37acaf4c2217e117c42163159204d749a318cb11dd58a5c39e37c482e720/bytestruct-0.2.0.tar.gz", hash = "sha256:ef0767fe48c0be9b2e4585565d8b28959fa04c93256ddeb7efbbd1b8f5998011", size = 436428, upload-time = "2026-10-18T06:00:49.19Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c7/56/a571db06803a5a888568dde6d672ca21cef2b2bed7271d6c6c6eb976f730/bytestruct-0.2.0-py3-none-any.whl", hash = "sha256:ecec23ffd5f51b2f188276be83a8cb2a17910b746a0957a3306781e042e3c1cd", size = 20975, upload-time = "2026-10-18T06:00:47.495Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.7.22"
 source = { registry = "https://pypi.org/simple" }
@@ -519,15 +528,6 @@ wheels = [
 ]
 
 [[package]]
-name = "gpxpy"
-version = "1.6.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/20/ad/6f1a34e702c72cb495bb258396f237ded76c00f9fe67054a44d778d24ed9/gpxpy-1.6.2.tar.gz", hash = "sha256:a72c484b97ec42b80834353b029cc8ee1b79f0ffca1179b2210bb3baf26c01ae", size = 111695, upload-time = "2023-11-29T17:25:38.391Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/44/9f/62df6c1e52462bdd04275b36cec49efa9e8af7e7b834499eb288f73dcfbc/gpxpy-1.6.2-py3-none-any.whl", hash = "sha256:289bc2d80f116c988d0a1e763fda22838f83005573ece2bbc6521817b26fb40a", size = 42649, upload-time = "2023-11-29T17:25:35.76Z" },
-]
-
-[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -548,12 +548,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/e7/85/7c366e69d84c17bb7
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7e/22/e85faf23bd72a92d1921e37d674ca56eb298a3c8be31fdecef0ff2b3aaac/h2-4.4.1-py3-none-any.whl", hash = "sha256:0e25f1462b23c9cb82d9eb02e28bc706dac2a68cb457c6a0d74d63c8a2a5d0e6", size = 62636, upload-time = "2026-08-03T11:44:59.164Z" },
 ]
-
-[[package]]
-name = "hexdump"
-version = "3.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/55/b3/279b1d57fa3681725d0db8820405cdcb4e62a9239c205e4ceac4391c78e4/hexdump-3.3.zip", hash = "sha256:d781a43b0c16ace3f9366aade73e8ad3a7bd5137d58f0b45ab2d3f54876f20db", size = 12658, upload-time = "2016-01-22T14:40:19.589Z" }
 
 [[package]]
 name = "hpack"
@@ -656,20 +650,19 @@ wheels = [
 
 [[package]]
 name = "ipsw-parser"
-version = "1.7.5"
+version = "1.8.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "bytestruct" },
     { name = "coloredlogs" },
-    { name = "construct" },
-    { name = "plumbum" },
     { name = "pyimg4" },
     { name = "remotezip2" },
     { name = "requests" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ab/ca/40960ace6e13f05101e05ad9695c54969d4943588930c27dca153db56d82/ipsw_parser-1.7.5.tar.gz", hash = "sha256:e49682388731cc9c2a275bf0d2b35746d7619bd352e4a46189efb2f50acc3e1f", size = 55567, upload-time = "2026-08-25T05:40:44.047Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/65/34/773f5320dedff1d1486e0c3e8ee297141bffce9b90dba431a5ec3e4df13e/ipsw_parser-1.8.3.tar.gz", hash = "sha256:3b2ceba12f2bfffefa17961a40d4b500c444b38a05eac1da9fa2bfdfda21bebc", size = 58829, upload-time = "2026-10-17T11:32:08.866Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/08/3a/0a6d1827aa01c6c8da80e06feb100666df16894a9c52f8675ebc37e39c16/ipsw_parser-1.7.5-py3-none-any.whl", hash = "sha256:6a520e437c3f3980739febe225a0ae9862c0423071036ae87da121645d7b2b3c", size = 39468, upload-time = "2026-08-25T05:40:42.825Z" },
+    { url = "https://files.pythonhosted.org/packages/40/ca/43fbc3ba1ec1cdb1b86314fce41555220817ecd70aa4e22a8dc2fc7270bd/ipsw_parser-1.8.3-py3-none-any.whl", hash = "sha256:50230ff69e0186f27e9a66ce1ec42efbf77fd4f288e7ef57aabee7be1d551969", size = 40800, upload-time = "2026-10-17T11:32:07.565Z" },
 ]
 
 [[package]]
@@ -846,15 +839,6 @@ wheels = [
 ]
 
 [[package]]
-name = "parameter-decorators"
-version = "0.0.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/40/b9/03b5e409930cb4cff0f25f6f3199145f4319a88d5f9be7ee17882359f72d/parameter_decorators-0.0.2.tar.gz", hash = "sha256:499ec96e71394705be9e3eeb28542aab4875694042516c31051d5dcb0488028e", size = 40958, upload-time = "2023-01-31T20:30:57.438Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/de/7b/1fa9000dbe427745af3eda3f1690d86e2161b6cfcd56b16cd76008a8f2c5/parameter_decorators-0.0.2-py2.py3-none-any.whl", hash = "sha256:8f89280356f7ea983725bf47534c22171fbd10a13d98159f44f3c55ba8ae73e7", size = 30442, upload-time = "2023-01-31T20:30:55.579Z" },
-]
-
-[[package]]
 name = "parso"
 version = "0.8.7"
 source = { registry = "https://pypi.org/simple" }
@@ -899,18 +883,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
-]
-
-[[package]]
-name = "plumbum"
-version = "2.0.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/6c/d2/578712a979a50e9aba08ea173a38e7598461130d3c9899f176373bc03280/plumbum-2.0.2.tar.gz", hash = "sha256:233751d7819c9e6743ec1c2405927eb4fa52a284c7b894bd10e28106a9309a92", size = 390799, upload-time = "2026-07-22T04:13:12.157Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b5/55/fdd01894807d20fb6181f13590ae247585b10e909b42e6ada833379fe520/plumbum-2.0.2-py3-none-any.whl", hash = "sha256:a865771826c1d2cce0ca8b2a2c48aa0447ed7a518859e389a95f158e9c369547", size = 168804, upload-time = "2026-07-22T04:13:10.76Z" },
 ]
 
 [[package]]
@@ -1185,7 +1157,7 @@ wheels = [
 
 [[package]]
 name = "pymobiledevice3"
-version = "11.25.0"
+version = "11.31.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "asgiwebdav" },
@@ -1201,8 +1173,6 @@ dependencies = [
     { name = "defusedxml" },
     { name = "developer-disk-image" },
     { name = "fastapi" },
-    { name = "gpxpy" },
-    { name = "hexdump" },
     { name = "hyperframe" },
     { name = "ifaddr" },
     { name = "ioregistry", marker = "sys_platform == 'darwin'" },
@@ -1210,9 +1180,8 @@ dependencies = [
     { name = "ipython" },
     { name = "opack2" },
     { name = "packaging" },
-    { name = "parameter-decorators" },
     { name = "pillow" },
-    { name = "plumbum" },
+    { name = "pmd-net-addr" },
     { name = "pmd-pytcp" },
     { name = "prompt-toolkit" },
     { name = "psutil" },
@@ -1237,11 +1206,10 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uvicorn" },
     { name = "wsproto" },
-    { name = "xonsh" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f5/96/de34bfc0da7231c234e3c4041e285b9fc02ff6e405b6ef69e21009b5bcac/pymobiledevice3-11.25.0.tar.gz", hash = "sha256:04b35483b6b342ce6803976f42bc1f950d769e3f7c7a3ae4388ee3bcce347558", size = 1567473, upload-time = "2026-10-08T05:53:03.733Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/81/709ec3efad93f99db02474a7572ce920faca21b51282f92230ec4061d7d5/pymobiledevice3-11.31.0.tar.gz", hash = "sha256:21d6e1d90b4758d06727711fc69399344b323b58d6afd47a3407db7b1cb33f4e", size = 1656026, upload-time = "2026-10-14T20:24:34.651Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9a/3f/513b523178923c14ea499599f37a72eabdb8e5bccd5cd12c57ef707403f2/pymobiledevice3-11.25.0-py3-none-any.whl", hash = "sha256:f224b64ea7e9844f45c911b8204e672a3cbc5d3e531cdc2a2edbf7cf1f4bbc5e", size = 1334008, upload-time = "2026-10-08T05:52:55.586Z" },
+    { url = "https://files.pythonhosted.org/packages/dc/60/827fc0fb58ac95e720f8c07975f14fd4d1b884be5ead69565546886acce1/pymobiledevice3-11.31.0-py3-none-any.whl", hash = "sha256:69c18d5b8bce632ce21c20c31c657a854eff5b30c198c1bc61bccc5b4e627e55", size = 1381455, upload-time = "2026-10-14T20:24:32.624Z" },
 ]
 
 [[package]]
@@ -1715,14 +1683,4 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/19/70/80f3b7c10d2630aa66414bf23d210386700aa390547278c789afa994fd7e/xmltodict-1.0.4.tar.gz", hash = "sha256:6d94c9f834dd9e44514162799d344d815a3a4faec913717a9ecbfa5be1bb8e61", size = 26124, upload-time = "2026-02-22T02:21:22.074Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/34/98a2f52245f4d47be93b580dae5f9861ef58977d73a79eb47c58f1ad1f3a/xmltodict-1.0.4-py3-none-any.whl", hash = "sha256:a4a00d300b0e1c59fc2bfccb53d7b2e88c32f200df138a0dd2229f842497026a", size = 13580, upload-time = "2026-02-22T02:21:21.039Z" },
-]
-
-[[package]]
-name = "xonsh"
-version = "0.24.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c1/28/974f44afd5c05bcfb012d52a91b514e629706048c85d669a29eab2f0369a/xonsh-0.24.2.tar.gz", hash = "sha256:461244cf1de8ed28d0c07cc548342b9e7969d46e17ef8d71b5d3064307930a25", size = 1217004, upload-time = "2026-08-23T15:41:03.929Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/16/32/2dc9f6142d6744fa584a59507030a851971e4088af86f187437344f60315/xonsh-0.24.2-py311-none-any.whl", hash = "sha256:60015217f74663d52c4038e495546710ecdffeb0beae96834b4ac3ea970a3927", size = 821746, upload-time = "2026-08-23T15:41:02.525Z" },
-    { url = "https://files.pythonhosted.org/packages/b0/77/9a9b1e1fcf377b412bb45626be1af9a97414f8a3aa96df566e06b8ebb092/xonsh-0.24.2-py312-none-any.whl", hash = "sha256:68e93b77bbf9e2a26f70bf323a1c311014dc2aed9ebcf036e68e7fe59ed0849c", size = 821749, upload-time = "2026-08-23T15:40:25.865Z" },
 ]
