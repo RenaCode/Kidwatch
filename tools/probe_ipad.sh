@@ -240,8 +240,14 @@ sample_stream() {  # nazwa, plik, komenda...
   wait "$pid" 2>/dev/null
   local lines
   lines=$(wc -l < "$file" 2>/dev/null | tr -d ' ')
-  if grep -qiE 'password protected|please unlock|ERROR' "$file" 2>/dev/null; then
-    bad "$label: BLAD — $(msg "$file")"
+  # Blad narzedzia to wiersz z poziomem ERROR w jego wlasnym formacie logu.
+  # Samo `-i ERROR` lapalo tresc strumienia: syslog iPada pelen jest selektorow
+  # w rodzaju `statesForPredicate:descriptor:error:`, wiec 20 s logow
+  # SpringBoard zawsze konczylo sie falszywym "BLAD" (2026-10-20).
+  local tool_err='^[0-9-]+ [0-9:]+ [^ ]+ [^ ]+\[[0-9]+\] ERROR '
+  if grep -qiE 'password protected|please unlock' "$file" 2>/dev/null \
+     || grep -qE "$tool_err" "$file" 2>/dev/null; then
+    bad "$label: BLAD — $(grep -iE "password protected|please unlock|$tool_err" "$file" | sed -E 's/^.*ERROR +//' | tail -1)"
   elif [ "${lines:-0}" -gt 0 ]; then
     ok "$label: $lines wierszy"
   else
