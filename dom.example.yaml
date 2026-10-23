@@ -1,0 +1,36 @@
+# kidwatch — struktura kolejnego domu (Dom 2, 3...): dzieci, urzadzenia
+# i ustawienia silnika. Zapis do bazy panelu:
+#
+#   kidwatch dom-importuj <numer domu> --plik dom.yaml --podglad
+#   kidwatch dom-importuj <numer domu> --plik dom.yaml --zapisz
+#
+# Ksztalt jak sekcje domu w config.example.yaml, ale BEZ integracji:
+# `source`, `notifiers`, `tv`, `unifi`, `mdm` (i sekrety) wpisuje
+# administrator instalacji w panelu: Ustawienia -> Integracje. Plik z taka
+# sekcja jest odrzucany. Integracje wpisane w panelu import zostawia bez
+# zmian, adresy w sieci domu dopuszcza tylko `kidwatch dom-sieci`.
+#
+# Kazdy kolejny import ZASTEPUJE dzieci, urzadzenia i ustawienia domu
+# zawartoscia pliku.
+
+timezone: Europe/Warsaw
+
+devices:
+  # Telefon z Androidem przez Prywatny DNS -> NextDNS (Family Link).
+  - display_name: "Telefon Dziecka 1"
+    child: "Dziecko 1"
+    kind: phone
+    # Nazwa urzadzenia w logach NextDNS (host Prywatnego DNS
+    # "Telefon--Dziecka--1-<ID profilu>.dns.nextdns.io").
+    source_ids: ["Telefon Dziecka 1"]
+    # Wlasny profil NextDNS dziecka (pod "czas gry"). Puste = profil
+    # z integracji NextDNS domu.
+    # nextdns_profile: "abc123"
+
+# Opcjonalnie — jak w config.example.yaml (pominiete = wartosci domyslne).
+# engine:
+#   quiet_hours:
+#     start: "21:00"
+#     end: "07:00"
+# watchdog:
+#   device_silence_minutes: 240

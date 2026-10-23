@@ -944,17 +944,21 @@ def dane_domu_conn(conn: sqlite3.Connection, dom_id: int) -> DaneDomu:
 
 def zapisz_dane_domu_conn(conn: sqlite3.Connection, dom_id: int, plan: PlanDomu, *,
                           sejf: Sejf, kto: str | None = None,
-                          teraz: float | None = None) -> None:
+                          teraz: float | None = None, integracje: bool = True) -> None:
     """Zastepuje dzieci, urzadzenia i integracje domu planem (dom-importuj).
-    W transakcji wolajacego — wolajacy porownuje wynik i dopiero commituje."""
+    `integracje=False` — integracje (wpisane w panelu) zostaja bez zmian,
+    a `plan.integracje` i `plan.sekrety` sa pomijane (import struktury domu
+    innego niz Dom 1). W transakcji wolajacego — wolajacy porownuje wynik
+    i dopiero commituje."""
     from .devicekind import RODZAJ_W_BAZIE  # noqa: PLC0415
 
     teraz = time.time() if teraz is None else teraz
     _wiersz_domu(conn, dom_id)
-    obce = sorted(set(plan.sekrety) - set(plan.integracje))
-    if obce:
-        raise ValueError(f"sekrety dla integracji {obce}, ktorych nie ma w planie")
-    conn.execute("DELETE FROM integracje WHERE dom_id = ?", (dom_id,))
+    if integracje:
+        obce = sorted(set(plan.sekrety) - set(plan.integracje))
+        if obce:
+            raise ValueError(f"sekrety dla integracji {obce}, ktorych nie ma w planie")
+        conn.execute("DELETE FROM integracje WHERE dom_id = ?", (dom_id,))
     conn.execute("DELETE FROM urzadzenia WHERE dom_id = ?", (dom_id,))
     conn.execute("DELETE FROM dzieci WHERE dom_id = ?", (dom_id,))
     id_dziecka = {}
@@ -974,7 +978,7 @@ def zapisz_dane_domu_conn(conn: sqlite3.Connection, dom_id: int, plan: PlanDomu,
              int(bool(u.get("mdm"))),
              json.dumps(u.get("ustawienia") or {}, ensure_ascii=False, sort_keys=True)),
         )
-    for typ, (wlaczona, ustawienia) in plan.integracje.items():
+    for typ, (wlaczona, ustawienia) in (plan.integracje.items() if integracje else ()):
         zapisz_integracje_conn(conn, dom_id, typ, sejf=sejf, wlaczona=wlaczona,
                                ustawienia=ustawienia, sekrety=plan.sekrety.get(typ),
                                kto=kto, teraz=teraz)
