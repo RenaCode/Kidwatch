@@ -173,6 +173,11 @@ APP_ATTRIBUTES = [
 #: Po nieudanej probie z EscrowBag nastepna nie wczesniej niz po tylu sekundach
 #: (kazda proba to dodatkowe polaczenie z iPadem).
 ESCROW_RETRY_SECONDS = 3600.0
+#: Limit samej proby z EscrowBag — miesci sie w limicie calego odczytu
+#: (DEFAULT_TIMEOUT), wiec zawieszona proba nie zjada calego budzetu.
+ESCROW_ATTEMPT_SECONDS = 8.0
+#: Limit zamkniecia porzuconego klienta lockdown.
+CLOSE_TIMEOUT_SECONDS = 2.0
 
 
 class _ConnectionDropped(DeviceUnavailable):
@@ -261,6 +266,8 @@ class TcpLockdownBackend:
         #: usluga -> True (dziala TYLKO z EscrowBag) albo chwila ostatniej
         #: nieudanej proby z EscrowBag (time.monotonic).
         self._escrow: dict[str, bool | float] = {}
+        #: Zadania zamykajace porzucone klienty (sciezka anulowania).
+        self._closing: set[asyncio.Task] = set()
 
     @staticmethod
     def _why(exc: BaseException) -> str:
@@ -378,18 +385,26 @@ class TcpLockdownBackend:
         (docstring klasy, hipoteza 2). `label` — nazwa w komunikatach.
         """
         label = label or method
+        with_escrow = self._escrow.get(label) is True
         try:
-            return await self._call(
-                factory, method, args, kwargs, label, self._escrow.get(label) is True
-            )
+            return await self._call(factory, method, args, kwargs, label, with_escrow)
         except _ConnectionDropped as first:
             if not escrow_retry or not self._escrow_allowed(label):
                 raise
+            # Diagnoza pierwszej proby (etap + przyczyna) ZAWSZE w logu — druga
+            # moze zawisnac i zostac anulowana razem z calym odczytem.
+            log.info("%s: %s pada (%s) — proba z EscrowBag", self.target.host, label, first)
+            # Znacznik PRZED proba: anulowanie w jej trakcie nie moze
+            # oznaczac „sprobuj znowu w nastepnym obiegu”.
+            self._escrow[label] = time.monotonic()
             try:
-                result = await self._call(factory, method, args, kwargs, label, True)
-            except DeviceUnavailable as second:
-                self._escrow[label] = time.monotonic()
-                log.debug("%s: %s z EscrowBag tez pada: %s", self.target.host, label, second)
+                result = await asyncio.wait_for(
+                    self._call(factory, method, args, kwargs, label, True),
+                    timeout=ESCROW_ATTEMPT_SECONDS,
+                )
+            except (DeviceUnavailable, TimeoutError) as second:
+                log.info("%s: %s z EscrowBag tez pada: %s", self.target.host, label,
+                         str(second) or f"przekroczony czas ({ESCROW_ATTEMPT_SECONDS:.0f} s)")
                 raise first from None
             self._escrow[label] = True
             log.info(
@@ -397,6 +412,38 @@ class TcpLockdownBackend:
                 self.target.host, label,
             )
             return result
+        except DeviceUnavailable as exc:
+            if not with_escrow or getattr(exc, "stage", None) != "StartService":
+                raise
+            # StartService z EscrowBag odrzucony (np. nowy rekord parowania bez
+            # waznego EscrowBag) — wracamy do proby bez niego, nie trzymamy
+            # „dziala tylko z EscrowBag” na stale.
+            self._escrow.pop(label, None)
+            log.info("%s: %s — StartService z EscrowBag odrzucony (%s), wracam do proby bez",
+                     self.target.host, label, exc)
+            return await self._call(factory, method, args, kwargs, label, False)
+
+    async def _close_quietly(self, client) -> None:
+        """Zamyka porzucony klient lockdown (samo gniazdo, bez StopSession —
+        na zerwanym polaczeniu StopSession i tak by nie doszedl)."""
+        if client is None:
+            return
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(_maybe(client.close()), timeout=CLOSE_TIMEOUT_SECONDS)
+
+    def _drop_client(self, client, *, background: bool = False):
+        """Porzuca klienta po bledzie. Bez zamkniecia zostawalo otwarte
+        polaczenie lockdown na kazdy nieudany odczyt (co obieg)."""
+        if self._client is client:
+            self._client = None
+        if background:
+            # W trakcie anulowania nie czekamy na zamkniecie — osobne zadanie,
+            # trzymane do konca (bez odwolania GC moglby je zebrac).
+            task = asyncio.get_running_loop().create_task(self._close_quietly(client))
+            self._closing.add(task)
+            task.add_done_callback(self._closing.discard)
+            return None
+        return self._close_quietly(client)
 
     async def _call(self, factory, method: str, args, kwargs, label: str, escrow: bool):
         client = await self._connect()
@@ -410,18 +457,20 @@ class TcpLockdownBackend:
             # W POLOWIE odpowiedzi. CancelledError NIE jest podklasa Exception,
             # wiec bez tej galezi klient zostawal z niedoczytana odpowiedzia w
             # strumieniu i kolejny odczyt dostawalby cudzy payload.
-            self._client = None
+            self._drop_client(client, background=True)
             raise
         except Exception as exc:
             # Zerwane polaczenie trzeba porzucic, inaczej kolejny odczyt padnie
             # na tym samym martwym gniazdzie.
-            self._client = None
+            await self._drop_client(client)
             cause: BaseException = exc
             if isinstance(exc, _StageError):
                 stage, cause = exc.stage, exc.__cause__ or exc
             cls = _ConnectionDropped if _dropped(cause) else DeviceUnavailable
             note = " (z EscrowBag)" if escrow else ""
-            raise cls(f"{label}: {stage}{note}: {self._why(cause)}") from cause
+            error = cls(f"{label}: {stage}{note}: {self._why(cause)}")
+            error.stage = stage
+            raise error from cause
         finally:
             with contextlib.suppress(Exception):
                 await _maybe(service.close())
@@ -629,6 +678,11 @@ IGNORED_PROCESS_SUFFIXES = (
 #: PID-y, dopasowane z nazwa aplikacji, pozostale z pustym napisem.
 PIDS_FORMAT = "2"
 
+#: Bezpieczniki uruchomien przy liscie bez plikow wykonywalnych
+#: (DeviceWatcher._launch_changes).
+LAUNCH_COOLDOWN = timedelta(minutes=10)
+LAUNCH_BURST_LIMIT = 3
+
 
 #: Runner testow XCTest (`<Cel>UITests-Runner`, `<Cel>Tests-Runner`). Po
 #: przedrostku dopasowalby sie do aplikacji `<Cel>` i kazdy przebieg testow UI
@@ -644,6 +698,47 @@ def is_test_runner(process_name: str) -> bool:
 
 def _flatten(text: str) -> str:
     return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
+#: Czlony bundle ID i nazwy, ktore nic nie mowia o aplikacji. Bez pliku
+#: wykonywalnego (katalog MDM, known_apps) `com.google.photos` dopasowywal sie
+#: do systemowego procesu `Photos`, ogon `.game` do `gamed` i `Games`, `.app`
+#: do `appstored`, a `.mobile` do `mobileassetd` i `MobileSafari` — a launchd
+#: odpala demony z nowym PID-em, wiec kazdy restart byl „odpalil X”.
+GENERIC_MEMBERS = frozenset({
+    "app", "apps", "ios", "ipados", "mobile", "ipad", "iphone", "client", "game", "games",
+    "free", "lite", "hd", "pro", "plus", "premium", "music", "photos", "photo", "camera",
+    "maps", "map", "home", "news", "cloud", "mail", "video", "videos", "tv", "player",
+    "kids", "kid", "edu", "school", "store", "chat", "messenger", "browser", "web",
+    "social", "main", "prod", "release", "global", "official", "full", "paid", "universal",
+    "application", "ipadapp", "iphoneapp", "mobileapp", "x", "settings", "calendar",
+    "notes", "clock", "weather", "files", "books", "podcasts", "health", "wallet",
+})
+
+#: Najkrotszy czlon, ktory moze dac dopasowanie po przedrostku.
+PREFIX_MIN_LENGTH = 5
+#: Najkrotszy czlon dla dopasowania dokladnego (bez pliku wykonywalnego).
+EXACT_MIN_LENGTH = 3
+
+_DAEMON_WORDS = (
+    "daemon", "agent", "service", "helper", "extension", "widget", "poster",
+    "intents", "provider", "subscriber", "proxy", "relay", "renderer",
+)
+
+
+def looks_like_daemon(process_name: str) -> bool:
+    """Demon albo proces pomocniczy iOS: `appstored`, `gamed`, `cloudd`
+    (male litery, konczy sie na `d`) albo slowo-klucz w nazwie
+    (`PhotosPosterProvider`, `ClipsAppIntents`, `DTServiceHub`). Taki proces
+    dopasowujemy wylacznie DOKLADNIE."""
+    lower = process_name.lower()
+    if process_name[:1].islower() and process_name.endswith("d"):
+        return True
+    return any(word in lower for word in _DAEMON_WORDS)
+
+
+def _usable(member: str, minimum: int) -> bool:
+    return len(member) >= minimum and member not in GENERIC_MEMBERS
 
 
 def looks_like_app(
@@ -685,21 +780,34 @@ def looks_like_app(
             app = apps.get(target)
             return app.label if app else target
 
+    # Przedrostek tylko dla procesu, ktory nie wyglada na demona, i tylko gdy
+    # obie strony maja co najmniej PREFIX_MIN_LENGTH znakow i nie sa generyczne.
+    prefix_ok = not looks_like_daemon(process_name) and _usable(needle, PREFIX_MIN_LENGTH)
     best: tuple[int, int, str] | None = None
     for app in apps.values():
         flat_name = _flatten(app.name)
         tail = _flatten(app.bundle_id.rsplit(".", 1)[-1])
+        name_ok = _usable(flat_name, EXACT_MIN_LENGTH)
+        tail_ok = _usable(tail, EXACT_MIN_LENGTH)
 
         score = 0
         if app.executable and app.executable == process_name:
             score = 4                      # plik wykonywalny = nazwa procesu
-        elif tail and tail == needle:
+        elif tail_ok and tail == needle:
             score = 3                      # ostatni czlon bundle ID, dokladnie
-        elif flat_name and flat_name == needle:
+        elif name_ok and flat_name == needle:
             score = 3                      # nazwa aplikacji, dokladnie
-        elif flat_name and (flat_name.startswith(needle) or needle.startswith(flat_name)):
+        elif (
+            prefix_ok
+            and _usable(flat_name, PREFIX_MIN_LENGTH)
+            and (flat_name.startswith(needle) or needle.startswith(flat_name))
+        ):
             score = 1                      # przedrostek — najslabszy dowod
-        elif tail and (tail.startswith(needle) or needle.startswith(tail)):
+        elif (
+            prefix_ok
+            and _usable(tail, PREFIX_MIN_LENGTH)
+            and (tail.startswith(needle) or needle.startswith(tail))
+        ):
             score = 1
         if not score:
             continue
@@ -757,6 +865,8 @@ class DeviceWatcher:
         #: Skad ostatnio wzielismy liste do nazywania procesow (do logu zmian).
         self._apps_source: str | None = None
         self._baseline_state: str | None = None
+        #: aplikacja -> ostatnie „odpalil” przy liscie bez plikow wykonywalnych
+        self._last_launch: dict[str, datetime] = {}
 
     # --------------------------------------------------------------- klucze
     def _key(self, what: str) -> str:
@@ -855,7 +965,9 @@ class DeviceWatcher:
                     # zebys mogl dopisac alias — jak z domenami w app_map.yaml.
                     self.unmatched.add(proc)
             if pids_known:
-                out += self._launch_changes(current, dict(prev_pids), now)
+                out += self._launch_changes(
+                    current, dict(prev_pids), now, guarded=apps_source != "zywy"
+                )
             self.store.set_json(self._key("pids"), current)
             self.store.set_meta(self._key("pids_v"), PIDS_FORMAT)
 
@@ -928,18 +1040,49 @@ class DeviceWatcher:
         return out
 
     def _launch_changes(
-        self, current: dict[str, str], previous: dict, now: datetime
+        self, current: dict[str, str], previous: dict, now: datetime, guarded: bool = False
     ) -> list[Notification]:
         """Nowy PID znanej aplikacji = ktos ja odpalil.
 
         Odpalic aplikacje mozna tylko z ODBLOKOWANEGO iPada, wiec to jednoczesnie
         dowod, ze urzadzenie bylo uzywane — pewniejszy niz semantyka powiadomien
         Darwin, ktore mowia "stan sie zmienil", ale nie mowia na jaki.
+
+        `guarded` — lista bez plikow wykonywalnych (katalog MDM, known_apps,
+        zapis z bazy), wiec dopasowanie jest heurystyczne. Bezpieczniki:
+          * ta sama aplikacja najwyzej raz na LAUNCH_COOLDOWN — proces
+            pomocniczy restartowany przez launchd nie zasypie powiadomieniami;
+          * wiecej niz LAUNCH_BURST_LIMIT roznych aplikacji „odpalonych” w jednym
+            obiegu to raczej szum (np. fala restartow demonow po odblokowaniu,
+            ktore heurystyka wziela za aplikacje) niz dziecko — WARNING w logu
+            i zadnego powiadomienia z tego obiegu. Czlowiek nie otwiera czterech
+            aplikacji w minute; jesli tak, zobaczy je DNS i nastepne obiegi.
         """
         out: list[Notification] = []
         started = {
             pid: label for pid, label in current.items() if label and pid not in previous
         }
+        if guarded and started:
+            labels = set(started.values())
+            if len(labels) > LAUNCH_BURST_LIMIT:
+                log.warning(
+                    "%s: %d aplikacji „odpalonych” w jednym obiegu (%s) przy liscie bez "
+                    "plikow wykonywalnych — to raczej szum dopasowania, bez powiadomien",
+                    self.device_name, len(labels), ", ".join(sorted(labels)),
+                )
+                return []
+            fresh: dict[str, str] = {}
+            for pid, label in started.items():
+                last = self._last_launch.get(label)
+                if last is not None and now - last < LAUNCH_COOLDOWN:
+                    log.debug("%s: %s ponownie po %s — w odstepie ochronnym, pomijam",
+                              self.device_name, label, now - last)
+                    continue
+                if label not in fresh.values():
+                    fresh[pid] = label
+            started = fresh
+            for label in started.values():
+                self._last_launch[label] = now
         for pid, label in sorted(started.items(), key=lambda kv: int(kv[0])):
             out += self._emit(
                 Notification(

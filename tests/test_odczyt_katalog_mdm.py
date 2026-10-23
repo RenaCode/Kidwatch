@@ -437,3 +437,186 @@ async def test_bez_EscrowBag_w_rekordzie_jedna_proba():
     with pytest.raises(DeviceUnavailable):
         await b.apps()
     assert lockdown.escrow_calls == [False]
+
+
+# ================= 7. przeglad #90: procesy systemowe nie sa aplikacjami
+#: Publicznie znane nazwy procesow iPadOS.
+SYSTEM_PROCESSES = [
+    "launchd", "xpcproxy", "SpringBoard", "backboardd", "appstored", "AppStore",
+    "appconduitd", "appleaccountd", "AppSSODaemon", "mobileassetd", "mobileactivationd",
+    "mobile_installation_proxy", "MobileCal", "MobileSMS", "MobileSafari", "MobileMail",
+    "MobileNotes", "MobileTimer", "MobileSlideShow", "Photos", "PhotosPosterProvider",
+    "Maps", "mapspushd", "gamed", "gamepolicyd", "gamecontrollerd", "Games",
+    "GameOverlayUI", "cloudd", "musicd", "homed", "newsd", "WidgetRenderer_Default",
+    "WeatherWidget", "ScreenTimeAgent", "UsageTrackingAgent", "ClipsAppIntents",
+    "Preferences", "Spotlight", "PosterBoard", "UnityPoster", "Unity2025Poster",
+    "DTServiceHub",
+]
+
+#: Katalog jak z serwera MDM: typowe aplikacje dzieci i gry + aplikacje Apple.
+REALISTIC_MDM_APPS = [
+    {"id": "com.atebits.Tweetie2", "name": "X"},
+    {"id": "com.google.photos", "name": "Google Photos"},
+    {"id": "com.google.Maps", "name": "Google Maps"},
+    {"id": "com.google.ios.youtube", "name": "YouTube"},
+    {"id": "com.mojang.minecraftpe", "name": "Minecraft"},
+    {"id": "com.roblox.robloxmobile", "name": "Roblox"},
+    {"id": "com.studio.turboracer.game", "name": "Turbo Racer"},
+    {"id": "com.studio.puzzleland.game", "name": "Puzzle Land"},
+    {"id": "com.studio.hub.app", "name": "App"},
+    {"id": "com.studio.saver.cloud", "name": "Cloud Saver"},
+    {"id": "com.studio.box.music", "name": "Music Box"},
+    {"id": "com.studio.fun.mobile", "name": "Mobile Fun"},
+    {"id": "com.studio.daily.news", "name": "News Kids"},
+    {"id": "com.studio.smart.home", "name": "Home Planner"},
+    # Ogon `poster` nie jest generyczny i ma 6 znakow — przed `PosterBoard`
+    # chroni wylacznie regula procesu pomocniczego (slowo `poster`).
+    {"id": "com.studio.postermaker.poster", "name": "Poster Maker"},
+    {"id": "com.example.SimpleGame", "name": "Prosta Gra"},
+    {"id": "com.apple.mobilesafari", "name": "Safari"},
+    {"id": "com.apple.Maps", "name": "Maps"},
+    {"id": "com.apple.mobileslideshow", "name": "Photos"},
+    {"id": "com.apple.AppStore", "name": "App Store"},
+    {"id": "com.apple.Music", "name": "Music"},
+    {"id": "com.apple.gamecenter", "name": "Game Center"},
+    {"id": "com.apple.news", "name": "News"},
+    {"id": "com.apple.Home", "name": "Home"},
+    {"id": "com.apple.mobilecal", "name": "Calendar"},
+]
+
+
+def realistic_catalog() -> dict[str, InstalledApp]:
+    api = FakeMdmApi({UDID: mdm_device(NOW, REALISTIC_MDM_APPS)})
+    apps, _ = AppCatalog(api).fetch(UDID)
+    return apps
+
+
+def test_katalog_MDM_pomija_aplikacje_Apple():
+    apps = realistic_catalog()
+    assert not [b for b in apps if b.startswith("com.apple.")]
+    assert "com.mojang.minecraftpe" in apps
+
+
+def test_procesy_systemowe_NIE_dopasowuja_sie_do_katalogu():
+    apps = realistic_catalog()
+    trafione = {p: looks_like_app(p, apps) for p in SYSTEM_PROCESSES}
+    assert {p: a for p, a in trafione.items() if a} == {}
+
+
+def test_procesy_systemowe_bez_filtra_Apple_tez_nie_po_przedrostku():
+    """Sama heurystyka na katalogu bez aplikacji Apple: zero trafien."""
+    apps = {
+        a["id"]: InstalledApp(a["id"], a["name"])
+        for a in REALISTIC_MDM_APPS
+        if not a["id"].startswith("com.apple.")
+    }
+    trafione = {p: looks_like_app(p, apps) for p in SYSTEM_PROCESSES}
+    assert {p: a for p, a in trafione.items() if a} == {}
+
+
+@pytest.mark.parametrize(
+    ("process", "expected"),
+    [
+        ("minecraftpe", "Minecraft"),
+        ("Roblox", "Roblox"),
+        ("SimpleGame", "Prosta Gra"),
+        ("YouTube", "YouTube"),
+        ("TurboRacer", "Turbo Racer"),
+    ],
+)
+def test_aplikacje_dzieci_dalej_sie_dopasowuja(process, expected):
+    assert looks_like_app(process, realistic_catalog()) == expected
+
+
+# ======================== 8. bezpieczniki uruchomien przy liscie bez plikow
+async def _guarded_watcher(store):
+    apps = {
+        "com.example.alpha": "Alpha Quest", "com.example.bravo": "Bravo Builder",
+        "com.example.charlie": "Charlie Cards", "com.example.delta": "Delta Drive",
+    }
+    responses = {"apps": None, "pids": dict(PIDS), "backlight": BACKLIGHT_OFF}
+    w = watcher(store, responses, fallback_apps=apps)
+    await w.poll(NOW)
+    return w, responses
+
+
+async def test_fala_uruchomien_z_katalogu_to_szum_bez_powiadomien(store, caplog):
+    caplog.set_level(logging.WARNING)
+    w, responses = await _guarded_watcher(store)
+    responses["pids"] = dict(PIDS) | {
+        "901": {"ProcessName": "AlphaQuest"}, "902": {"ProcessName": "BravoBuilder"},
+        "903": {"ProcessName": "CharlieCards"}, "904": {"ProcessName": "DeltaDrive"},
+    }
+    assert await w.poll(NOW + timedelta(minutes=1)) == []
+    assert "4 aplikacji „odpalonych” w jednym obiegu" in caplog.text
+
+
+async def test_ta_sama_aplikacja_z_katalogu_najwyzej_raz_na_10_min(store):
+    w, responses = await _guarded_watcher(store)
+    responses["pids"] = dict(PIDS) | {"901": {"ProcessName": "AlphaQuest"}}
+    assert len(await w.poll(NOW + timedelta(minutes=1))) == 1
+    responses["pids"] = dict(PIDS) | {"905": {"ProcessName": "AlphaQuest"}}  # restart
+    assert await w.poll(NOW + timedelta(minutes=5)) == []
+    responses["pids"] = dict(PIDS) | {"906": {"ProcessName": "AlphaQuest"}}
+    assert len(await w.poll(NOW + timedelta(minutes=12))) == 1
+
+
+# ============================== 9. EscrowBag: zawieszona druga proba, powrot
+class _HangingEscrowLockdown(_Lockdown):
+    async def create_service_connection(self, port):
+        if self.escrow_calls[-1]:
+            await asyncio.sleep(30)
+        return _Conn(False)
+
+
+async def test_zawieszona_proba_z_EscrowBag_ma_wlasny_limit_i_znacznik(monkeypatch, caplog):
+    import kidwatch.sources.device as dev  # noqa: PLC0415
+
+    monkeypatch.setattr(dev, "ESCROW_ATTEMPT_SECONDS", 0.05)
+    caplog.set_level(logging.INFO)
+    lockdown = _HangingEscrowLockdown()
+    b = _backend(lockdown)
+    with pytest.raises(DeviceUnavailable, match="odczyt: ConnectionTerminatedError"):
+        await asyncio.wait_for(b.apps(), timeout=2)
+    assert isinstance(b._escrow["get_apps"], float), "znacznik przed proba"
+    assert "get_apps pada (get_apps: odczyt: ConnectionTerminatedError" in caplog.text
+    with pytest.raises(DeviceUnavailable):
+        await b.apps()
+    assert lockdown.escrow_calls == [False, True, False], "bez proby co obieg"
+
+
+async def test_odrzucony_StartService_z_EscrowBag_wraca_do_proby_bez():
+    from pymobiledevice3.exceptions import StartServiceError  # noqa: PLC0415
+
+    class Lockdown(_Lockdown):
+        async def get_service_connection_attributes(self, name, include_escrow_bag=False):
+            self.escrow_calls.append(include_escrow_bag)
+            if include_escrow_bag:
+                raise StartServiceError(name, "InvalidEscrowBag")
+            return {"Port": 50001, "EnableServiceSSL": False}
+
+        async def create_service_connection(self, port):
+            return _Conn(True)
+
+    lockdown = Lockdown()
+    b = _backend(lockdown)
+    b._escrow["get_apps"] = True
+    raw = await b.apps()
+    assert "com.example.SimpleGame" in raw
+    assert lockdown.escrow_calls == [True, False]
+    assert "get_apps" not in b._escrow
+
+
+# =========================== 10. porzucony klient lockdown jest zamykany
+async def test_porzucony_klient_lockdown_jest_ZAMYKANY():
+    class Lockdown(_Lockdown):
+        closed = 0
+
+        async def close(self):
+            Lockdown.closed += 1
+
+    lockdown = Lockdown(escrow_ok=False)
+    b = _backend(lockdown, escrow_bag=False)
+    with pytest.raises(DeviceUnavailable):
+        await b.apps()
+    assert Lockdown.closed == 1, "stary klient po bledzie musi byc zamkniety"

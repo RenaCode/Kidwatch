@@ -253,6 +253,12 @@ class AppCatalog:
             if not isinstance(item, dict) or not item.get("id"):
                 continue
             bundle_id = str(item["id"])
+            if bundle_id.lower().startswith("com.apple."):
+                # Aplikacje Apple (Zdjecia, Mapy, Muzyka...) maja procesy
+                # o nazwach demonow i pomocnikow systemu — po nazwie daly
+                # „odpalil” przy kazdym restarcie demona. Safari i reszte
+                # widac w DNS. Serwer MDM nie podaje typu aplikacji.
+                continue
             apps[bundle_id] = InstalledApp(bundle_id, str(item.get("name") or bundle_id))
         return apps, _parse_at(device.get("apps_at") if isinstance(device, dict) else None)
 
