@@ -819,6 +819,27 @@ def ustaw_odczyt(rejestr: RejestrDomow, dom_id: int, sejf: Sejf, *,
     return przed, po
 
 
+def wyczysc_stan_odczytu(baza_domu: Path | str, nazwy: list[str]) -> bool:
+    """Po wlaczeniu odczytu, ktory byl wylaczony: usuwa z bazy zdarzen domu
+    `dev-ok:<nazwa>` i `dev-since:<nazwa>` (scheduler._unreachable_alerts).
+    Klucze sprzed wylaczenia (np. z czasow odczytu w trybie yaml) dawaly
+    alarm „brak udanego odczytu od N h” zaraz po wlaczeniu; bez nich cisza
+    liczy sie od pierwszego obiegu petli. Idempotentne; bazy, ktorej jeszcze
+    nie ma (dom nigdy nie wstal), nie zaklada. True = baza istniala."""
+    from .store import Store  # noqa: PLC0415
+
+    if not Path(baza_domu).is_file():
+        return False
+    store = Store(baza_domu)
+    try:
+        for nazwa in nazwy:
+            store.delete_meta(f"dev-ok:{nazwa}")
+            store.delete_meta(f"dev-since:{nazwa}")
+    finally:
+        store.close()
+    return True
+
+
 def _odmowa_sieci(dom_id: int, urzadzenia) -> str:
     linie = [f"Dom {dom_id}: odczyt iPadow laczy sie tylko z adresem IP dopuszczonym przez "
              "straznika sieci domu (dozwolone_sieci). Poza siecia domu:"]

@@ -2121,8 +2121,14 @@ def _wypisz_stan_odczytu(stan) -> None:
 async def cmd_dom_odczyt(args) -> int:
     """Odczyt procesow iPadow (lockdown) domu z konfiguracja w bazie —
     wylacznie administrator instancji (CLI), jak `dom-sieci`."""
-    from .domy import ZRODLO_BAZA  # noqa: PLC0415
-    from .konfiguracja_domu import OdmowaOdczytu, stan_odczytu, ustaw_odczyt  # noqa: PLC0415
+    from .domy import ZRODLO_BAZA, sciezka_bazy_domu  # noqa: PLC0415
+    from .konfiguracja_domu import (  # noqa: PLC0415
+        OdmowaOdczytu,
+        stan_odczytu,
+        ustaw_odczyt,
+        wyczysc_stan_odczytu,
+    )
+    from .sejf import SejfError  # noqa: PLC0415
 
     cfg = Config.load(args.config)
     inst, _ = cfg.split()
@@ -2140,7 +2146,17 @@ async def cmd_dom_odczyt(args) -> int:
         except (OdmowaOdczytu, LookupError) as exc:
             print(f"ODMOWA (nic nie zapisano): {exc}", file=sys.stderr)
             return 2
+        except SejfError as exc:
+            # Brak KIDWATCH_KEK albo sekret domu, ktory sie nie odszyfrowuje:
+            # bez nich nie ma walidacji calego domu, wiec nie ma zapisu.
+            print(f"ODMOWA (nic nie zapisano): sejf: {exc}", file=sys.stderr)
+            return 2
     stan = stan_odczytu(rejestr, args.dom, inst.device_read.records_path)
+    if wynik is not None and not wynik[0]["enabled"] and wynik[1]["enabled"]:
+        # Po COMMIT, zanim nadzorca przeladuje dom (~10 s): stare `dev-ok`
+        # sprzed wylaczenia nie moga dac alarmu zaraz po wlaczeniu.
+        wyczysc_stan_odczytu(sciezka_bazy_domu(args.dom, inst.store.path),
+                             [d.nazwa for d in stan.urzadzenia])
     _wypisz_stan_odczytu(stan)
     if stan.zrodlo != ZRODLO_BAZA:
         print("  UWAGA: dom w trybie yaml — dziala device_read z config.yaml, nie ten z bazy.")

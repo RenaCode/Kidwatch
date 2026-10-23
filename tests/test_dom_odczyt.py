@@ -8,14 +8,18 @@ Jak test_domy_e2.py: dane generyczne (RFC 5737), sekrety losowane, bez sieci."""
 
 from __future__ import annotations
 
+import base64
 import json
+import math
 import plistlib
+import secrets
 import sqlite3
 
 import pytest
+from pydantic import ValidationError
 
 import kidwatch.__main__ as cli
-from kidwatch.config import Config
+from kidwatch.config import Config, HomeDeviceReadConfig, HomeMdmConfig, TvConfig, UnifiConfig
 from kidwatch.domy import DOM_1, RejestrDomow
 from kidwatch.konfiguracja_domu import zbuduj_dom
 from kidwatch.sejf import Sejf
@@ -145,6 +149,9 @@ def test_wlacz_i_wylacz(dom, tmp_path, capsys, monkeypatch):
     rekordy = dom["inst"].device_read.records_path
     assert cli.build_watchers(home, Store(":memory:"), rekordy) == []  # brak rekordu
     rekordy.mkdir(parents=True)
+    # Uciety rekord: urzadzenie pominiete, nie wyjatek z build_watchers.
+    (rekordy / f"{UDID}.plist").write_bytes(plistlib.dumps({"HostID": "test"})[:60])
+    assert cli.build_watchers(home, Store(":memory:"), rekordy) == []
     (rekordy / f"{UDID}.plist").write_bytes(plistlib.dumps({"HostID": "test"}))
     watchers = cli.build_watchers(home, Store(":memory:"), rekordy)
     assert [w.device_name for w in watchers] == ["iPad Dziecka 1"]
@@ -213,6 +220,72 @@ def test_nieistniejacy_dom(dom, capsys):
     assert cli.main([*_cfg(dom), "dom-odczyt", "99", "--wlacz"]) == 2
     assert "nie ma domu 99" in capsys.readouterr().err
     assert cli.main([*_cfg(dom), "dom-odczyt", "99"]) == 2
+    assert _zrzut(_db(dom)) == zrzut
+
+
+@pytest.mark.parametrize("flaga", ["--co", "--alarm-po"])
+@pytest.mark.parametrize("wartosc", ["inf", "1e12", "nan", "-inf"])
+def test_nieskonczone_i_absurdalne_czasy_odrzucone(dom, capsys, flaga, wartosc):
+    """Przeglad #88: `--alarm-po inf` przechodzil walidacje, a w petli
+    timedelta(hours=inf) = OverflowError i restart domu w kolko; `--co inf`
+    = sen na zawsze (odczyt staje po cichu)."""
+    assert cli.main([*_cfg(dom), "dom-sieci", "1", "--dodaj", f"{HOST}/32"]) == 0
+    zrzut = _zrzut(_db(dom))
+    assert cli.main([*_cfg(dom), "dom-odczyt", "1", "--wlacz", f"{flaga}={wartosc}"]) == 2
+    assert "ODMOWA (nic nie zapisano)" in capsys.readouterr().err
+    assert _zrzut(_db(dom)) == zrzut
+
+
+@pytest.mark.parametrize("model, pole", [
+    (HomeDeviceReadConfig, "poll_seconds"),
+    (HomeDeviceReadConfig, "timeout_seconds"),
+    (HomeDeviceReadConfig, "unreachable_alert_hours"),
+    (TvConfig, "poll_seconds"),
+    (TvConfig, "unreachable_alert_hours"),
+    (UnifiConfig, "poll_seconds"),
+    (HomeMdmConfig, "silent_alert_hours"),
+    (HomeMdmConfig, "stuck_alert_hours"),
+])
+@pytest.mark.parametrize("wartosc", [math.inf, math.nan, 1e12])
+def test_modele_odrzucaja_czasy_spoza_granic(model, pole, wartosc):
+    with pytest.raises(ValidationError):
+        model.model_validate({pole: wartosc})
+    model.model_validate({pole: model.model_fields[pole].default})
+
+
+def test_wlaczenie_czysci_stary_stan_odczytu(dom, tmp_path, capsys):
+    """Stare `dev-ok`/`dev-since` z czasow odczytu w trybie yaml dawaly alarm
+    „brak udanego odczytu od N h” zaraz po wlaczeniu."""
+    baza = dom["inst"].store.path
+    store = Store(baza)
+    store.set_meta("dev-ok:iPad Dziecka 1", "2026-01-01T00:00:00+00:00")
+    store.set_meta("dev-since:iPad Dziecka 1", "2026-01-01T00:00:00+00:00")
+    store.set_meta("inny-klucz", "zostaje")
+    store.close()
+    assert cli.main([*_cfg(dom), "dom-sieci", "1", "--dodaj", f"{HOST}/32"]) == 0
+    # Zmiana bez wlaczenia nie rusza stanu.
+    assert cli.main([*_cfg(dom), "dom-odczyt", "1", "--co", "30"]) == 0
+    store = Store(baza)
+    assert store.get_meta("dev-ok:iPad Dziecka 1") is not None
+    store.close()
+    assert cli.main([*_cfg(dom), "dom-odczyt", "1", "--wlacz"]) == 0
+    store = Store(baza)
+    try:
+        assert store.get_meta("dev-ok:iPad Dziecka 1") is None
+        assert store.get_meta("dev-since:iPad Dziecka 1") is None
+        assert store.get_meta("inny-klucz") == "zostaje"
+    finally:
+        store.close()
+
+
+def test_zly_klucz_sejfu_czytelna_odmowa(dom, capsys, monkeypatch):
+    assert cli.main([*_cfg(dom), "dom-sieci", "1", "--dodaj", f"{HOST}/32"]) == 0
+    zrzut = _zrzut(_db(dom))
+    monkeypatch.setenv("KIDWATCH_KEK", base64.b64encode(secrets.token_bytes(32)).decode())
+    capsys.readouterr()
+    assert cli.main([*_cfg(dom), "dom-odczyt", "1", "--wlacz"]) == 2
+    err = capsys.readouterr().err
+    assert "ODMOWA (nic nie zapisano): sejf:" in err and "Traceback" not in err
     assert _zrzut(_db(dom)) == zrzut
 
 

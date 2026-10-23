@@ -264,6 +264,24 @@ def test_nieczytelny_rekord_parowania(tmp_path):
         load_pair_record(UDID, tmp_path)
 
 
+@pytest.mark.parametrize("tresc", [
+    # Uciety XML: plistlib rzuca ExpatError (ani OSError, ani InvalidFileException).
+    b'<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>HostID</key>'
+    b"<string>TAJNE-KANAREK",
+    # Binarny smiec z naglowkiem bplist.
+    b"bplist00" + bytes(range(256)) * 3,
+    # Poprawny plist, ale nie slownik.
+    b'<?xml version="1.0"?><plist version="1.0"><string>TAJNE-KANAREK</string></plist>',
+])
+def test_uszkodzony_rekord_parowania_pomija_urzadzenie(tmp_path, tresc):
+    """Kazdy blad parsowania = DeviceUnavailable (urzadzenie pominiete, dom
+    wstaje), w komunikacie bez tresci pliku."""
+    (tmp_path / f"{UDID}.plist").write_bytes(tresc)
+    with pytest.raises(DeviceUnavailable, match="nieczytelny") as exc:
+        load_pair_record(UDID, tmp_path)
+    assert "TAJNE-KANAREK" not in str(exc.value)
+
+
 def test_poprawny_rekord_parowania_sie_wczytuje(tmp_path):
     import plistlib  # noqa: PLC0415
 
