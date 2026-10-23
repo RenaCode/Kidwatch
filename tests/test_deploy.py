@@ -634,3 +634,18 @@ def test_mdm_HSTS_i_nosniff_bez_przekierowan():
         "default-kidwatch-mdm-naglowki@kubernetescrd")
     sciezki = [p["path"] for r in ingressy[0]["spec"]["rules"] for p in r["http"]["paths"]]
     assert sciezki == ["/mdm/"]
+
+
+@pytestmark_helm
+def test_egress_dom_zakres_portow_endPort():
+    """Lockdown iPada: 62078 to tylko wejscie; uslugi (lista procesow)
+    startuja na portach dynamicznych. Bez zakresu pod dostaje
+    ConnectionRefused (2026-10-23). `endPort` opcjonalny — bez niego
+    regula jak dotad (jeden port)."""
+    spec, _ = _egress(*DOM, "networkPolicy.egress.wDomu[2].cidr=192.0.2.20/32",
+                      "networkPolicy.egress.wDomu[2].port=49152",
+                      "networkPolicy.egress.wDomu[2].endPort=65535")
+    *_, tv, udm, ipad = spec["egress"]
+    assert ipad == {"to": [{"ipBlock": {"cidr": "192.0.2.20/32"}}],
+                    "ports": [{"protocol": "TCP", "port": 49152, "endPort": 65535}]}
+    assert "endPort" not in tv["ports"][0] and "endPort" not in udm["ports"][0]
