@@ -295,6 +295,11 @@ class Outbox:
         return out
 
     async def send_all(self, notes: Sequence[Notification]) -> None:
+        self.zapisz(notes)
+
+    def zapisz(self, notes: Sequence[Notification]) -> None:
+        """To samo co send_all, ale synchronicznie: czujka moze wstawic notki
+        w tej samej transakcji co swoj kursor (mdm.MdmWatcher.poll_do)."""
         notes = self._domu(notes)
         if not notes:
             return

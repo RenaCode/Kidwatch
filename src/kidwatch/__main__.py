@@ -166,7 +166,8 @@ OUTBOX_FLUSH_ON_STOP_SECONDS = 10.0
 
 
 def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
-                       classifier: Classifier, *, tetno_procesu: bool = False, alarm=None):
+                       classifier: Classifier, *, tetno_procesu: bool = False, alarm=None,
+                       alarm_czujek=None):
     """Srodowisko domu (domy.HomeRuntime): baza domu, silnik, kolejka z `dom_id`,
     zrodlo DNS i petle wlaczone w konfiguracji domu. Kolejnosc budowy jak
     przed domami — brak sekretu zrodla przerywa start, zanim ruszy panel.
@@ -176,7 +177,10 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
     nadzorcy, zeby awaria jednego domu nie restartowala poda.
 
     `alarm` (alarm instancji): dom ≠ 1, ktorego kolejka przechodzi w stan
-    wstrzymania (bez trybu kont, §4.2), zglasza to administratorowi."""
+    wstrzymania (bez trybu kont, §4.2), zglasza to administratorowi.
+    `alarm_czujek` (alarm instancji): czujka MDM domu stojaca od kilku obiegow
+    (mdm.mdm_loop) — osobno od `alarm`, zeby nie zmieniac, kiedy dziala alarm
+    wstrzymanej kolejki."""
     from .domy import (  # noqa: PLC0415
         DOM_1,
         HomeRuntime,
@@ -301,8 +305,8 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
         log.info("czujka MDM wlaczona: %s, co %.0f s, token %s", mdm_cfg.url,
                  mdm_cfg.poll_seconds, "instancji" if zakres == "instancja" else "domu")
         rt.dodaj_petle("mdm", lambda: mdm_loop(
-            MdmWatcher(mdm_api, store, mdm_cfg, zakres, dom_id=dom_id), dispatcher,
-            mdm_cfg.poll_seconds
+            MdmWatcher(mdm_api, store, mdm_cfg, zakres, dom_id=dom_id, tz=home.tz), dispatcher,
+            mdm_cfg.poll_seconds, alarm=alarm_czujek,
         ))
 
         async def zamknij_mdm() -> None:
@@ -481,7 +485,8 @@ def przeladowanie_domow(rejestr, inst: InstanceConfig, konfiguracje: dict, stany
     return Przeladowanie(
         wersja=wersja, konfiguracja=konfiguracja,
         runtime=lambda dom_id, home: build_home_runtime(
-            dom_id, inst, home, Classifier(inst.app_map_path), alarm=alarm),
+            dom_id, inst, home, Classifier(inst.app_map_path), alarm=alarm,
+            alarm_czujek=alarm),
         po_zmianie=po_zmianie, stany=stany, materializuj=materializuj,
         zapamietaj=rejestr.zapamietaj_dobra, zapisz_blad=rejestr.zapisz_blad_przeladowania,
         start_ok=rejestr.zapisz_start_ok,
@@ -510,7 +515,8 @@ async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id:
         dom = rejestr.dom(dom_id)
         wersja = dom.wersja if dom is not None else None
         home = home_domu_z_bazy(rejestr, dom_id)
-        runtime = build_home_runtime(dom_id, inst, home, Classifier(inst.app_map_path))
+        runtime = build_home_runtime(dom_id, inst, home, Classifier(inst.app_map_path),
+                                     alarm_czujek=alarm)
     except Exception as exc:  # noqa: BLE001 — kazdy blad startu domu: kopia albo kod 2
         blad_startu, blad = exc, str(exc) or type(exc).__name__
         do_alarmu = opis_bledu(exc)
@@ -559,7 +565,8 @@ async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id:
     try:
         kopia = zbuduj_dom_z_kopii(rejestr, dom_id, Sejf.z_srodowiska(), materializuj=True)
         if kopia is not None:
-            runtime = build_home_runtime(dom_id, inst, kopia[1], Classifier(inst.app_map_path))
+            runtime = build_home_runtime(dom_id, inst, kopia[1], Classifier(inst.app_map_path),
+                                         alarm_czujek=alarm)
     except Exception as exc2:  # noqa: BLE001
         kopia, kopia_blad = None, str(exc2) or type(exc2).__name__
     if kopia is None:
@@ -597,7 +604,8 @@ async def start_domu_z_yaml(rejestr, inst: InstanceConfig, home: HomeConfig, ala
     from .domy import DOM_1  # noqa: PLC0415
 
     try:
-        runtime = build_home_runtime(DOM_1, inst, home, Classifier(inst.app_map_path))
+        runtime = build_home_runtime(DOM_1, inst, home, Classifier(inst.app_map_path),
+                                     alarm_czujek=alarm)
     except Exception as exc:
         log.error("Dom 1 (config.yaml) nie wystartowal — %s", exc)
         if alarm is not None:
@@ -658,7 +666,8 @@ def start_czujki_mdm_instancji(cfg: Config, inst: InstanceConfig, konfiguracje: 
     store = Store(str(Path(inst.store.path).parent / "mdm-instancji.db"))
     watcher = MdmWatcher(api, store, mdm_cfg, ZAKRES_SERWER)
     zadanie = asyncio.create_task(
-        mdm_loop(watcher, AlarmyInstancji(alarm), mdm_cfg.poll_seconds, aktywny=aktywny),
+        mdm_loop(watcher, AlarmyInstancji(alarm), mdm_cfg.poll_seconds, aktywny=aktywny,
+                 alarm=alarm),
         name="mdm-instancja")
     zadanie.add_done_callback(
         lambda t: t.cancelled() or log.error("czujka MDM instancji zakonczyla sie: %r",

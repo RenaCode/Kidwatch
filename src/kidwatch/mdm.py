@@ -37,8 +37,8 @@ import hmac
 import json
 import logging
 import os
-from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 
 import httpx
@@ -214,8 +214,31 @@ def _kind(device: dict | None) -> str:
 
 #: Zdarzenie serwera -> (rodzaj, priorytet, tytul). None = nie powiadamiamy.
 #: Klucze to `kind` z tabeli events w kidwatch_mdm/store.py.
+def _okno_instalacji(event: dict, detail: Any, tz: tzinfo | None) -> str:
+    """„wykryta 13:36, zainstalowana po 07:51" w strefie domu.
+
+    Lista aplikacji przychodzi co kilkanascie minut (a po restarcie, przy
+    zablokowanym czy wylaczonym iPadzie — znacznie pozniej), wiec chwila
+    wykrycia to nie chwila instalacji: aplikacja doszla miedzy poprzednia
+    lista (`previous_at`, serwer MDM od 2026-10-23) a ta. Zdarzenie bez tego
+    pola (starszy serwer, pierwsza lista) — pusto, tekst jak dawniej."""
+    prev = detail.get("previous_at") if isinstance(detail, dict) else None
+    if not prev or not event.get("at"):
+        return ""
+    try:
+        found = datetime.fromisoformat(event["at"]).astimezone(tz or UTC)
+        since = datetime.fromisoformat(prev).astimezone(tz or UTC)
+    except (TypeError, ValueError):
+        return ""
+
+    def kiedy(dt: datetime) -> str:
+        return f"{dt:%H:%M}" if dt.date() == found.date() else f"{dt:%d.%m %H:%M}"
+
+    return f"wykryta {kiedy(found)}, zainstalowana po {kiedy(since)}"
+
+
 def _describe(
-    event: dict, name: str, device_kind: str = "ipad"
+    event: dict, name: str, device_kind: str = "ipad", tz: tzinfo | None = None
 ) -> tuple[NotifyKind, int, str, str] | None:
     kind = event["kind"]
     iphone = device_kind == "iphone"
@@ -275,11 +298,22 @@ def _describe(
         apps = detail.get("apps", []) if isinstance(detail, dict) else []
         names = ", ".join(a.get("name") or a.get("id") for a in apps) or "?"
         added = kind == "apps_installed"
+        okno = _okno_instalacji(event, detail, tz) if added else ""
         return (
             NotifyKind.DEVICE_INVENTORY,
             3 if added else 2,
             f"{name}: {'nowa aplikacja' if added else 'usunieta aplikacja'}",
-            names,
+            f"{names}\n{okno}" if okno else names,
+        )
+    if kind == "apps_list_failing":
+        count = detail.get("count") if isinstance(detail, dict) else None
+        return (
+            NotifyKind.MDM,
+            4,
+            f"{name}: lista aplikacji nie dziala",
+            f"{noun} odrzuca zapytanie o liste aplikacji ({count or 'kilka'} razy z rzedu). "
+            "Nowe aplikacje nie sa wykrywane, dopoki nie odpowie poprawnie — serwer MDM "
+            "ponawia z rosnaca przerwa. Szczegoly bledu w zakladce MDM.",
         )
     if kind == "push_token_dead":
         return (
@@ -454,10 +488,13 @@ class MdmWatcher:
         cfg: MdmConfig,
         zakres: str = ZAKRES_INSTANCJA,
         dom_id: int | None = None,
+        tz: tzinfo | None = None,
     ) -> None:
         self.api = api
         self.store = store
         self.cfg = cfg
+        #: Strefa domu — godziny w tekstach (okno instalacji aplikacji).
+        self.tz = tz
         #: ZAKRES_INSTANCJA (jak przed E3b), ZAKRES_DOM albo ZAKRES_SERWER.
         #: Z `dom_id` to tylko przypuszczenie (porownanie z MDM_ADMIN_TOKEN) —
         #: rozstrzyga serwer (`/api/whoami`) przy pierwszym odczycie.
@@ -582,6 +619,27 @@ class MdmWatcher:
         )
         return self.process(data, now)
 
+    async def poll_do(self, now: datetime, dispatcher) -> None:
+        """Obieg petli: odczyt serwera i notki do wysylki.
+
+        Z kolejka w tej samej bazie (Outbox, metoda `zapisz`) kursor, klucze
+        dedupu i notki ida JEDNA transakcja. Wczesniej kursor i `sent` byly
+        zapisane, zanim notka trafila do outboxa — proces zabity albo blad
+        zapisu w tej chwili gubil powiadomienie na zawsze (kursor juz dalej,
+        klucz zajety). Teraz restart przed COMMIT cofa wszystko: nastepny
+        obieg czyta te same zdarzenia od starego kursora i notka powstaje raz.
+
+        Dispatcher bez `zapisz` albo z inna baza (alarmy instancji, testy) —
+        jak dotad: poll_async, potem send_all."""
+        if not _kolejka_w_bazie(dispatcher, self.store):
+            await dispatcher.send_all(await self.poll_async(now))
+            return
+        data = await asyncio.to_thread(
+            self.fetch, self._kursor_obiegu(), self.store.get_meta(INSTANCE_KEY)
+        )
+        with self.store.transakcja():
+            dispatcher.zapisz(self.process(data, now))
+
     def _reset(self, data: dict, now: datetime) -> list[Notification]:
         reset = data.get("reset")
         if not reset:
@@ -630,7 +688,9 @@ class MdmWatcher:
         for event in events:
             last = max(last, int(event["id"]))
             device = by_udid.get(event.get("udid"))
-            described = _describe(event, self._name(device, event.get("udid")), _kind(device))
+            described = _describe(
+                event, self._name(device, event.get("udid")), _kind(device), self.tz
+            )
             if described is None:
                 continue
             kind, priority, title, text = described
@@ -851,6 +911,13 @@ class MdmWatcher:
         return out
 
 
+def _kolejka_w_bazie(dispatcher, store: Store) -> bool:
+    """Czy dispatcher to kolejka (Outbox) w tej samej bazie co kursor czujki."""
+    return callable(getattr(dispatcher, "zapisz", None)) and getattr(
+        dispatcher, "store", None
+    ) is store
+
+
 def _max_id(data: dict) -> int | None:
     """Najwyzszy numer w porcji zdarzen PRZED filtrem czujki serwera — kursor
     przesuwa sie takze po zdarzeniach domow, ktorych ta czujka nie zglasza."""
@@ -877,6 +944,54 @@ class AlarmyInstancji:
                 log.exception("alarm MDM instancji nie wyszedl: %s", note.title)
 
 
+#: Tyle nieudanych obiegow czujki MDM z rzedu = alarm instancji.
+STOI_PO_OBIEGACH = 5
+
+
+class _StanCzujki:
+    """Seria nieoczekiwanych bledow czujki MDM i alarmy o niej."""
+
+    def __init__(self, watcher: MdmWatcher, alarm) -> None:
+        self.alarm = alarm
+        self.kto = "MDM instancji" if watcher.dom_id is None else f"Dom {watcher.dom_id}: MDM"
+        self.bledy = 0
+        self.nastepny = STOI_PO_OBIEGACH
+        self.zgloszony = False
+
+    async def _wyslij(self, tytul: str, tresc: str) -> None:
+        if self.alarm is None:
+            log.error("alarm czujki (tylko log): %s — %s", tytul, tresc)
+            return
+        try:
+            await self.alarm(tytul, tresc)
+        except Exception:
+            log.exception("alarm czujki MDM nie wyszedl: %s", tytul)
+
+    async def nieudany(self, exc: BaseException) -> None:
+        self.bledy += 1
+        if self.bledy < self.nastepny:
+            return
+        self.nastepny = self.bledy * 2
+        self.zgloszony = True
+        await self._wyslij(
+            f"{self.kto}: czujka MDM stoi ({type(exc).__name__})",
+            f"Czujka MDM nie przeszla {self.bledy} obiegow z rzedu (blad "
+            f"{type(exc).__name__}, szczegoly w logu kidwatch). Do naprawy NIE przyjda "
+            "alarmy MDM: nowe aplikacje, zdjety profil, cichy iPad.",
+        )
+
+    async def udany(self) -> None:
+        if self.zgloszony:
+            await self._wyslij(
+                f"{self.kto}: czujka MDM znow dziala",
+                f"Po {self.bledy} nieudanych obiegach czujka MDM znow czyta serwer. "
+                "Zdarzenia z przerwy przyjda teraz (kursor stal w miejscu).",
+            )
+        self.bledy = 0
+        self.nastepny = STOI_PO_OBIEGACH
+        self.zgloszony = False
+
+
 async def mdm_loop(
     watcher: MdmWatcher,
     dispatcher,
@@ -884,12 +999,20 @@ async def mdm_loop(
     sleep=asyncio.sleep,
     max_iterations: int | None = None,
     aktywny: Callable[[], bool] | None = None,
+    alarm: Callable[[str, str], Awaitable[None]] | None = None,
 ) -> None:
     """Odpytuje serwer MDM. Blad logujemy raz na rodzaj, jak czujka UniFi.
     `aktywny()` False = obieg pominiety (czujka instancji, gdy alarmy serwera
     daje dom z tokenem instancji). Po przerwie czujka startuje od biezacego
-    konca dziennika — zdarzenia z przerwy obsluzyly czujki domow."""
+    konca dziennika — zdarzenia z przerwy obsluzyly czujki domow.
+
+    `alarm(tytul, tresc)` (alarm instancji): nieoczekiwany blad obiegu
+    (np. trwaly wyjatek w process) daje dotad tylko traceback co obieg, a
+    wszystkie alarmy MDM tego domu milkna. Po STOI_PO_OBIEGACH nieudanych
+    obiegach z rzedu idzie alarm, potem z rosnacym odstepem (podwojna liczba
+    obiegow), a po pierwszym udanym — „znow dziala"."""
     last_error: str | None = None
+    stoi = _StanCzujki(watcher, alarm)
     iteration = 0
     while max_iterations is None or iteration < max_iterations:
         iteration += 1
@@ -903,11 +1026,11 @@ async def mdm_loop(
                 watcher.od_nowa = True
             watcher.aktywna = True
         try:
-            notes = await watcher.poll_async(datetime.now(UTC))
+            await watcher.poll_do(datetime.now(UTC), dispatcher)
             if last_error is not None:
                 log.info("mdm: serwer znowu odpowiada")
                 last_error = None
-            await dispatcher.send_all(notes)
+            await stoi.udany()
         except asyncio.CancelledError:
             raise
         except MdmError as exc:
@@ -917,6 +1040,7 @@ async def mdm_loop(
                     logging.ERROR if exc.status in (401, 403) else logging.WARNING, "mdm: %s", exc
                 )
                 last_error = kind
-        except Exception:
+        except Exception as exc:
             log.exception("mdm: nieoczekiwany blad")
+            await stoi.nieudany(exc)
         await sleep(interval_seconds)

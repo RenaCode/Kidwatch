@@ -90,6 +90,14 @@ PUSH_BACKOFF = (
 )
 MAX_PUSH_GAP = timedelta(hours=4)
 
+#: Pierwsza przerwa po bledzie odczytu (lista aplikacji, DeviceInformation);
+#: kolejne bledy ja podwajaja, az do `refresh_hours`.
+ERROR_RETRY_FIRST = timedelta(minutes=15)
+
+#: Tyle bledow listy aplikacji z rzedu = zdarzenie `apps_list_failing`
+#: (alarm techniczny w Kidwatchu, raz na serie).
+APPS_ERROR_SERIES = 3
+
 
 def push_gap(stalled: timedelta) -> timedelta:
     """Odstep miedzy pushami po `stalled` bez postepu kolejki."""
@@ -485,20 +493,35 @@ class MDMService:
             if row is None or row["udid"] != udid:
                 log.warning("odpowiedz na nieznana komende %s od %s", cmd_uuid, udid)
             elif status == "Acknowledged":
-                self.store.finish_command(cmd_uuid, "acknowledged", message)
-                self._on_result(device, row["request_type"], cmd_uuid, message)
+                # Jedna transakcja: zamkniecie komendy, zdarzenia i nowy stan
+                # (np. lista aplikacji). Restart w srodku cofa calosc — komenda
+                # zostaje `sent` i iPad dostanie ja ponownie. Osobne zapisy
+                # dawaly dwa okna: zdarzenie bez nowej listy (po restarcie ta
+                # sama aplikacja „nowa” drugi raz) i zamknieta komende bez
+                # wyniku (nowa aplikacja dopiero przy nastepnej liscie).
+                try:
+                    with self.store.tx():
+                        self.store.finish_command(cmd_uuid, "acknowledged", message)
+                        self._on_result(device, row["request_type"], cmd_uuid, message)
+                except Exception as exc:
+                    # Blad NASZEJ obslugi wyniku (np. uszkodzony stan w bazie),
+                    # nie iPada. Wynik cofniety, ale komenda nie moze zostac
+                    # `sent`: FIFO dawaloby ja w kazdej sesji i nic za nia
+                    # (np. profil ograniczen) by nie przeszlo. Zamykamy jako
+                    # blad osobnym zapisem. BaseException (zabicie, SIGTERM)
+                    # przechodzi dalej — wtedy cofa sie calosc i iPad ponowi.
+                    kind = type(exc).__name__
+                    log.error("wynik %s od %s nieprzetworzony: %s",
+                              row["request_type"], device["label"], kind)
+                    self._command_failed(
+                        udid, row, "ResultError", message,
+                        [{"ErrorDomain": "kidwatch-mdm", "LocalizedDescription":
+                          f"wynik nieprzetworzony: {kind}"}],
+                    )
             elif status in ("Error", "CommandFormatError"):
-                chain = message.get("ErrorChain") or []
-                error = json.dumps(chain, ensure_ascii=False, default=str)
-                final = "error" if status == "Error" else "format_error"
-                self.store.finish_command(cmd_uuid, final, message, error)
-                self.store.event(
-                    "command_error",
-                    udid,
-                    {"request_type": row["request_type"], "status": status, "chain": chain},
+                self._command_failed(
+                    udid, row, status, message, message.get("ErrorChain") or []
                 )
-                if row["request_type"] == "InstallProfile":
-                    self.store.mark_profile_failed(cmd_uuid)
             elif status == "NotNow":
                 self.store.finish_command(cmd_uuid, "not_now", message)
             else:
@@ -517,6 +540,32 @@ class MDMService:
         if nxt is None:
             return Response(200, b"")
         return Response(200, plistlib.dumps(nxt.command))
+
+    def _command_failed(self, udid: str, row, status: str, message: dict, chain: list) -> None:
+        """Komenda zakonczona bledem: zamkniecie, zdarzenie, skutki — jeden zapis."""
+        cmd_uuid = row["uuid"]
+        request_type = row["request_type"]
+        error = json.dumps(chain, ensure_ascii=False, default=str)
+        final = "format_error" if status == "CommandFormatError" else "error"
+        with self.store.tx():
+            self.store.finish_command(cmd_uuid, final, message, error)
+            self.store.event(
+                "command_error",
+                udid,
+                {"request_type": request_type, "status": status, "chain": chain},
+            )
+            if request_type == "InstallProfile":
+                self.store.mark_profile_failed(cmd_uuid)
+            if request_type == "InstalledApplicationList":
+                streak = _error_streak(self.store.attempts(udid, request_type))
+                if streak == APPS_ERROR_SERIES:
+                    # Raz na serie (licznik przechodzi przez prog raz, zeruje
+                    # go dopiero Acknowledged). command_error dla odczytow
+                    # Kidwatch pomija — bez tego nowe aplikacje przestaja byc
+                    # wykrywane bez zadnego sladu.
+                    self.store.event(
+                        "apps_list_failing", udid, {"count": streak, "chain": chain}
+                    )
 
     def _on_result(self, device, request_type: str, cmd_uuid: str, msg: dict) -> None:
         udid = device["udid"]
@@ -566,16 +615,32 @@ class MDMService:
                 ),
                 key=lambda a: a["id"],
             )
+            missing: dict[str, dict] = {}
             if device["apps_json"]:
                 before = {a["id"]: a for a in json.loads(device["apps_json"])}
                 after = {a["id"]: a for a in slim}
-                added = [after[i] for i in after.keys() - before.keys()]
-                removed = [before[i] for i in before.keys() - after.keys()]
+                # Brak w JEDNEJ liscie to jeszcze nie usuniecie: iPad potrafi
+                # oddac niepelna liste, a przy liscie co 15 min kazde takie
+                # mrugniecie dawalo pare „usunieta”/„nowa aplikacja”. Brak
+                # czeka w `apps_missing_json` na nastepna liste: dalej brak =
+                # usunieta, wrocila = nic sie nie stalo.
+                pending = json.loads(device["apps_missing_json"] or "{}")
+                added = [after[i] for i in sorted(after.keys() - before.keys() - pending.keys())]
+                removed = [pending[i] for i in sorted(pending.keys() - after.keys())]
+                missing = {i: before[i] for i in sorted(before.keys() - after.keys())}
                 if added:
-                    self.store.event("apps_installed", udid, {"apps": added})
+                    # `previous_at`: czas poprzedniej listy — aplikacja doszla
+                    # miedzy nia a ta (czas zdarzenia). Kidwatch pokazuje okno,
+                    # zeby spoznione wykrycie nie udawalo swiezej instalacji.
+                    detail: dict[str, Any] = {"apps": added}
+                    if device["apps_at"]:
+                        detail["previous_at"] = device["apps_at"]
+                    self.store.event("apps_installed", udid, detail)
                 if removed:
                     self.store.event("apps_removed", udid, {"apps": removed})
-            self.store.update_device(udid, apps_json=_json(slim), apps_at=now)
+            self.store.update_device(
+                udid, apps_json=_json(slim), apps_at=now, apps_missing_json=_json(missing)
+            )
         elif request_type == "InstallProfile":
             self.store.mark_profile_installed(cmd_uuid)
 
@@ -670,6 +735,8 @@ class MDMService:
         now = now or now_utc()
         stats = {"devices": 0, "enqueued": 0, "pushed": 0, "push_failed": 0}
         refresh_after = timedelta(hours=self.policy.refresh_hours)
+        apps_minutes = self.policy.apps_refresh_minutes
+        apps_after = timedelta(minutes=apps_minutes) if apps_minutes else None
         for device in self.store.devices():
             if device["checked_out_at"] or device["push_token"] is None:
                 continue
@@ -683,10 +750,20 @@ class MDMService:
             )
             if self.policy.kind_mismatch(device["label"], device["product"]):
                 self._kind_mismatch(device)
-            info_at = from_iso(device["info_at"])
-            if info_at is None or now - info_at >= refresh_after:
+            if self._refresh_due(udid, "DeviceInformation", device["info_at"],
+                                 refresh_after, refresh_after, now):
                 for request_type in REFRESH_COMMANDS:
                     self._enqueue_refresh(udid, request_type)
+            elif apps_after is not None and self._refresh_due(
+                udid, "InstalledApplicationList", device["apps_at"], apps_after,
+                refresh_after, now,
+            ):
+                # Sama lista aplikacji, czesciej niz ciezkie zapytania.
+                # Najwyzej jedna oczekujaca na iPada (_enqueue_refresh sprawdza
+                # store.pending): iPad zablokowany (NotNow) albo offline nie
+                # zbiera kolejnych komend, a push ma wtedy rosnacy odstep
+                # (_push_due), bo bez nowej komendy nie ma postepu.
+                self._enqueue_refresh(udid, "InstalledApplicationList")
 
             self._ensure_restrictions(device, now)
 
@@ -713,6 +790,29 @@ class MDMService:
         # ze uzgadnianie nie przeszlo od godziny, takze po restarcie.
         self.store.set_setting("last_reconcile_ok_at", iso(now))
         return stats
+
+    def _refresh_due(
+        self,
+        udid: str,
+        request_type: str,
+        ok_at: str | None,
+        every: timedelta,
+        cap: timedelta,
+        now: datetime,
+    ) -> bool:
+        """Czy pora zapytac ponownie. Liczy sie ostatnia PROBA (koniec komendy
+        z dowolnym wynikiem), nie tylko udana odpowiedz: po bledzie `ok_at`
+        stoi w miejscu i kazdy obieg (5 min) dawal nowa komende i push. Po
+        serii bledow przerwa rosnie (15 min, 30, 60 ... do `cap`), pierwsze
+        Acknowledged wraca do `every`."""
+        rows = self.store.attempts(udid, request_type)
+        times = [t for t in (from_iso(ok_at), from_iso(rows[0]["done_at"]) if rows else None)
+                 if t is not None]
+        if not times:
+            return True
+        errors = _error_streak(rows)
+        gap = every if not errors else min(ERROR_RETRY_FIRST * 2 ** (errors - 1), cap)
+        return now - max(times) >= gap
 
     def _ensure_restrictions(self, device, now: datetime) -> None:
         """Profil ograniczen w kolejce, gdy go nie ma, jest stary albo minela
@@ -810,6 +910,16 @@ class MDMService:
         cmd = self.store.enqueue(udid, request_type, body, origin="api")
         self.kick(udid)
         return cmd
+
+
+def _error_streak(rows) -> int:
+    """Ile ostatnich prob (od najnowszej) skonczylo sie bledem."""
+    streak = 0
+    for row in rows:
+        if row["status"] == "acknowledged":
+            break
+        streak += 1
+    return streak
 
 
 def _dom(device) -> int:
