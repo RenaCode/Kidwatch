@@ -81,6 +81,9 @@ CREATE TABLE IF NOT EXISTS devices (
     profiles_json    TEXT,
     apps_json        TEXT,
     apps_at          TEXT,
+    -- Aplikacje, ktorych brak w ostatniej liscie, a byly w poprzedniej:
+    -- {id: aplikacja}. Usuniecie dopiero, gdy brak tez w nastepnej.
+    apps_missing_json TEXT,
     ddm_status_json  TEXT,
     ddm_status_at    TEXT,
     -- DeclarationsToken, ktory iPad ostatnio pobral. Inny niz biezacy =
@@ -237,6 +240,11 @@ class Store:
     def _migrate(self) -> None:
         """Kolumny dodane po pierwszym wdrozeniu: CREATE IF NOT EXISTS nie
         zmienia istniejacej tabeli na PVC."""
+        dev_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(devices)")}
+        if "apps_missing_json" not in dev_cols:
+            # Tylko dopisana kolumna (NULL): obraz sprzed niej czyta i pisze
+            # te baze bez zmian, wiec wycofanie jest bezpieczne.
+            self.conn.execute("ALTER TABLE devices ADD COLUMN apps_missing_json TEXT")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(enrollments)")}
         if "expected_udid" not in cols:
             self.conn.execute("ALTER TABLE enrollments ADD COLUMN expected_udid TEXT")
@@ -403,6 +411,15 @@ class Store:
             (udid, request_type),
         )
         return row is not None
+
+    def attempts(self, udid: str, request_type: str, limit: int = 20) -> list[sqlite3.Row]:
+        """Zakonczone proby danej komendy (bez anulowanych), od najnowszej."""
+        return self.query(
+            "SELECT status, done_at FROM commands WHERE udid = ? AND request_type = ? "
+            "AND status IN ('acknowledged', 'error', 'format_error') "
+            "ORDER BY done_at DESC, rowid DESC LIMIT ?",
+            (udid, request_type, limit),
+        )
 
     def last_progress_at(self, udid: str) -> datetime | None:
         """Ostatni postep kolejki: odpowiedz na komende albo nowa komenda.

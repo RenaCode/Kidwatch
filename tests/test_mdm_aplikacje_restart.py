@@ -444,3 +444,192 @@ async def test_end_to_end_new_app_through_real_server(mdm, tmp_path):
     assert kanal.sent[0].startswith("Nowa Gra\nwykryta "), kanal.sent
     assert ", zainstalowana po " in kanal.sent[0]
     store.close()
+
+
+# ============================== przeglad #87: blad listy aplikacji (pkt 1)
+class _Zegar:
+    """Jeden czas dla serwera MDM (done_at, zdarzenia) i obiegow uzgadniania."""
+
+    def __init__(self, monkeypatch):
+        import kidwatch_mdm.service as service_mod
+        import kidwatch_mdm.store as store_mod
+
+        self.t = now_utc()
+        monkeypatch.setattr(store_mod, "now_utc", lambda: self.t)
+        monkeypatch.setattr(service_mod, "now_utc", lambda: self.t)
+
+
+def _blad(request_type: str):
+    def responder(cmd: dict) -> dict:
+        if cmd["Command"]["RequestType"] == request_type:
+            return {"Status": "Error", "ErrorChain": [{"ErrorCode": 12345}]}
+        return default_responder(cmd)
+
+    return responder
+
+
+def _godziny_z_bledem(svc, ipad, zegar, request_type: str, hours: int = 6) -> dict:
+    """Obiegi co 5 min przez `hours`; iPad odpowiada od razu (Error na
+    `request_type`). Zwraca liczby komend tego rodzaju i pushy."""
+    pushes_before = len(svc.pusher.pushes)
+    cmds = 0
+    start = zegar.t
+    while zegar.t - start < timedelta(hours=hours):
+        zegar.t += timedelta(minutes=5)
+        svc.reconcile(now=zegar.t)
+        cmds += sum(c["Command"]["RequestType"] == request_type
+                    for c in run_commands(svc, ipad, _blad(request_type)))
+    return {"commands": cmds, "pushes": len(svc.pusher.pushes) - pushes_before}
+
+
+def _failing(svc) -> list[dict]:
+    return [json.loads(e["detail"]) for e in svc.store.events()
+            if e["kind"] == "apps_list_failing"]
+
+
+def test_app_list_error_backs_off_and_alarms_once(svc, monkeypatch):
+    """iPad odpowiada Error na liste aplikacji przez 6 h. Rytm liczony od
+    apps_at (tylko Acknowledged) dawal nowa komende i push co obieg. Teraz od
+    ostatniej proby, z przerwa 15, 30, 60, 120 min."""
+    zegar = _Zegar(monkeypatch)
+    ipad = _gotowy(svc)
+    n = _godziny_z_bledem(svc, ipad, zegar, APPS)
+    print("6 h bledu listy aplikacji:", n)
+    assert n["commands"] <= 7, n
+    assert n["pushes"] <= 10, n
+    # Seria widoczna raz (prog 3), nie co blad.
+    assert len(_failing(svc)) == 1 and _failing(svc)[0]["count"] == 3
+    ev = next(e for e in svc.store.events() if e["kind"] == "apps_list_failing")
+    kind, prio, title, _ = kw_mdm._describe(dict(ev), "iPad Dziecka")
+    assert title == "iPad Dziecka: lista aplikacji nie dziala" and prio == 4
+    # Pierwsze Acknowledged zeruje serie: znowu co 15 min.
+    svc.store.enqueue(ipad.udid, APPS, {})
+    run_commands(svc, ipad)
+    zegar.t += timedelta(minutes=16)
+    svc.reconcile(now=zegar.t)
+    assert _pending(svc, ipad.udid, APPS) == 1
+
+
+def test_device_information_error_backs_off(tmp_path, ca, monkeypatch):
+    """Ten sam wzor dla DeviceInformation: `info_at` po Error stoi, wiec
+    kazdy obieg kolejkowal wszystkie cztery odswiezenia. Bez rytmu listy
+    aplikacji (0), zeby liczyc tylko pushe tego bledu."""
+    svc = _svc(tmp_path / "mdm.db", ca, Policy(
+        devices={"dziecko1": DevicePolicy(name="iPad")}, apps_refresh_minutes=0))
+    zegar = _Zegar(monkeypatch)
+    ipad = _gotowy(svc)
+    zegar.t += timedelta(hours=6)  # pora ciezkiego odswiezenia
+    n = _godziny_z_bledem(svc, ipad, zegar, "DeviceInformation")
+    print("6 h bledu DeviceInformation:", n)
+    assert n["commands"] <= 6, n
+    assert n["pushes"] <= 12, n
+
+
+# ======================= przeglad #87: wyjatek w obsludze wyniku (pkt 2)
+def test_broken_result_closes_command_and_queue_moves_on(svc, caplog):
+    ipad = _gotowy(svc)
+    svc.store.update_device(ipad.udid, apps_json="[1, 2]")  # uszkodzony stan
+    svc.store.enqueue(ipad.udid, APPS, {})
+    svc.store.query("DELETE FROM profile_state")
+    svc.reconcile()  # profil ograniczen do kolejki ZA lista aplikacji
+    seen = run_commands(svc, ipad)
+    assert [c["Command"]["RequestType"] for c in seen] == [APPS, "InstallProfile"]
+    apps_cmd = svc.store.command(seen[0]["CommandUUID"])
+    assert apps_cmd["status"] == "error" and "TypeError" in apps_cmd["error"]
+    errors = [json.loads(e["detail"]) for e in svc.store.events()
+              if e["kind"] == "command_error"]
+    assert errors[-1]["request_type"] == APPS and errors[-1]["status"] == "ResultError"
+    assert "TypeError" in caplog.text and ipad.udid not in caplog.text
+    # Nastepna sesja: lista nie wraca w kolko.
+    assert run_commands(svc, ipad) == []
+
+
+# ========================== przeglad #87: migotanie listy aplikacji (pkt 3)
+def _lista(svc, ipad, ids: list[str]) -> None:
+    def responder(cmd: dict) -> dict:
+        if cmd["Command"]["RequestType"] == APPS:
+            return {"Status": "Acknowledged",
+                    APPS: [{"Identifier": i, "Name": i.upper()} for i in ids]}
+        return default_responder(cmd)
+
+    svc.store.enqueue(ipad.udid, APPS, {})
+    run_commands(svc, ipad, responder)
+
+
+def _zmiany(svc) -> list[tuple[str, list[str]]]:
+    return [(e["kind"], [a["id"] for a in json.loads(e["detail"])["apps"]])
+            for e in svc.store.events() if e["kind"] in ("apps_installed", "apps_removed")]
+
+
+def test_app_missing_from_one_list_is_not_a_removal(svc):
+    ipad = _gotowy(svc)
+    _lista(svc, ipad, ["a", "x"])
+    _lista(svc, ipad, ["a", "x"])  # brak gry z _gotowy potwierdzony: punkt wyjscia
+    base = _zmiany(svc)
+    _lista(svc, ipad, ["a"])
+    _lista(svc, ipad, ["a", "x"])
+    assert _zmiany(svc) == base
+
+
+def test_app_missing_from_two_lists_is_removed_once(svc):
+    ipad = _gotowy(svc)
+    _lista(svc, ipad, ["a", "x"])
+    _lista(svc, ipad, ["a", "x"])  # brak gry z _gotowy potwierdzony: punkt wyjscia
+    base = _zmiany(svc)
+    _lista(svc, ipad, ["a"])
+    _lista(svc, ipad, ["a"])
+    _lista(svc, ipad, ["a"])
+    assert _zmiany(svc)[len(base):] == [("apps_removed", ["x"])]
+    _lista(svc, ipad, ["a", "x"])  # zainstalowana ponownie = nowa
+    assert _zmiany(svc)[-1] == ("apps_installed", ["x"])
+
+
+def test_missing_apps_column_migration_and_rollback(tmp_path):
+    """Baza sprzed kolumny dostaje ja przy starcie; zapis jak w obrazie
+    sprzed zmiany (INSERT bez kolumny, UPDATE innych pol) dalej dziala."""
+    import sqlite3
+
+    path = tmp_path / "mdm.db"
+    MdmStore(path).conn.close()
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE devices DROP COLUMN apps_missing_json")
+    conn.close()
+    store = MdmStore(path)
+    cols = {r["name"] for r in store.conn.execute("PRAGMA table_info(devices)")}
+    assert "apps_missing_json" in cols
+    store.conn.execute(
+        "INSERT INTO devices (udid, label, enrollment_token, cert_fp, enrolled_at, "
+        "last_seen_at) VALUES ('u1', 'x', 't', 'f', 'a', 'a')"
+    )
+    store.update_device("u1", apps_json="[]")
+    assert store.device("u1")["apps_missing_json"] is None
+
+
+# ============================ przeglad #87: czujka MDM stoi (pkt 4)
+async def test_mdm_watcher_failing_alarms_with_growing_gap_and_recovery():
+    class Czujka:
+        dom_id = 2
+
+        def __init__(self, fails: int):
+            self.fails = fails
+
+        async def poll_do(self, now, dispatcher):
+            if self.fails:
+                self.fails -= 1
+                raise RuntimeError("trwaly blad")
+
+    alarmy: list[str] = []
+
+    async def alarm(tytul, tresc):
+        alarmy.append(tytul)
+
+    await mdm_loop(Czujka(25), None, 0, sleep=_nie_czekaj, max_iterations=30, alarm=alarm)
+    assert alarmy == [
+        "Dom 2: MDM: czujka MDM stoi (RuntimeError)",  # 5. nieudany obieg
+        "Dom 2: MDM: czujka MDM stoi (RuntimeError)",  # 10.
+        "Dom 2: MDM: czujka MDM stoi (RuntimeError)",  # 20.
+        "Dom 2: MDM: czujka MDM znow dziala",
+    ]
+    alarmy.clear()
+    await mdm_loop(Czujka(4), None, 0, sleep=_nie_czekaj, max_iterations=6, alarm=alarm)
+    assert alarmy == []  # krotka seria ponizej progu: cisza

@@ -37,7 +37,7 @@ import hmac
 import json
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 
@@ -304,6 +304,16 @@ def _describe(
             3 if added else 2,
             f"{name}: {'nowa aplikacja' if added else 'usunieta aplikacja'}",
             f"{names}\n{okno}" if okno else names,
+        )
+    if kind == "apps_list_failing":
+        count = detail.get("count") if isinstance(detail, dict) else None
+        return (
+            NotifyKind.MDM,
+            4,
+            f"{name}: lista aplikacji nie dziala",
+            f"{noun} odrzuca zapytanie o liste aplikacji ({count or 'kilka'} razy z rzedu). "
+            "Nowe aplikacje nie sa wykrywane, dopoki nie odpowie poprawnie — serwer MDM "
+            "ponawia z rosnaca przerwa. Szczegoly bledu w zakladce MDM.",
         )
     if kind == "push_token_dead":
         return (
@@ -934,6 +944,54 @@ class AlarmyInstancji:
                 log.exception("alarm MDM instancji nie wyszedl: %s", note.title)
 
 
+#: Tyle nieudanych obiegow czujki MDM z rzedu = alarm instancji.
+STOI_PO_OBIEGACH = 5
+
+
+class _StanCzujki:
+    """Seria nieoczekiwanych bledow czujki MDM i alarmy o niej."""
+
+    def __init__(self, watcher: MdmWatcher, alarm) -> None:
+        self.alarm = alarm
+        self.kto = "MDM instancji" if watcher.dom_id is None else f"Dom {watcher.dom_id}: MDM"
+        self.bledy = 0
+        self.nastepny = STOI_PO_OBIEGACH
+        self.zgloszony = False
+
+    async def _wyslij(self, tytul: str, tresc: str) -> None:
+        if self.alarm is None:
+            log.error("alarm czujki (tylko log): %s — %s", tytul, tresc)
+            return
+        try:
+            await self.alarm(tytul, tresc)
+        except Exception:
+            log.exception("alarm czujki MDM nie wyszedl: %s", tytul)
+
+    async def nieudany(self, exc: BaseException) -> None:
+        self.bledy += 1
+        if self.bledy < self.nastepny:
+            return
+        self.nastepny = self.bledy * 2
+        self.zgloszony = True
+        await self._wyslij(
+            f"{self.kto}: czujka MDM stoi ({type(exc).__name__})",
+            f"Czujka MDM nie przeszla {self.bledy} obiegow z rzedu (blad "
+            f"{type(exc).__name__}, szczegoly w logu kidwatch). Do naprawy NIE przyjda "
+            "alarmy MDM: nowe aplikacje, zdjety profil, cichy iPad.",
+        )
+
+    async def udany(self) -> None:
+        if self.zgloszony:
+            await self._wyslij(
+                f"{self.kto}: czujka MDM znow dziala",
+                f"Po {self.bledy} nieudanych obiegach czujka MDM znow czyta serwer. "
+                "Zdarzenia z przerwy przyjda teraz (kursor stal w miejscu).",
+            )
+        self.bledy = 0
+        self.nastepny = STOI_PO_OBIEGACH
+        self.zgloszony = False
+
+
 async def mdm_loop(
     watcher: MdmWatcher,
     dispatcher,
@@ -941,12 +999,20 @@ async def mdm_loop(
     sleep=asyncio.sleep,
     max_iterations: int | None = None,
     aktywny: Callable[[], bool] | None = None,
+    alarm: Callable[[str, str], Awaitable[None]] | None = None,
 ) -> None:
     """Odpytuje serwer MDM. Blad logujemy raz na rodzaj, jak czujka UniFi.
     `aktywny()` False = obieg pominiety (czujka instancji, gdy alarmy serwera
     daje dom z tokenem instancji). Po przerwie czujka startuje od biezacego
-    konca dziennika — zdarzenia z przerwy obsluzyly czujki domow."""
+    konca dziennika — zdarzenia z przerwy obsluzyly czujki domow.
+
+    `alarm(tytul, tresc)` (alarm instancji): nieoczekiwany blad obiegu
+    (np. trwaly wyjatek w process) daje dotad tylko traceback co obieg, a
+    wszystkie alarmy MDM tego domu milkna. Po STOI_PO_OBIEGACH nieudanych
+    obiegach z rzedu idzie alarm, potem z rosnacym odstepem (podwojna liczba
+    obiegow), a po pierwszym udanym — „znow dziala"."""
     last_error: str | None = None
+    stoi = _StanCzujki(watcher, alarm)
     iteration = 0
     while max_iterations is None or iteration < max_iterations:
         iteration += 1
@@ -964,6 +1030,7 @@ async def mdm_loop(
             if last_error is not None:
                 log.info("mdm: serwer znowu odpowiada")
                 last_error = None
+            await stoi.udany()
         except asyncio.CancelledError:
             raise
         except MdmError as exc:
@@ -973,6 +1040,7 @@ async def mdm_loop(
                     logging.ERROR if exc.status in (401, 403) else logging.WARNING, "mdm: %s", exc
                 )
                 last_error = kind
-        except Exception:
+        except Exception as exc:
             log.exception("mdm: nieoczekiwany blad")
+            await stoi.nieudany(exc)
         await sleep(interval_seconds)
