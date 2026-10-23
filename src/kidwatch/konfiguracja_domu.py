@@ -275,6 +275,27 @@ def sprawdz_wymagane_sekrety(home: HomeConfig) -> None:
         ha.webhook_id()
 
 
+#: Sekret, bez ktorego zrodlo DNS nie ruszy.
+SEKRET_ZRODLA = {"nextdns": "api_key", "adguard": "password"}
+
+
+def czego_brakuje(dane: DaneDomu) -> str | None:
+    """Dom NIESKONFIGUROWANY — normalny stan po `dom-dodaj`, zanim ktos wpisze
+    integracje w panelu: brak wlaczonego zrodla DNS, brak jego sekretu albo
+    brak urzadzenia. Zwraca, czego brakuje, albo None (dom ma wstac, a blad
+    startu to awaria). Tylko obecnosc wierszy i pol — bez sejfu i sieci;
+    zle wartosci (walidacja, straznik, szyfrogram) to blad, nie „czeka”."""
+    integ = {i.typ: i for i in dane.integracje}
+    zrodla = [t for t in SEKRET_ZRODLA if t in integ and integ[t].wlaczona]
+    if not zrodla:
+        return "brak wlaczonego zrodla DNS (integracja NextDNS)"
+    if len(zrodla) == 1 and SEKRET_ZRODLA[zrodla[0]] not in integ[zrodla[0]].sekrety_pola:
+        return f"brak sekretu {zrodla[0]}.{SEKRET_ZRODLA[zrodla[0]]}"
+    if not [u for u in dane.urzadzenia if u["rodzaj"] != "tv"]:
+        return "brak urzadzenia dziecka"
+    return None
+
+
 def blad_startu_conn(conn, dom_id: int, sejf: Sejf) -> str | None:
     """Dlaczego dom NIE wystartowalby na konfiguracji widocznej na `conn`
     (takze niezatwierdzonej — panel pyta w transakcji zapisu), albo None.

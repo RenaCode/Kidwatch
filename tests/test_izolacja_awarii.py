@@ -313,3 +313,25 @@ async def test_eskalacja_gdy_zaden_dom_nie_chodzi():
     await _seria_awarii(s, n, zadanie, DOM_T, dm.RESTART_ESKALACJA)
     assert await asyncio.wait_for(zadanie, timeout=3) == 1
     stop.set()
+
+
+async def test_dom_1_w_restarcie_nie_czyni_domu_2_jedynym():
+    """Dom 1 czeka na restart (_restarty, poza `domy`), a dom testowy pada
+    seriami: dawniej `not self.domy` liczylo Dom 1 jako nieistniejacy i po
+    RESTART_ESKALACJA awariach domu testowego proces konczyl sie (restart poda
+    z Domem 1 i panelem). Eskalacja tylko z powodu Domu 1 albo jedynego domu."""
+    s = Swiat()
+    s.psuj = {DOM_1: True, DOM_T: True}
+    n = s.nadzorca()
+    stop, zadanie = await _uruchom(s, n)
+    await _czekaj(lambda: DOM_1 in n._restarty)
+    s.psuj[DOM_1] = False
+    kiedy, home, wersja = n._restarty[DOM_1]
+    n._restarty[DOM_1] = (kiedy + 1e9, home, wersja)  # Dom 1 dlugo poza `domy`
+    await _seria_awarii(s, n, zadanie, DOM_T, dm.RESTART_ESKALACJA + 2)
+    await _czekaj(lambda: DOM_T in n._restarty)
+    assert not zadanie.done(), "proces zakonczony przez awarie domu testowego"
+    assert DOM_1 in n._restarty and n.domy == []
+    assert not any("restart poda" in t for t, _ in s.alarmy)
+    stop.set()
+    assert await zadanie == 0
