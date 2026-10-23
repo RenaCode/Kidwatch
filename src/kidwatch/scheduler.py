@@ -157,6 +157,51 @@ async def source_loop(
 
 
 # ============================================== odczyt wprost z iPadow
+#: Przypomnienie o procesach bez dopasowania (sama liczba na INFO) co tyle.
+UNMATCHED_SUMMARY_EVERY = timedelta(hours=1)
+
+
+class UnmatchedLog:
+    """Log „procesy bez dopasowania” bez powtarzania tego samego co obieg.
+
+    Bez listy aplikacji iPada (lockdown nie podal, brak katalogu MDM) KAZDY
+    proces systemowy wyglada na nieznana aplikacje — ~150 nazw w jednej linii
+    INFO co minute. Teraz:
+      * INFO tylko z NOWYMI nazwami (nigdy dotad nie zgloszonymi),
+      * DEBUG z pelna lista, gdy zbior sie zmienil,
+      * INFO z sama liczba raz na UNMATCHED_SUMMARY_EVERY.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.reported: set[str] = set()
+        self.last: frozenset[str] = frozenset()
+        self.summary_at: datetime | None = None
+
+    def report(self, names: set[str], now: datetime) -> None:
+        current = frozenset(names)
+        new = current - self.reported
+        if new:
+            log.info(
+                "%s: nowe procesy bez dopasowania do aplikacji (%d z %d): %s",
+                self.name, len(new), len(current), ", ".join(sorted(new)),
+            )
+            self.reported |= new
+        if current != self.last:
+            log.debug(
+                "%s: procesy bez dopasowania do aplikacji (%d): %s",
+                self.name, len(current), ", ".join(sorted(current)),
+            )
+        self.last = current
+        if self.summary_at is None or now - self.summary_at >= UNMATCHED_SUMMARY_EVERY:
+            if not new:
+                log.info(
+                    "%s: %d procesow bez dopasowania do aplikacji (pelna lista na DEBUG)",
+                    self.name, len(current),
+                )
+            self.summary_at = now
+
+
 async def device_loop(
     watchers,
     dispatcher: Dispatcher,
@@ -182,6 +227,7 @@ async def device_loop(
     from .sources.base import Unreachable  # noqa: PLC0415
 
     unreachable: dict[str, int] = {}
+    unmatched_logs: dict[str, UnmatchedLog] = {}
     iteration = 0
     while max_iterations is None or iteration < max_iterations:
         iteration += 1
@@ -225,10 +271,8 @@ async def device_loop(
             if watcher.unmatched:
                 # Jak nieznane domeny w app_map.yaml — chcemy wiedziec, czego
                 # brakuje w process_aliases, zeby nazwac apke po imieniu.
-                log.info(
-                    "%s: procesy bez dopasowania do aplikacji: %s",
-                    name,
-                    ", ".join(sorted(watcher.unmatched)),
+                unmatched_logs.setdefault(name, UnmatchedLog(name)).report(
+                    watcher.unmatched, datetime.now(UTC)
                 )
                 watcher.unmatched.clear()
 

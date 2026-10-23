@@ -40,6 +40,7 @@ import os
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -174,6 +175,155 @@ class MdmApi:
 
     def close(self) -> None:
         self._client.close()
+
+
+# ======================================================= katalog aplikacji
+#: Co ile pytac serwer MDM o liste aplikacji jednego iPada. Serwer sam odswieza
+#: ja z iPada co ~15 min (InstalledApplicationList), czesciej nie ma sensu.
+CATALOG_REFRESH = timedelta(minutes=10)
+#: Starsza lista nie nadaje sie do nazywania procesow (iPad dlugo bez kontaktu
+#: z MDM) — wtedy known_apps z konfiguracji.
+CATALOG_MAX_AGE = timedelta(hours=24)
+
+
+class _CatalogEntry:
+    __slots__ = ("apps", "apps_at", "asked_at", "error")
+
+    def __init__(self, asked_at: datetime, apps=None, apps_at=None, error=None) -> None:
+        self.asked_at = asked_at
+        self.apps: dict = apps or {}
+        self.apps_at: datetime | None = apps_at
+        self.error: str | None = error
+
+
+def _parse_at(text) -> datetime | None:
+    if not text:
+        return None
+    try:
+        at = datetime.fromisoformat(str(text))
+    except ValueError:
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=UTC)
+
+
+class AppCatalog:
+    """Inwentarz aplikacji iPada z serwera MDM — zapasowe zrodlo dla odczytu
+    z lockdown (sources/device.py), gdy installation_proxy po sieci pada.
+
+    MDM zna liste (InstalledApplicationList: Identifier, Name, wersja), ale
+    nie plik wykonywalny — dopasowanie procesu idzie po ostatnim czlonie
+    bundle ID i nazwie (looks_like_app).
+
+    Odczyt jest RZADKI (co CATALOG_REFRESH na iPada) i POZA petla: `apps()`
+    oddaje to, co juz w pamieci, a odswiezenie uruchamia w tle (HTTP w watku
+    pomocniczym, jak MdmWatcher.fetch). Wolny albo lezacy serwer MDM nie
+    opoznia wiec odczytu iPadow. Bazy Kidwatch nie dotyka wcale.
+
+    Izolacja domow: pytamy `/api/devices/<udid>` tokenem domu — serwer oddaje
+    404 dla UDID-u spoza domu (E3b), co tu znaczy „iPada nie ma w MDM”.
+    """
+
+    def __init__(
+        self,
+        api: MdmApi,
+        refresh: timedelta = CATALOG_REFRESH,
+        max_age: timedelta = CATALOG_MAX_AGE,
+    ) -> None:
+        self.api = api
+        self.refresh = refresh
+        self.max_age = max_age
+        self._entries: dict[str, _CatalogEntry] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
+        self._stale_logged: set[str] = set()
+
+    # -------------------------------------------------- watek pomocniczy
+    def fetch(self, udid: str) -> tuple[dict, datetime | None]:
+        """Tylko HTTP: (aplikacje, kiedy serwer dostal liste od iPada).
+        UDID spoza MDM (albo spoza domu tokenu) = pusta lista."""
+        from .sources.device import InstalledApp  # noqa: PLC0415
+
+        try:
+            device = self.api.request("GET", f"/api/devices/{quote(udid, safe='')}")
+        except MdmError as exc:
+            if exc.status == 404:
+                return {}, None
+            raise
+        apps: dict[str, InstalledApp] = {}
+        for item in (device.get("apps") if isinstance(device, dict) else None) or []:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            bundle_id = str(item["id"])
+            if bundle_id.lower().startswith("com.apple."):
+                # Aplikacje Apple (Zdjecia, Mapy, Muzyka...) maja procesy
+                # o nazwach demonow i pomocnikow systemu — po nazwie daly
+                # „odpalil” przy kazdym restarcie demona. Safari i reszte
+                # widac w DNS. Serwer MDM nie podaje typu aplikacji.
+                continue
+            apps[bundle_id] = InstalledApp(bundle_id, str(item.get("name") or bundle_id))
+        return apps, _parse_at(device.get("apps_at") if isinstance(device, dict) else None)
+
+    # ------------------------------------------------------- watek petli
+    def apps(self, udid: str, now: datetime) -> tuple[dict, timedelta] | None:
+        """(aplikacje, wiek listy) albo None — brak, nie w MDM albo za stara.
+        Przy okazji zleca odswiezenie w tle, gdy pora."""
+        self._schedule(udid, now)
+        entry = self._entries.get(udid)
+        if entry is None or not entry.apps or entry.apps_at is None:
+            return None
+        age = max(now - entry.apps_at, timedelta(0))
+        if age > self.max_age:
+            if udid not in self._stale_logged:
+                self._stale_logged.add(udid)
+                log.info("katalog MDM %s: lista sprzed %d h — za stara do nazywania procesow",
+                         udid, int(age.total_seconds() // 3600))
+            return None
+        self._stale_logged.discard(udid)
+        return entry.apps, age
+
+    def _schedule(self, udid: str, now: datetime) -> None:
+        if udid in self._tasks:
+            return
+        entry = self._entries.get(udid)
+        if entry is not None and now - entry.asked_at < self.refresh:
+            return
+        self._tasks[udid] = asyncio.get_running_loop().create_task(
+            self._refresh(udid, now), name=f"katalog-mdm-{udid}"
+        )
+
+    async def _refresh(self, udid: str, now: datetime) -> None:
+        """Wynik zawsze obsluzony tutaj — zadanie nie zostawia wyjatku, na
+        ktory nikt nie czeka."""
+        old = self._entries.get(udid)
+        try:
+            apps, apps_at = await asyncio.to_thread(self.fetch, udid)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            if old is None or old.error != error:
+                log.warning("katalog MDM %s: %s (zostaje poprzednia lista)", udid, error)
+            # Poprzednia lista zostaje (do max_age); ponowna proba po `refresh`.
+            self._entries[udid] = _CatalogEntry(
+                now, old.apps if old else None, old.apps_at if old else None, error
+            )
+        else:
+            if old is None or old.error or len(old.apps) != len(apps):
+                log.info("katalog MDM %s: %d aplikacji, lista z %s", udid, len(apps),
+                         apps_at.isoformat(timespec="minutes") if apps_at else "-")
+            self._entries[udid] = _CatalogEntry(now, apps, apps_at)
+        finally:
+            self._tasks.pop(udid, None)
+
+    async def wait(self) -> None:
+        """Na zlecone odswiezenia (testy, CLI)."""
+        if self._tasks:
+            await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+
+    async def aclose(self) -> None:
+        for task in list(self._tasks.values()):
+            task.cancel()
+        await self.wait()
+        self.api.close()
 
 
 def config_domu(home_mdm, url: str) -> MdmConfig:
