@@ -134,10 +134,19 @@ def load_pair_record(udid: str, folder: str | Path) -> dict[str, Any]:
             f"brak rekordu parowania {path}. Sparuj raz po kablu:\n"
             f"  pymobiledevice3 lockdown pair --udid {udid}"
         )
+    # KAZDY blad odczytu i parsowania (uciety XML = ExpatError, smiec binarny,
+    # zly typ) pomija tylko to urzadzenie — wyjatek spoza DeviceUnavailable
+    # wylatywal z build_watchers i wywracal przeladowanie calego domu.
+    # Komunikat bez tresci pliku (klucz prywatny hosta): tylko typ bledu.
     try:
-        return plistlib.loads(path.read_bytes())
-    except (OSError, plistlib.InvalidFileException) as exc:
-        raise DeviceUnavailable(f"nieczytelny rekord parowania {path}: {exc}") from exc
+        rekord = plistlib.loads(path.read_bytes())
+    except Exception as exc:
+        raise DeviceUnavailable(
+            f"nieczytelny rekord parowania {path}: {type(exc).__name__}") from None
+    if not isinstance(rekord, dict):
+        raise DeviceUnavailable(
+            f"nieczytelny rekord parowania {path}: {type(rekord).__name__} zamiast slownika")
+    return rekord
 
 
 class TcpLockdownBackend:

@@ -43,6 +43,9 @@ from .domy import (
     RejestrDomow,
     SekretyDomu,
     _audyt,
+    _dom,
+    _podbij_wersje,
+    _wiersz_domu,
     dane_domu_conn,
     katalog_sekretow_domu,
     sekrety_domu_conn,
@@ -663,3 +666,189 @@ def importuj_strukture(rejestr: RejestrDomow, dom_id: int, surowy: Mapping[str, 
             conn.execute("ROLLBACK")
             raise
     return raport
+
+
+# ========================================================= odczyt iPadow (CLI)
+#: Pola `domy.ustawienia["device_read"]`, ktore zmienia `kidwatch dom-odczyt`.
+#: Reszta sekcji (timeout, aliasy procesow, budzet powiadomien) zostaje.
+POLA_ODCZYTU = ("enabled", "poll_seconds", "unreachable_alert_hours")
+
+
+class OdmowaOdczytu(ValueError):
+    """`dom-odczyt` odmawia zmiany — baza bez zmian."""
+
+
+@dataclass
+class UrzadzenieOdczytu:
+    """Urzadzenie z `udid` albo `host` (do wypisania — bez pelnego UDID)."""
+
+    nazwa: str
+    udid_koncowka: str | None
+    host: str | None
+    #: Host to adres IP dopuszczony przez straznika domu (None = brak hosta).
+    siec_ok: bool | None
+    #: Plik `<UDID>.plist` istnieje w katalogu rekordow instancji (None = brak UDID).
+    rekord: bool | None
+
+
+@dataclass
+class StanOdczytu:
+    dom_id: int
+    zrodlo: str
+    wersja: int
+    #: `domy.ustawienia["device_read"]` uzupelnione domyslnymi z modelu (POLA_ODCZYTU).
+    ustawienia: dict[str, Any]
+    urzadzenia: list[UrzadzenieOdczytu]
+    katalog_rekordow: Path
+
+
+def koncowka_udid(udid: str | None) -> str | None:
+    """UDID na ekranie: tylko ostatnie 4 znaki."""
+    return f"…{udid[-4:]}" if udid else None
+
+
+def host_dopuszczony(straznik: Straznik, host: str) -> bool:
+    """Jak `build_watchers` w trybie `baza`: tylko literal IP i tylko taki,
+    ktory straznik domu przepuszcza (pymobiledevice3 nazwy rozwiazuje sam)."""
+    ip = adres_literalny(host)
+    return ip is not None and straznik.dozwolony(ip)
+
+
+def _ustawienia_odczytu(surowe: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        model = cfgmod.HomeDeviceReadConfig.model_validate(dict(surowe))
+        return {p: getattr(model, p) for p in POLA_ODCZYTU}
+    except ValidationError:
+        domyslne = cfgmod.HomeDeviceReadConfig()
+        return {p: surowe.get(p, getattr(domyslne, p)) for p in POLA_ODCZYTU}
+
+
+def stan_odczytu(rejestr: RejestrDomow, dom_id: int,
+                 katalog_rekordow: Path | str) -> StanOdczytu:
+    """Biezacy stan odczytu iPadow domu z bazy — bez sejfu i bez sieci.
+    Rekord parowania: sam fakt istnienia pliku, tresci nie czytamy.
+    LookupError, gdy domu nie ma."""
+    dane = rejestr.dane_domu(dom_id)
+    dom = dane.dom
+    katalog = Path(katalog_rekordow)
+    straznik = Straznik(dom.id, dom.dozwolone_sieci, dom.dozwolone_hosty)
+    urzadzenia = []
+    for u in dane.urzadzenia:
+        udid, host = u.get("udid"), u.get("host")
+        if u["rodzaj"] == "tv" or not (udid or host):
+            continue
+        urzadzenia.append(UrzadzenieOdczytu(
+            nazwa=u["nazwa"], udid_koncowka=koncowka_udid(udid), host=host,
+            siec_ok=host_dopuszczony(straznik, host) if host else None,
+            rekord=(katalog / f"{udid}.plist").is_file() if udid else None,
+        ))
+    return StanOdczytu(dom.id, dom.zrodlo_konfiguracji, dom.wersja,
+                       _ustawienia_odczytu(dom.ustawienia.get("device_read") or {}),
+                       urzadzenia, katalog)
+
+
+def ustaw_odczyt(rejestr: RejestrDomow, dom_id: int, sejf: Sejf, *,
+                 wlacz: bool | None = None, poll_seconds: float | None = None,
+                 alarm_po: float | None = None,
+                 kto: str | None = None) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """`kidwatch dom-odczyt`: zmiana `domy.ustawienia["device_read"]` domu
+    w trybie `baza` w JEDNEJ transakcji — zapis, walidacja calosci tymi
+    samymi walidatorami co start domu, straznik sieci dla hostow iPadow,
+    podbicie `wersja` (nadzorca przeladuje dom) i wpis w `audyt` (bez UDID).
+    Zwraca (przed, po) albo None, gdy nic sie nie zmienia. Odmowa =
+    OdmowaOdczytu albo LookupError, baza bez zmian (ROLLBACK)."""
+    with rejestr._conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            dom = _dom(_wiersz_domu(conn, dom_id))
+            if dom.zrodlo_konfiguracji != ZRODLO_BAZA:
+                raise OdmowaOdczytu(
+                    f"Dom {dom_id} ma konfiguracje z config.yaml (tryb yaml) — device_read "
+                    "zmienia sie tam. dom-odczyt dziala tylko dla domow z konfiguracja "
+                    "w bazie (kidwatch dom-importuj).")
+            surowe = dict(dom.ustawienia.get("device_read") or {})
+            przed = _ustawienia_odczytu(surowe)
+            nowe = dict(surowe)
+            if wlacz is not None:
+                nowe["enabled"] = wlacz
+            if poll_seconds is not None:
+                nowe["poll_seconds"] = poll_seconds
+            if alarm_po is not None:
+                nowe["unreachable_alert_hours"] = alarm_po
+            if nowe == surowe:
+                conn.execute("ROLLBACK")
+                return None
+            blad_przed = blad_startu_conn(conn, dom_id, sejf)
+            ustawienia = {**dom.ustawienia, "device_read": nowe}
+            conn.execute("UPDATE domy SET ustawienia = ? WHERE id = ?",
+                         (json.dumps(ustawienia, ensure_ascii=False, sort_keys=True), dom_id))
+            dane = dane_domu_conn(conn, dom_id)
+            # Model domu ZAWSZE, takze dla domu bez zrodla DNS (jak import
+            # struktury) — m.in. „device_read.enabled=true, ale zadne
+            # urzadzenie nie ma udid i host”.
+            zrodla = [i for i in dane.integracje
+                      if i.typ in ("nextdns", "adguard") and i.wlaczona]
+            do_walidacji = dane.integracje if len(zrodla) == 1 else [
+                *(i for i in dane.integracje if i.typ not in ("nextdns", "adguard")),
+                _ZRODLO_DO_WALIDACJI]
+            try:
+                home = home_z_danych(
+                    DaneDomu(dane.dom, dane.dzieci, dane.urzadzenia, do_walidacji),
+                    sekrety_domu_conn(conn, dom_id, sejf), katalog_plikow=_ADB)
+            except ValueError as exc:
+                raise OdmowaOdczytu(str(exc)) from exc
+            if home.device_read.enabled:
+                straznik = Straznik(dom_id, dom.dozwolone_sieci, dom.dozwolone_hosty)
+                zle = [d for d in home.devices
+                       if d.reads_device and not host_dopuszczony(straznik, d.host or "")]
+                if zle:
+                    raise OdmowaOdczytu(_odmowa_sieci(dom_id, zle))
+            blad_po = blad_startu_conn(conn, dom_id, sejf)
+            if blad_po is not None and blad_przed is None:
+                raise OdmowaOdczytu(f"dom nie wystartowalby po zmianie: {blad_po}")
+            po = _ustawienia_odczytu(nowe)
+            _podbij_wersje(conn, dom_id)
+            _audyt(conn, time.time(), dom_id, kto, "dom.odczyt",
+                   "device_read: " + ", ".join(f"{p} {przed[p]} -> {po[p]}"
+                                               for p in POLA_ODCZYTU))
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+    return przed, po
+
+
+def wyczysc_stan_odczytu(baza_domu: Path | str, nazwy: list[str]) -> bool:
+    """Po wlaczeniu odczytu, ktory byl wylaczony: usuwa z bazy zdarzen domu
+    `dev-ok:<nazwa>` i `dev-since:<nazwa>` (scheduler._unreachable_alerts).
+    Klucze sprzed wylaczenia (np. z czasow odczytu w trybie yaml) dawaly
+    alarm „brak udanego odczytu od N h” zaraz po wlaczeniu; bez nich cisza
+    liczy sie od pierwszego obiegu petli. Idempotentne; bazy, ktorej jeszcze
+    nie ma (dom nigdy nie wstal), nie zaklada. True = baza istniala."""
+    from .store import Store  # noqa: PLC0415
+
+    if not Path(baza_domu).is_file():
+        return False
+    store = Store(baza_domu)
+    try:
+        for nazwa in nazwy:
+            store.delete_meta(f"dev-ok:{nazwa}")
+            store.delete_meta(f"dev-since:{nazwa}")
+    finally:
+        store.close()
+    return True
+
+
+def _odmowa_sieci(dom_id: int, urzadzenia) -> str:
+    linie = [f"Dom {dom_id}: odczyt iPadow laczy sie tylko z adresem IP dopuszczonym przez "
+             "straznika sieci domu (dozwolone_sieci). Poza siecia domu:"]
+    for d in urzadzenia:
+        host = d.host or ""
+        if adres_literalny(host) is None:
+            linie.append(f"  {d.display_name}: host {host} to nie adres IP — wpisz adres "
+                         "IPv4 iPada (rezerwacja DHCP)")
+        else:
+            linie.append(f"  {d.display_name}: {host} — kidwatch dom-sieci {dom_id} "
+                         f"--dodaj {host}/32")
+    return "\n".join(linie)

@@ -65,6 +65,15 @@ SEKRETY_ZE_SRODOWISKA: dict[tuple[str, str], str] = {
 #: (temat ntfy Domu 1 z NTFY_TOPIC nie moze trafic do innego domu).
 KONTEKST_Z_BAZY = {"sekrety_z_bazy": True}
 
+#: Gorne granice czasow z konfiguracji (przeglad #88). Wartosc trafia do
+#: asyncio.sleep i timedelta: `inf`/1e12 dawaly OverflowError w petli (restart
+#: domu w kolko) albo sen na zawsze (odczyt staje po cichu). Dlatego tez
+#: allow_inf_nan=False — NaN przechodzi kazde porownanie ge/le jako falsz.
+MAX_SEKUND = 3600.0
+MAX_TIMEOUT = 300.0
+MAX_GODZIN = 24.0 * 30
+MAX_MINUT = 7 * 24 * 60
+
 
 class DostawcaSekretow(Protocol):
     """Sekrety JEDNEGO domu: `get("nextdns", "api_key")`. None = brak."""
@@ -100,17 +109,17 @@ class NextDnsConfig(_ZSekretami):
     raw: bool = False
     server_side_device_filter: bool = False
     base_url: str = "https://api.nextdns.io"
-    backoff_max_seconds: float = 60.0
+    backoff_max_seconds: float = Field(default=60.0, ge=0, le=MAX_SEKUND, allow_inf_nan=False)
     #: NextDNS zamyka strumien mniej wiecej co minute i przez kilkadziesiat
     #: sekund odpowiada 429 na ponowne otwarcie (bez Retry-After; zmierzone
     #: 2026-10-02). Lomotanie co 1-2-4-8 s tylko przedluzalo blokade i
     #: zasmiecalo log bledami. Pierwsze czekanie po 429 jest wiec dluzsze.
-    rate_limit_wait_seconds: float = 20.0
+    rate_limit_wait_seconds: float = Field(default=20.0, ge=0, le=MAX_SEKUND, allow_inf_nan=False)
     #: Minimalny odstep miedzy otwarciami strumieni, WSPOLNY dla wszystkich
     #: profili. Przy dwoch profilach (osobny na dziecko) oba strumienie sa
     #: zamykane przez serwer mniej wiecej w tym samym rytmie; otwierane razem
     #: wpadalyby w 429 parami i przedluzaly sobie nawzajem blokade.
-    connect_spacing_seconds: float = Field(default=5.0, ge=0)
+    connect_spacing_seconds: float = Field(default=5.0, ge=0, le=MAX_SEKUND, allow_inf_nan=False)
     #: Odstep po RUTYNOWYM zamknieciu strumienia przez serwer.
     #: Produkcja 2026-10-16, 6 h: 237 zamkniec, 204 odpowiedzi 429 przy
     #: ponowieniu po 1 s. Po wdrozeniu 20 s (#76) przez 30 min: 26 x 429 na
@@ -119,11 +128,12 @@ class NextDnsConfig(_ZSekretami):
     #: jeszcze przez 20-40 s, wiec 45 s jest pierwszym odstepem, ktory na
     #: tych danych omija 429 (i jest krotszy od dzisiejszych 20 s + 429 + 20 s).
     #: Zdarzenia z przerwy nie gina — wznawiamy od kursora `id`.
-    reconnect_after_close_seconds: float = Field(default=45.0, ge=0)
+    reconnect_after_close_seconds: float = Field(default=45.0, ge=0, le=MAX_SEKUND,
+                                                 allow_inf_nan=False)
     #: Gorna granica dla naglowka Retry-After (gdyby serwer podal absurdalny
     #: czas). Ponizej progu czujki ciszy strumienia, zeby po jej alarmie
     #: zrodlo samo probowalo dalej.
-    retry_after_max_seconds: float = Field(default=600.0, ge=1)
+    retry_after_max_seconds: float = Field(default=600.0, ge=1, le=MAX_SEKUND, allow_inf_nan=False)
 
     def api_key(self) -> str:
         return self._sekret("nextdns", "api_key", "klucz API NextDNS", wymagany=True)
@@ -132,9 +142,9 @@ class NextDnsConfig(_ZSekretami):
 class AdGuardConfig(_ZSekretami):
     base_url: str
     username: str
-    poll_interval_seconds: float = 15.0
+    poll_interval_seconds: float = Field(default=15.0, ge=0, le=MAX_SEKUND, allow_inf_nan=False)
     page_limit: int = Field(default=500, ge=10, le=10000)
-    max_backfill_minutes: int = Field(default=5, ge=0)
+    max_backfill_minutes: int = Field(default=5, ge=0, le=MAX_MINUT)
 
     def password(self) -> str:
         return self._sekret("adguard", "password", "haslo do AdGuard Home", wymagany=True)
@@ -426,7 +436,7 @@ class NtfyConfig(_ZSekretami):
     # znac tematu, a pusty temat przy wlaczonym to cicha awaria wysylki.
     topic: str = ""
     default_priority: int = Field(default=3, ge=1, le=5)
-    timeout_seconds: float = 10.0
+    timeout_seconds: float = Field(default=10.0, gt=0, le=MAX_TIMEOUT, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _topic_from_env_when_empty(self, info: ValidationInfo) -> NtfyConfig:
@@ -455,7 +465,7 @@ class NtfyConfig(_ZSekretami):
 class HomeAssistantConfig(_ZSekretami):
     enabled: bool = False
     base_url: str = ""
-    timeout_seconds: float = 10.0
+    timeout_seconds: float = Field(default=10.0, gt=0, le=MAX_TIMEOUT, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _base_url_required_when_enabled(self) -> HomeAssistantConfig:
@@ -478,7 +488,7 @@ class BramkaConfig(_Base):
     #: Dluzej niz najgorszy czas odpowiedzi bramki: sendText WAHA do 15 s,
     #: potem zapasowy mail do 15 s, plus do 3 s na status. Krotszy timeout
     #: konczyl sie ponowieniem z outboxa, choc mail juz wyszedl (K-12).
-    timeout_seconds: float = 40.0
+    timeout_seconds: float = Field(default=40.0, gt=0, le=MAX_TIMEOUT, allow_inf_nan=False)
     #: Pozwala na powiadomienia per konto panelu (odbiorcy.py). Wlaczaja sie
     #: dopiero, gdy wlasciciel je wlaczy (`konta-migruj --zapisz`) i bramka
     #: obsluguje jawnego odbiorce; false = zawsze stary tryb tras bramki.
@@ -593,8 +603,8 @@ class HomeDeviceReadConfig(_Base):
     """
 
     enabled: bool = False
-    poll_seconds: float = Field(default=60.0, ge=5.0)
-    timeout_seconds: float = Field(default=20.0, ge=1.0)
+    poll_seconds: float = Field(default=60.0, ge=5.0, le=MAX_SEKUND, allow_inf_nan=False)
+    timeout_seconds: float = Field(default=20.0, ge=1.0, le=MAX_TIMEOUT, allow_inf_nan=False)
     #: Budzet godzinowy WARSTWY URZADZEN, oddzielony od engine.max_notifications_
     #: per_hour. Wspolny licznik sprawial, ze godzina przelaczania aplikacji
     #: zaglodzila powiadomienia o sesjach DNS.
@@ -602,7 +612,7 @@ class HomeDeviceReadConfig(_Base):
     #: Po tylu godzinach BEZ ANI JEDNEGO udanego odczytu zglos to jako awarie.
     #: iPad spi wiekszosc doby, wiec cisza jest normalna — ale warstwa, ktora
     #: nie zadzialala ANI RAZU, wyglada dokladnie tak samo jak spiacy iPad.
-    unreachable_alert_hours: float = Field(default=24.0, ge=1.0)
+    unreachable_alert_hours: float = Field(default=24.0, ge=1.0, le=MAX_GODZIN, allow_inf_nan=False)
     #: proces -> bundle ID, dla nazw bez zwiazku z nazwa aplikacji.
     #: Disney+ chodzi jako `Dominguez`, "Logika i Matematyka" jako `academy`.
     process_aliases: dict[str, str] = Field(default_factory=dict)
@@ -637,17 +647,17 @@ class TvConfig(_ZSekretami):
     #: Adres IPv4 telewizora w domowym LAN (pod dochodzi tunelem WireGuard).
     host: str = ""
     port: int = Field(default=5555, ge=1, le=65535)
-    poll_seconds: float = Field(default=30.0, ge=5.0)
-    timeout_seconds: float = Field(default=10.0, ge=1.0)
+    poll_seconds: float = Field(default=30.0, ge=5.0, le=MAX_SEKUND, allow_inf_nan=False)
+    timeout_seconds: float = Field(default=10.0, ge=1.0, le=MAX_TIMEOUT, allow_inf_nan=False)
     #: Katalog z kluczem `adbkey` (+ `adbkey.pub`) — w klastrze Sekret
     #: kidwatch-adb. Ten sam klucz, ktory telewizor raz zaakceptowal.
     adb_key_dir: str = "/adb"
     #: Koniec ogladania po tylu minutach bez odtwarzania. Uspienie telewizora
     #: konczy od razu. Pauza na siku nie powinna rozcinac odcinka na dwa.
-    idle_minutes: int = Field(default=10, ge=1)
+    idle_minutes: int = Field(default=10, ge=1, le=MAX_MINUT)
     #: Telewizor wylaczony z pradu jest nieosiagalny — to norma. Alarm dopiero
     #: po tylu godzinach bez JEDNEGO udanego odczytu.
-    unreachable_alert_hours: float = Field(default=24.0, ge=1.0)
+    unreachable_alert_hours: float = Field(default=24.0, ge=1.0, le=MAX_GODZIN, allow_inf_nan=False)
     #: Dodatkowe nazwy aplikacji {pakiet: nazwa}, nadpisuja wbudowana mape.
     apps: dict[str, str] = Field(default_factory=dict)
     #: Co ile minut czytac `dumpsys usagestats` — dokladny czas aplikacji na
@@ -663,12 +673,12 @@ class TvConfig(_ZSekretami):
     #: Ogladanie = co najmniej tyle MB w oknie. YouTube 480p to ~20 MB na
     #: 3 min, 1080p ~100 MB; ekran glowny i czuwanie praktycznie zero.
     traffic_min_mb: float = Field(default=10.0, gt=0)
-    traffic_window_minutes: float = Field(default=3.0, ge=1.0, le=30.0)
+    traffic_window_minutes: float = Field(default=3.0, ge=1.0, le=30.0, allow_inf_nan=False)
     #: Identyfikatory telewizora w NextDNS (device.id/name) - serwis
     #: (YouTube, Netflix...) z zapytan DNS. Puste = sesja "Streaming".
     nextdns_ids: list[str] = Field(default_factory=list)
     #: Alarm "ADB nie odpowiada", gdy ruch pokazuje ogladanie od tylu minut.
-    adb_alert_minutes: int = Field(default=30, ge=1)
+    adb_alert_minutes: int = Field(default=30, ge=1, le=MAX_MINUT)
     #: Sony BRAVIA REST (sources/sony.py) pod `host`: zasilanie bez klucza,
     #: antena/HDMI z kluczem PSK w TV_SONY_PSK (Sekret kidwatch-secrets).
     sony: bool = True
@@ -705,13 +715,13 @@ class UnifiConfig(_ZSekretami):
     #: Format dowolny z `openssl x509 -fingerprint -sha256` (z dwukropkami albo
     #: bez, z prefiksem "sha256 Fingerprint=" albo bez).
     cert_sha256: str = ""
-    poll_seconds: float = Field(default=60.0, ge=10.0)
-    timeout_seconds: float = Field(default=10.0, ge=1.0)
+    poll_seconds: float = Field(default=60.0, ge=10.0, le=MAX_SEKUND, allow_inf_nan=False)
+    timeout_seconds: float = Field(default=10.0, ge=1.0, le=MAX_TIMEOUT, allow_inf_nan=False)
     #: Okno czujki i prog: tyle MB w oknie przy ZERO zapytan DNS = alarm.
-    window_minutes: int = Field(default=15, ge=5)
+    window_minutes: int = Field(default=15, ge=5, le=MAX_MINUT)
     alarm_mb: float = Field(default=20.0, gt=0)
     #: Sufit odstepu przypomnien alarmu (podwajany od window_minutes).
-    repeat_backoff_max_minutes: int = Field(default=480, ge=15)
+    repeat_backoff_max_minutes: int = Field(default=480, ge=15, le=MAX_MINUT)
 
     @field_validator("cert_sha256")
     @classmethod
@@ -785,9 +795,9 @@ class GameTimeConfig(_Base):
     #: w my.nextdns.io pojawi sie w panelu najpozniej po tylu minutach.
     sync_minutes: int = Field(default=5, ge=1, le=60)
     #: Jak czesto petla zaglada do kolejki zadan z panelu.
-    poll_seconds: float = Field(default=3.0, ge=0.5, le=60)
+    poll_seconds: float = Field(default=3.0, ge=0.5, le=60, allow_inf_nan=False)
     block_schedule: GameBlockSchedule | None = None
-    timeout_seconds: float = Field(default=10.0, ge=1.0)
+    timeout_seconds: float = Field(default=10.0, ge=1.0, le=MAX_TIMEOUT, allow_inf_nan=False)
 
     @field_validator("services", "categories")
     @classmethod
@@ -827,25 +837,25 @@ class HomeMdmConfig(_ZSekretami):
     """
 
     enabled: bool = False
-    poll_seconds: float = Field(default=60.0, ge=10.0)
-    timeout_seconds: float = Field(default=10.0, ge=1.0)
+    poll_seconds: float = Field(default=60.0, ge=10.0, le=MAX_SEKUND, allow_inf_nan=False)
+    timeout_seconds: float = Field(default=10.0, ge=1.0, le=MAX_TIMEOUT, allow_inf_nan=False)
     #: iPad bez kontaktu z MDM dluzej niz tyle = alarm (raz na dobe).
     #: Zapisany iPad laczy sie przy kazdym pushu, a uzgadnianie budzi go co
     #: kilka godzin, wiec doba ciszy znaczy reset, brak sieci albo zdjety profil.
-    silent_alert_hours: float = Field(default=24.0, ge=1.0)
+    silent_alert_hours: float = Field(default=24.0, ge=1.0, le=MAX_GODZIN, allow_inf_nan=False)
     #: Ostrzezenie o wygasajacym certyfikacie APNs na tyle dni przed koncem.
     #: Po wygasnieciu zaden iPad nie dostanie komendy, a odnowienie musi byc
     #: z tego samego Apple ID.
     cert_warn_days: int = Field(default=30, ge=1)
     #: Brak udanego uzgadniania na serwerze MDM dluzej niz tyle = alarm (raz
     #: na dobe). Obieg co 5 min, ponowienie po bledzie co minute.
-    reconcile_alert_minutes: int = Field(default=30, ge=10)
+    reconcile_alert_minutes: int = Field(default=30, ge=10, le=MAX_MINUT)
     #: Komendy czekaja, a zaden push do APNs nie przeszedl od tylu minut =
     #: alarm (raz na dobe). Bez pusha iPad nie przyjdzie po blokade ani profil.
-    push_alert_minutes: int = Field(default=60, ge=10)
+    push_alert_minutes: int = Field(default=60, ge=10, le=MAX_MINUT)
     #: Komenda czekajaca na iPada, ktory sie odzywa, dluzej niz tyle = alarm
     #: (raz na dobe na iPada). iPad milczacy ma juz alarm ciszy.
-    stuck_alert_hours: float = Field(default=24.0, ge=1.0)
+    stuck_alert_hours: float = Field(default=24.0, ge=1.0, le=MAX_GODZIN, allow_inf_nan=False)
 
     def token(self) -> str | None:
         return self._sekret("mdm", "token", "token API serwera MDM", wymagany=False)

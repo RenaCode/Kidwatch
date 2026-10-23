@@ -1,6 +1,6 @@
 """CLI: run | replay | test-notify | summary | weekly | tv | tv-pauza | user-add | domy |
-dom-importuj | dom-zrodlo | dom-sieci | klucze-rotuj | klucze-potwierdz | dom-klucz-rotuj |
-..."""
+dom-importuj | dom-zrodlo | dom-sieci | dom-odczyt | klucze-rotuj | klucze-potwierdz |
+dom-klucz-rotuj | ..."""
 
 from __future__ import annotations
 
@@ -2093,6 +2093,85 @@ async def cmd_dom_sieci(args) -> int:
     return 0
 
 
+def _wypisz_stan_odczytu(stan) -> None:
+    """Stan odczytu iPadow — UDID tylko koncowka, rekord parowania tylko
+    fakt istnienia pliku."""
+    from .straznik import adres_literalny  # noqa: PLC0415
+
+    u = stan.ustawienia
+    print(f"Dom {stan.dom_id} (konfiguracja: {stan.zrodlo}, wersja {stan.wersja}): odczyt "
+          f"iPadow {'WLACZONY' if u['enabled'] else 'wylaczony'}")
+    print(f"  poll_seconds: {u['poll_seconds']:g}  unreachable_alert_hours: "
+          f"{u['unreachable_alert_hours']:g}")
+    katalog = stan.katalog_rekordow
+    print(f"  rekordy parowania: {katalog}"
+          f"{'' if katalog.is_dir() else ' — BRAK KATALOGU (Sekret parowania niezamontowany?)'}")
+    if not stan.urzadzenia:
+        print("  urzadzenia z udid/host: brak")
+    for d in stan.urzadzenia:
+        siec = {None: "-", True: "dopuszczony",
+                False: f"NIE (kidwatch dom-sieci {stan.dom_id} --dodaj {d.host}/32)"}
+        if d.siec_ok is False and adres_literalny(d.host or "") is None:
+            siec[False] = "NIE (host to nie adres IP)"
+        rekord = {None: "-", True: "jest", False: "BRAK"}[d.rekord]
+        print(f"  {d.nazwa}: udid {d.udid_koncowka or '-'}  host {d.host or '-'}  "
+              f"siec: {siec[d.siec_ok]}  rekord parowania: {rekord}")
+
+
+async def cmd_dom_odczyt(args) -> int:
+    """Odczyt procesow iPadow (lockdown) domu z konfiguracja w bazie —
+    wylacznie administrator instancji (CLI), jak `dom-sieci`."""
+    from .domy import ZRODLO_BAZA, sciezka_bazy_domu  # noqa: PLC0415
+    from .konfiguracja_domu import (  # noqa: PLC0415
+        OdmowaOdczytu,
+        stan_odczytu,
+        ustaw_odczyt,
+        wyczysc_stan_odczytu,
+    )
+    from .sejf import SejfError  # noqa: PLC0415
+
+    cfg = Config.load(args.config)
+    inst, _ = cfg.split()
+    rejestr = _rejestr(cfg)
+    if rejestr.dom(args.dom) is None:
+        print(f"nie ma domu {args.dom}", file=sys.stderr)
+        return 2
+    wlacz = True if args.wlacz else (False if args.wylacz else None)
+    zmiana = wlacz is not None or args.co is not None or args.alarm_po is not None
+    wynik = None
+    if zmiana:
+        try:
+            wynik = ustaw_odczyt(rejestr, args.dom, _sejf(), wlacz=wlacz,
+                                 poll_seconds=args.co, alarm_po=args.alarm_po, kto="cli")
+        except (OdmowaOdczytu, LookupError) as exc:
+            print(f"ODMOWA (nic nie zapisano): {exc}", file=sys.stderr)
+            return 2
+        except SejfError as exc:
+            # Brak KIDWATCH_KEK albo sekret domu, ktory sie nie odszyfrowuje:
+            # bez nich nie ma walidacji calego domu, wiec nie ma zapisu.
+            print(f"ODMOWA (nic nie zapisano): sejf: {exc}", file=sys.stderr)
+            return 2
+    stan = stan_odczytu(rejestr, args.dom, inst.device_read.records_path)
+    if wynik is not None and not wynik[0]["enabled"] and wynik[1]["enabled"]:
+        # Po COMMIT, zanim nadzorca przeladuje dom (~10 s): stare `dev-ok`
+        # sprzed wylaczenia nie moga dac alarmu zaraz po wlaczeniu.
+        wyczysc_stan_odczytu(sciezka_bazy_domu(args.dom, inst.store.path),
+                             [d.nazwa for d in stan.urzadzenia])
+    _wypisz_stan_odczytu(stan)
+    if stan.zrodlo != ZRODLO_BAZA:
+        print("  UWAGA: dom w trybie yaml — dziala device_read z config.yaml, nie ten z bazy.")
+    if not zmiana:
+        return 0
+    if wynik is None:
+        print("Bez zmian — nic nie zapisano.")
+        return 0
+    print(f"ZAPISANO. {kiedy_zadziala(args.dom, True, True)}")
+    if stan.ustawienia["enabled"] and any(d.rekord is False for d in stan.urzadzenia):
+        print("  UWAGA: brak rekordu parowania — to urzadzenie bedzie pomijane (log: "
+              "'pomijam odczyt z urzadzenia').")
+    return 0
+
+
 async def cmd_klucze_rotuj(args) -> int:
     from .sejf import KEK_POPRZEDNI_ENV  # noqa: PLC0415
 
@@ -2473,6 +2552,18 @@ def build_parser() -> argparse.ArgumentParser:
                        help="host API (nextdns.base_url, ntfy.server) spoza listy wbudowanej")
     sieci.add_argument("--bez-hosta", action="append", default=[], metavar="HOST")
     sieci.add_argument("--wyczysc", action="store_true", help="usun wszystkie sieci i hosty")
+    odczyt = sub.add_parser("dom-odczyt",
+                            help="odczyt procesow iPadow (lockdown) domu z konfiguracja w bazie; "
+                                 "bez flag: stan")
+    odczyt.add_argument("dom", type=int)
+    wl = odczyt.add_mutually_exclusive_group()
+    wl.add_argument("--wlacz", action="store_true", help="wlacz odczyt (device_read.enabled)")
+    wl.add_argument("--wylacz", action="store_true", help="wylacz odczyt")
+    odczyt.add_argument("--co", type=float, metavar="SEKUNDY",
+                        help="co ile sekund odpytywac iPady (device_read.poll_seconds)")
+    odczyt.add_argument("--alarm-po", type=float, metavar="GODZINY",
+                        help="alarm po tylu godzinach bez udanego odczytu "
+                             "(device_read.unreachable_alert_hours)")
     sub.add_parser("klucze-rotuj",
                    help="przepakuj klucze domow nowym KIDWATCH_KEK (po rotacji KEK)")
     potw = sub.add_parser(
@@ -2540,6 +2631,7 @@ def main(argv: list[str] | None = None) -> int:
         "dom-importuj": cmd_dom_importuj,
         "dom-zrodlo": cmd_dom_zrodlo,
         "dom-sieci": cmd_dom_sieci,
+        "dom-odczyt": cmd_dom_odczyt,
         "klucze-rotuj": cmd_klucze_rotuj,
         "klucze-potwierdz": cmd_klucze_potwierdz,
         "dom-klucz-rotuj": cmd_dom_klucz_rotuj,
