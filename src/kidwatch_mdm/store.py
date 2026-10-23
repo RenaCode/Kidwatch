@@ -198,6 +198,7 @@ class Store:
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._tx_depth = 0
         self.conn = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -246,13 +247,27 @@ class Store:
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
+        """Transakcja; zagniezdzona dolacza do zewnetrznej (ten sam watek —
+        blokada jest RLock). Dzieki temu obsluga odpowiedzi iPada (zamkniecie
+        komendy, zdarzenie, nowy stan) idzie jednym zapisem: restart w srodku
+        nie zostawi zdarzenia bez stanu, ktory je wywolal."""
         with self._lock:
+            if self._tx_depth:
+                self._tx_depth += 1
+                try:
+                    yield self.conn
+                finally:
+                    self._tx_depth -= 1
+                return
             self.conn.execute("BEGIN IMMEDIATE")
+            self._tx_depth = 1
             try:
                 yield self.conn
             except BaseException:
+                self._tx_depth = 0
                 self.conn.execute("ROLLBACK")
                 raise
+            self._tx_depth = 0
             self.conn.execute("COMMIT")
 
     def query(self, sql: str, params: tuple | dict = ()) -> list[sqlite3.Row]:

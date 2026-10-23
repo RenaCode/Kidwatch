@@ -301,7 +301,7 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
         log.info("czujka MDM wlaczona: %s, co %.0f s, token %s", mdm_cfg.url,
                  mdm_cfg.poll_seconds, "instancji" if zakres == "instancja" else "domu")
         rt.dodaj_petle("mdm", lambda: mdm_loop(
-            MdmWatcher(mdm_api, store, mdm_cfg, zakres, dom_id=dom_id), dispatcher,
+            MdmWatcher(mdm_api, store, mdm_cfg, zakres, dom_id=dom_id, tz=home.tz), dispatcher,
             mdm_cfg.poll_seconds
         ))
 

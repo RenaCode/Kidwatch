@@ -38,7 +38,7 @@ import json
 import logging
 import os
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import Any
 
 import httpx
@@ -214,8 +214,31 @@ def _kind(device: dict | None) -> str:
 
 #: Zdarzenie serwera -> (rodzaj, priorytet, tytul). None = nie powiadamiamy.
 #: Klucze to `kind` z tabeli events w kidwatch_mdm/store.py.
+def _okno_instalacji(event: dict, detail: Any, tz: tzinfo | None) -> str:
+    """„wykryta 13:36, zainstalowana po 07:51" w strefie domu.
+
+    Lista aplikacji przychodzi co kilkanascie minut (a po restarcie, przy
+    zablokowanym czy wylaczonym iPadzie — znacznie pozniej), wiec chwila
+    wykrycia to nie chwila instalacji: aplikacja doszla miedzy poprzednia
+    lista (`previous_at`, serwer MDM od 2026-10-23) a ta. Zdarzenie bez tego
+    pola (starszy serwer, pierwsza lista) — pusto, tekst jak dawniej."""
+    prev = detail.get("previous_at") if isinstance(detail, dict) else None
+    if not prev or not event.get("at"):
+        return ""
+    try:
+        found = datetime.fromisoformat(event["at"]).astimezone(tz or UTC)
+        since = datetime.fromisoformat(prev).astimezone(tz or UTC)
+    except (TypeError, ValueError):
+        return ""
+
+    def kiedy(dt: datetime) -> str:
+        return f"{dt:%H:%M}" if dt.date() == found.date() else f"{dt:%d.%m %H:%M}"
+
+    return f"wykryta {kiedy(found)}, zainstalowana po {kiedy(since)}"
+
+
 def _describe(
-    event: dict, name: str, device_kind: str = "ipad"
+    event: dict, name: str, device_kind: str = "ipad", tz: tzinfo | None = None
 ) -> tuple[NotifyKind, int, str, str] | None:
     kind = event["kind"]
     iphone = device_kind == "iphone"
@@ -275,11 +298,12 @@ def _describe(
         apps = detail.get("apps", []) if isinstance(detail, dict) else []
         names = ", ".join(a.get("name") or a.get("id") for a in apps) or "?"
         added = kind == "apps_installed"
+        okno = _okno_instalacji(event, detail, tz) if added else ""
         return (
             NotifyKind.DEVICE_INVENTORY,
             3 if added else 2,
             f"{name}: {'nowa aplikacja' if added else 'usunieta aplikacja'}",
-            names,
+            f"{names}\n{okno}" if okno else names,
         )
     if kind == "push_token_dead":
         return (
@@ -454,10 +478,13 @@ class MdmWatcher:
         cfg: MdmConfig,
         zakres: str = ZAKRES_INSTANCJA,
         dom_id: int | None = None,
+        tz: tzinfo | None = None,
     ) -> None:
         self.api = api
         self.store = store
         self.cfg = cfg
+        #: Strefa domu — godziny w tekstach (okno instalacji aplikacji).
+        self.tz = tz
         #: ZAKRES_INSTANCJA (jak przed E3b), ZAKRES_DOM albo ZAKRES_SERWER.
         #: Z `dom_id` to tylko przypuszczenie (porownanie z MDM_ADMIN_TOKEN) —
         #: rozstrzyga serwer (`/api/whoami`) przy pierwszym odczycie.
@@ -582,6 +609,27 @@ class MdmWatcher:
         )
         return self.process(data, now)
 
+    async def poll_do(self, now: datetime, dispatcher) -> None:
+        """Obieg petli: odczyt serwera i notki do wysylki.
+
+        Z kolejka w tej samej bazie (Outbox, metoda `zapisz`) kursor, klucze
+        dedupu i notki ida JEDNA transakcja. Wczesniej kursor i `sent` byly
+        zapisane, zanim notka trafila do outboxa — proces zabity albo blad
+        zapisu w tej chwili gubil powiadomienie na zawsze (kursor juz dalej,
+        klucz zajety). Teraz restart przed COMMIT cofa wszystko: nastepny
+        obieg czyta te same zdarzenia od starego kursora i notka powstaje raz.
+
+        Dispatcher bez `zapisz` albo z inna baza (alarmy instancji, testy) —
+        jak dotad: poll_async, potem send_all."""
+        if not _kolejka_w_bazie(dispatcher, self.store):
+            await dispatcher.send_all(await self.poll_async(now))
+            return
+        data = await asyncio.to_thread(
+            self.fetch, self._kursor_obiegu(), self.store.get_meta(INSTANCE_KEY)
+        )
+        with self.store.transakcja():
+            dispatcher.zapisz(self.process(data, now))
+
     def _reset(self, data: dict, now: datetime) -> list[Notification]:
         reset = data.get("reset")
         if not reset:
@@ -630,7 +678,9 @@ class MdmWatcher:
         for event in events:
             last = max(last, int(event["id"]))
             device = by_udid.get(event.get("udid"))
-            described = _describe(event, self._name(device, event.get("udid")), _kind(device))
+            described = _describe(
+                event, self._name(device, event.get("udid")), _kind(device), self.tz
+            )
             if described is None:
                 continue
             kind, priority, title, text = described
@@ -851,6 +901,13 @@ class MdmWatcher:
         return out
 
 
+def _kolejka_w_bazie(dispatcher, store: Store) -> bool:
+    """Czy dispatcher to kolejka (Outbox) w tej samej bazie co kursor czujki."""
+    return callable(getattr(dispatcher, "zapisz", None)) and getattr(
+        dispatcher, "store", None
+    ) is store
+
+
 def _max_id(data: dict) -> int | None:
     """Najwyzszy numer w porcji zdarzen PRZED filtrem czujki serwera — kursor
     przesuwa sie takze po zdarzeniach domow, ktorych ta czujka nie zglasza."""
@@ -903,11 +960,10 @@ async def mdm_loop(
                 watcher.od_nowa = True
             watcher.aktywna = True
         try:
-            notes = await watcher.poll_async(datetime.now(UTC))
+            await watcher.poll_do(datetime.now(UTC), dispatcher)
             if last_error is not None:
                 log.info("mdm: serwer znowu odpowiada")
                 last_error = None
-            await dispatcher.send_all(notes)
         except asyncio.CancelledError:
             raise
         except MdmError as exc:

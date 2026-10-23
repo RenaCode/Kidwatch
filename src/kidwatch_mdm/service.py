@@ -485,20 +485,28 @@ class MDMService:
             if row is None or row["udid"] != udid:
                 log.warning("odpowiedz na nieznana komende %s od %s", cmd_uuid, udid)
             elif status == "Acknowledged":
-                self.store.finish_command(cmd_uuid, "acknowledged", message)
-                self._on_result(device, row["request_type"], cmd_uuid, message)
+                # Jedna transakcja: zamkniecie komendy, zdarzenia i nowy stan
+                # (np. lista aplikacji). Restart w srodku cofa calosc — komenda
+                # zostaje `sent` i iPad dostanie ja ponownie. Osobne zapisy
+                # dawaly dwa okna: zdarzenie bez nowej listy (po restarcie ta
+                # sama aplikacja „nowa” drugi raz) i zamknieta komende bez
+                # wyniku (nowa aplikacja dopiero przy nastepnej liscie).
+                with self.store.tx():
+                    self.store.finish_command(cmd_uuid, "acknowledged", message)
+                    self._on_result(device, row["request_type"], cmd_uuid, message)
             elif status in ("Error", "CommandFormatError"):
                 chain = message.get("ErrorChain") or []
                 error = json.dumps(chain, ensure_ascii=False, default=str)
                 final = "error" if status == "Error" else "format_error"
-                self.store.finish_command(cmd_uuid, final, message, error)
-                self.store.event(
-                    "command_error",
-                    udid,
-                    {"request_type": row["request_type"], "status": status, "chain": chain},
-                )
-                if row["request_type"] == "InstallProfile":
-                    self.store.mark_profile_failed(cmd_uuid)
+                with self.store.tx():
+                    self.store.finish_command(cmd_uuid, final, message, error)
+                    self.store.event(
+                        "command_error",
+                        udid,
+                        {"request_type": row["request_type"], "status": status, "chain": chain},
+                    )
+                    if row["request_type"] == "InstallProfile":
+                        self.store.mark_profile_failed(cmd_uuid)
             elif status == "NotNow":
                 self.store.finish_command(cmd_uuid, "not_now", message)
             else:
@@ -572,7 +580,13 @@ class MDMService:
                 added = [after[i] for i in after.keys() - before.keys()]
                 removed = [before[i] for i in before.keys() - after.keys()]
                 if added:
-                    self.store.event("apps_installed", udid, {"apps": added})
+                    # `previous_at`: czas poprzedniej listy — aplikacja doszla
+                    # miedzy nia a ta (czas zdarzenia). Kidwatch pokazuje okno,
+                    # zeby spoznione wykrycie nie udawalo swiezej instalacji.
+                    detail: dict[str, Any] = {"apps": added}
+                    if device["apps_at"]:
+                        detail["previous_at"] = device["apps_at"]
+                    self.store.event("apps_installed", udid, detail)
                 if removed:
                     self.store.event("apps_removed", udid, {"apps": removed})
             self.store.update_device(udid, apps_json=_json(slim), apps_at=now)
@@ -670,6 +684,8 @@ class MDMService:
         now = now or now_utc()
         stats = {"devices": 0, "enqueued": 0, "pushed": 0, "push_failed": 0}
         refresh_after = timedelta(hours=self.policy.refresh_hours)
+        apps_minutes = self.policy.apps_refresh_minutes
+        apps_after = timedelta(minutes=apps_minutes) if apps_minutes else None
         for device in self.store.devices():
             if device["checked_out_at"] or device["push_token"] is None:
                 continue
@@ -687,6 +703,16 @@ class MDMService:
             if info_at is None or now - info_at >= refresh_after:
                 for request_type in REFRESH_COMMANDS:
                     self._enqueue_refresh(udid, request_type)
+            elif apps_after is not None:
+                # Sama lista aplikacji, czesciej niz ciezkie zapytania. Liczy
+                # sie ostatnia ODPOWIEDZ z lista (apps_at), nie wyslanie
+                # komendy. Najwyzej jedna oczekujaca na iPada (_enqueue_refresh
+                # sprawdza store.pending): iPad zablokowany (NotNow) albo
+                # offline nie zbiera kolejnych komend, a push ma wtedy rosnacy
+                # odstep (_push_due), bo bez nowej komendy nie ma postepu.
+                apps_at = from_iso(device["apps_at"])
+                if apps_at is None or now - apps_at >= apps_after:
+                    self._enqueue_refresh(udid, "InstalledApplicationList")
 
             self._ensure_restrictions(device, now)
 

@@ -26,6 +26,11 @@ blocked_apps: []
 # Co ile godzin odswiezac stan iPadow (informacje, profile, aplikacje).
 refresh_hours: 6
 
+# Co ile minut pytac o sama liste aplikacji (nowa gra bez sieci nie pojawi
+# sie w DNS). Domyslnie 15; min. 5, maks. refresh_hours*60; 0 = tylko co
+# refresh_hours.
+# apps_refresh_minutes: 15
+
 # Zapis automatyczny (Apple Business, renacode-infra: docs/projekty/kidwatch/mdm.md Krok 5). Ekrany kreatora
 # pomijane przy wymazanym iPadzie; AppleID i Restore zostaja zawsze.
 # ade:

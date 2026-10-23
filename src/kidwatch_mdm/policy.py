@@ -266,6 +266,11 @@ class AdeSettings(BaseModel):
         return v
 
 
+#: Najkrotszy rytm listy aplikacji: tyle co obieg uzgadniania (__main__,
+#: RECONCILE_SECONDS) — krotszy i tak nie zadziala czesciej.
+APPS_REFRESH_MIN_MINUTES = 5
+
+
 class Policy(BaseModel):
     org: str = "RenaCode"
     #: Nadpisania DOKLADANE do DEFAULT_RESTRICTIONS, nie zamiast nich — wpisanie
@@ -280,6 +285,12 @@ class Policy(BaseModel):
     #: Klucz = etykieta podana przy tworzeniu zaproszenia (np. "dziecko1").
     devices: dict[str, DevicePolicy] = Field(default_factory=dict)
     refresh_hours: float = 6.0
+    #: Osobny, czesty rytm samej listy aplikacji (InstalledApplicationList):
+    #: gra zainstalowana z Xcode dziala offline, wiec DNS jej nie widzi i
+    #: jedynym sygnalem jest inwentarz MDM. Co `refresh_hours` lista szla
+    #: razem z ciezkimi zapytaniami i nowa aplikacja wychodzila po 5-6 h
+    #: (2026-10-23). 0 = wylaczone (lista tylko co `refresh_hours`, jak dawniej).
+    apps_refresh_minutes: int = 15
     #: Nadpisania per dom (E3b): {numer domu: DomPolicy}. Dom bez wpisu = wspolne.
     domy: dict[int, DomPolicy] = Field(default_factory=dict)
     ade: AdeSettings = Field(default_factory=AdeSettings)
@@ -293,6 +304,24 @@ class Policy(BaseModel):
 
     def device(self, label: str) -> DevicePolicy:
         return self.devices.get(label) or DevicePolicy(name=label)
+
+    @model_validator(mode="after")
+    def _apps_refresh(self) -> Policy:
+        minutes = self.apps_refresh_minutes
+        if minutes == 0:
+            return self
+        if minutes < APPS_REFRESH_MIN_MINUTES:
+            raise ValueError(
+                f"apps_refresh_minutes: {minutes} < {APPS_REFRESH_MIN_MINUTES} "
+                "(0 = wylaczone) — czestszy push to bateria iPada, a petla uzgadniania "
+                "i tak chodzi co 5 min"
+            )
+        if minutes > self.refresh_hours * 60:
+            raise ValueError(
+                f"apps_refresh_minutes: {minutes} > refresh_hours*60 "
+                f"({self.refresh_hours * 60:g}) — lista i tak idzie co refresh_hours"
+            )
+        return self
 
     @model_validator(mode="after")
     def _unique_serials(self) -> Policy:

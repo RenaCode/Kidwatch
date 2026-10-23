@@ -12,7 +12,7 @@ import contextlib
 import json
 import os
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -373,6 +373,23 @@ class Store:
 
     def close(self) -> None:
         self.conn.close()
+
+    @contextlib.contextmanager
+    def transakcja(self) -> Iterator[sqlite3.Connection]:
+        """Kilka zapisow jako jeden: wszystko albo nic (takze po zabiciu
+        procesu — SQLite cofa niezatwierdzona transakcje przy otwarciu).
+        Wewnatrz juz otwartej transakcji tylko do niej dolacza. Bez `await`
+        w srodku: polaczenie jest jedno dla calej petli asyncio."""
+        if self.conn.in_transaction:
+            yield self.conn
+            return
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield self.conn
+        except BaseException:
+            self.conn.execute("ROLLBACK")
+            raise
+        self.conn.execute("COMMIT")
 
     def __enter__(self) -> Store:
         return self
