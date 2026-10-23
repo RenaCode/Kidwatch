@@ -192,6 +192,8 @@ class PanelIntegracje:
             "nieudana": stan.nieudana,
             "blad": stan.blad,
             "aktualna": stan.wersja == dom.wersja,
+            # Dom ≠ 1 bez zrodla DNS/klucza/urzadzenia: czeka, to nie awaria.
+            "czeka": stan.czeka,
         }
 
     def _blad_startu(self, dom_id: int, sejf: Sejf) -> str | None:

@@ -123,6 +123,17 @@ test('przeladowanie: czeka, dziala, nie wystartowalo', () => {
   assert.equal(reloadNotice({ ...blad, wersja: 6 }).kind, 'info');
 });
 
+test('przeladowanie: nowy dom czeka na konfiguracje — informacja, nie blad', () => {
+  const p = { automatyczne: true, wersja: 3, wersja_dzialajaca: null, aktualna: false,
+    czeka: 'brak wlaczonego zrodla DNS (integracja NextDNS)' };
+  const r = reloadNotice(p);
+  assert.equal(r.kind, 'info');
+  assert.match(r.text, /czeka na konfigurację: brak wlaczonego zrodla DNS/);
+  assert.doesNotMatch(r.text, /wersji \?/);
+  // Po zapisie integracji ekran dalej sonduje, az dom wystartuje.
+  assert.equal(waitingForReload(p), true);
+});
+
 test('ekran tylko dla aktywnego administratora z dom.integracje', () => {
   assert.equal(canEditIntegrations({ admin_instancji: true, uprawnienia: ['dom.integracje'] }), true);
   assert.equal(canEditIntegrations({ admin_instancji: false, uprawnienia: ['dom.integracje'] }), false);

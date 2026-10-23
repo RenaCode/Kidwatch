@@ -269,6 +269,10 @@ class Outbox:
         #: bazy domu na wypadek wspolnego kodu, ktory zgubi kontekst.
         self.dom_id = dom_id
         self._tryb_log: str | None = None
+        #: Wywolywane (z opisem) przy PRZEJSCIU kolejki w stan wstrzymania —
+        #: `run` daje tu alarm instancji dla domu ≠ 1 (§4.2). Samo wstrzymanie
+        #: dziala bez tego tak samo.
+        self.na_wstrzymanie: Callable[[str], None] | None = None
         #: Profile odswiezone w biezacym flushu (_odswiez_profile, raz na flush).
         self._profile_odswiezone = False
 
@@ -320,6 +324,11 @@ class Outbox:
             if powod != self._tryb_log:
                 log.error("kolejka: %s", powod)
                 self._tryb_log = powod
+                if self.na_wstrzymanie is not None:
+                    try:
+                        self.na_wstrzymanie(powod)
+                    except Exception:
+                        log.exception("kolejka: alarm wstrzymania nie wyszedl")
             return WSTRZYMANE
         if self.konta is None or not self.dispatcher.per_konto:
             powod = "tryb tras (brak kont albo kanalu per konto)"

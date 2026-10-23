@@ -1385,6 +1385,15 @@ class RejestrDomow:
                        f"dom dziala na konfiguracji w wersji {wersja}")
         return True
 
+    def ma_kopie(self, dom_id: int) -> bool:
+        """Czy dom kiedys wstal (jest kopia ostatniej dobrej konfiguracji) —
+        bez odszyfrowania, wiec bez KEK."""
+        with self._conn() as conn:
+            if not _jest_tabela(conn, "domy_kopia"):
+                return False
+            return conn.execute("SELECT 1 FROM domy_kopia WHERE dom_id = ?",
+                                (dom_id,)).fetchone() is not None
+
     def zapisz_blad_przeladowania(self, dom_id: int, wersja: int, blad: str) -> None:
         """Wersja nie wstala — trwale (dziennik domu), widoczne po restarcie."""
         with self._conn() as conn:
@@ -1765,6 +1774,9 @@ class StanDomu:
     ponowienie: bool = False
     #: Opis bledu do ALARMU (opis_bledu) — `blad` idzie tylko do panelu i logu.
     opis_alarmu: str | None = None
+    #: Dom ≠ 1 jeszcze nieskonfigurowany (normalny stan po `dom-dodaj`): czego
+    #: brakuje do startu. Bez alarmu; nadzorca wystartuje go po zmianie wersji.
+    czeka: str | None = None
 
 
 class StanyDomow:
@@ -1782,6 +1794,10 @@ class StanyDomow:
     def get(self, dom_id: int) -> StanDomu | None:
         with self._lock:
             return self._stany.get(dom_id)
+
+    def usun(self, dom_id: int) -> None:
+        with self._lock:
+            self._stany.pop(dom_id, None)
 
 
 def _nic(*_args) -> None:
@@ -1824,6 +1840,22 @@ class Przeladowanie:
     alarm: Callable[[str, str], Awaitable[None]] | None = None
     przejsciowy: Callable[[BaseException], bool] = blad_przejsciowy
     zegar: Callable[[], float] = time.monotonic
+    #: Kolejne domy (przed E6): id domow ≠ 1, ktore maja chodzic w tym procesie
+    #: (tryb `baza`). None = nadzorca tylko przeladowuje domy podane przy starcie.
+    #: Dom z listy, ktory nie chodzi, nadzorca uruchamia (co `okres`); dom,
+    #: ktory z niej zniknal, zatrzymuje z oproznieniem kolejki.
+    domy: Callable[[], Sequence[int]] | None = None
+    #: Czego brakuje domowi do startu (dom nieskonfigurowany — czeka cicho,
+    #: bez alarmu) albo None = dom ma wstac, a blad startu to awaria.
+    czeka: Callable[[int], str | None] = _nic
+    #: Dom zatrzymany na stale (zniknal z listy): panel, komendy, czujki.
+    po_zatrzymaniu: Callable[[int], None] = _nic
+    #: Bramka alarmu startu z dziennika (RejestrDomow.alarm_startu): odstep do
+    #: nastepnego alarmu albo None = jeszcze nie; przezywa restart poda.
+    #: None = rosnacy odstep w pamieci nadzorcy.
+    bramka_alarmu: Callable[[int], float | None] | None = None
+    #: Alarm startu WYSLANY (RejestrDomow.zapisz_alarm_startu).
+    zapisz_alarm: Callable[[int, float, str], Any] = _nic
 
 
 @dataclass
@@ -1864,7 +1896,19 @@ class Nadzorca:
     instancji z rosnacym odstepem (od awarii, nie od komunikatu). Blad
     konfiguracji czeka na nastepna zmiane; blad przejsciowy jest ponawiany
     po 1, 5, 30 min. Gdy nie wstaje ani nowa, ani poprzednia konfiguracja —
-    ostatnia dobra z kopii w bazie; dopiero bez niej koniec procesu."""
+    ostatnia dobra z kopii w bazie; dopiero bez niej koniec procesu (Dom 1
+    albo dom, gdy zaden inny nie chodzi; inny dom przestaje dzialac do
+    nastepnej zmiany konfiguracji, a Dom 1 chodzi dalej).
+
+    Z `przeladowanie.domy` (kolejne domy, przed E6) nadzorca co `okres`
+    porownuje liste domow ≠ 1 w trybie `baza` z dzialajacymi: dom z listy,
+    ktory nie chodzi, uruchamia (takze dodany w trakcie pracy poda), a dom,
+    ktorego na liscie nie ma, zatrzymuje z oproznieniem kolejki. Dom
+    nieskonfigurowany (`przeladowanie.czeka`) czeka cicho na zmiane wersji.
+    Blad startu domu ≠ 1 nigdy nie konczy procesu: stan dla panelu, dziennik,
+    alarm instancji z rosnacym odstepem (bramka z dziennika, przezywa restart
+    poda), ponowienie po zmianie wersji albo po 1, 5, 30 min (blad
+    przejsciowy)."""
 
     def __init__(self, domy: Sequence[HomeRuntime],
                  przeladowanie: Przeladowanie | None = None,
@@ -1900,6 +1944,14 @@ class Nadzorca:
         #: dom -> tresc bledu do alarmu (opis_bledu), osobno od stanu dla panelu.
         self._opisy_alarmu: dict[int, str] = {}
         self._awaria = False
+        #: Kolejne domy: dom -> wersja, na ktorej czeka na konfiguracje.
+        self._czeka: dict[int, int] = {}
+        #: Dom, ktory nie chodzi: (kiedy nastepny alarm, odstep) — tylko bez
+        #: `przeladowanie.bramka_alarmu`; z nia rytm trzyma dziennik.
+        self._alarmy_startu: dict[int, tuple[float, float]] = {}
+        #: Domy, o ktorych nie-starcie poszedl alarm (po starcie: „wystartowal”).
+        self._zaalarmowane: set[int] = set()
+        self._alarm_startu_w_toku: set[int] = set()
 
     @property
     def izolacja(self) -> bool:
@@ -1920,6 +1972,7 @@ class Nadzorca:
                 await self._wersja_startowa(rt)
         for rt in self.domy:
             self._uruchom(rt)
+        await self._sprawdz_domy()
         stop_task = asyncio.create_task(stop.wait(), name="stop")
         timeout = p.okres if p is not None else None
         if self.izolacja:
@@ -1938,6 +1991,7 @@ class Nadzorca:
                 await self._restartuj_gotowe()
             if p is not None and not done:
                 await self._sprawdz_wersje()
+                await self._sprawdz_domy()
             if self._awaria:
                 break
         if self._alarmy_w_tle:
@@ -2037,6 +2091,20 @@ class Nadzorca:
         ponowienie (blad przejsciowy) i alarm (od razu, potem z odstepem)."""
         p = self.przeladowanie
         assert p is not None
+        await self._zapisz_awarie(dom_id, w, stara, blad, przejsciowy, opis_alarmu)
+        if dom_id not in self._alarmy:
+            self._alarmy[dom_id] = (p.zegar() + ALARM_PIERWSZY_ODSTEP, ALARM_PIERWSZY_ODSTEP)
+            await self._alarm(
+                f"Dom {dom_id}: nowa konfiguracja nie wystartowala",
+                f"Wersja {w}: {self._opisy_alarmu[dom_id]}. Dom dziala dalej na wersji {stara}. "
+                + ("Kidwatch ponowi probe sam." if przejsciowy
+                   else "Popraw integracje w panelu (Ustawienia -> Integracje)."))
+
+    async def _zapisz_awarie(self, dom_id: int, w: int, stara: int | None, blad: str,
+                             przejsciowy: bool, opis_alarmu: str | None) -> None:
+        """Stan awarii wersji `w` bez alarmu: panel, dziennik, ponowienie."""
+        p = self.przeladowanie
+        assert p is not None
         pierwszy_raz = self._nieudane.get(dom_id) != w
         self._nieudane[dom_id] = w
         if przejsciowy:
@@ -2054,13 +2122,6 @@ class Nadzorca:
                 await asyncio.to_thread(p.zapisz_blad, dom_id, w, blad)
             except Exception:
                 log.exception("dom %d: nie zapisano bledu przeladowania w dzienniku", dom_id)
-        if dom_id not in self._alarmy:
-            self._alarmy[dom_id] = (p.zegar() + ALARM_PIERWSZY_ODSTEP, ALARM_PIERWSZY_ODSTEP)
-            await self._alarm(
-                f"Dom {dom_id}: nowa konfiguracja nie wystartowala",
-                f"Wersja {w}: {self._opisy_alarmu[dom_id]}. Dom dziala dalej na wersji {stara}. "
-                + ("Kidwatch ponowi probe sam." if przejsciowy
-                   else "Popraw integracje w panelu (Ustawienia -> Integracje)."))
 
     async def _alarm_powtorka(self, dom_id: int) -> None:
         p = self.przeladowanie
@@ -2124,15 +2185,29 @@ class Nadzorca:
                       "poprzedniej konfiguracji", dom_id, w, exc)
             await self._awaria_domu(dom_id, w, stara, str(exc), p.przejsciowy(exc),
                                     opis_bledu(exc))
-            nowy = await self._odtworz(dom_id, rt.home, stara)
+            # Inny dom (gdy chodzi jakis jeszcze) nie konczy procesu: przestaje
+            # dzialac do nastepnej zmiany konfiguracji (kolejne domy, przed E6).
+            koniec = not (p.domy is not None and dom_id != DOM_1
+                          and any(r.dom_id != dom_id for r in self.domy))
+            nowy = await self._odtworz(dom_id, rt.home, stara, koniec=koniec)
             if nowy is None:
-                self._awaria = True
-                self.domy.pop(i)
+                self.domy.remove(rt)
+                if koniec:
+                    self._awaria = True
+                    return
+                self._wersje.pop(dom_id, None)
+                stan = p.stany.get(dom_id)
+                if stan is not None:
+                    p.stany.ustaw(dom_id, dataclasses.replace(stan, wersja=None))
+                self._po_zatrzymaniu(dom_id)
+                await self._alarm_nie_dziala(dom_id)
                 return
         else:
             nowy.wersja = w
             await self._naprawiony(dom_id, w)
-        self.domy[i] = nowy
+        # Po tozsamosci srodowiska, nie po `i`: wczesniejszy dom mogl
+        # w tym samym obiegu wypasc z listy (kolejne domy).
+        self.domy[self.domy.index(rt)] = nowy
         self._uruchom(nowy)
         try:
             p.po_zmianie(dom_id, nowy)
@@ -2140,10 +2215,11 @@ class Nadzorca:
             log.exception("dom %d: blad po przeladowaniu (panel)", dom_id)
 
     async def _odtworz(self, dom_id: int, home: HomeConfig,
-                       wersja: int | None) -> HomeRuntime | None:
+                       wersja: int | None, *, koniec: bool = True) -> HomeRuntime | None:
         """Po nieudanym starcie nowego srodowiska: poprzednia konfiguracja,
         a gdy i ona nie wstaje — ostatnia dobra z kopii w bazie. None = nic
-        nie wstalo (alarm, koniec procesu, k8s zrestartuje poda)."""
+        nie wstalo (z `koniec`: alarm, koniec procesu, k8s zrestartuje poda;
+        bez — alarm daje wolajacy)."""
         p = self.przeladowanie
         assert p is not None
         try:
@@ -2168,6 +2244,10 @@ class Nadzorca:
                 return rt
         except Exception as exc:
             log.error("dom %d: ostatnia dobra konfiguracja tez nie wstaje — %s", dom_id, exc)
+        if not koniec:
+            log.error("dom %d: zadna konfiguracja nie wstaje — dom nie dziala do nastepnej "
+                      "zmiany konfiguracji; pozostale domy dzialaja", dom_id)
+            return None
         log.error("dom %d: zadna konfiguracja nie wstaje — koniec procesu (k8s "
                   "zrestartuje poda)", dom_id)
         await self._alarm(f"Dom {dom_id}: monitoring zatrzymany",
@@ -2326,6 +2406,206 @@ class Nadzorca:
                     p.po_zmianie(dom_id, nowy)
                 except Exception:
                     log.exception("dom %d: blad po restarcie (panel)", dom_id)
+
+    # ------------------------------------------------- kolejne domy (E6)
+    async def _sprawdz_domy(self) -> None:
+        """Lista domow ≠ 1 w trybie `baza` kontra dzialajace srodowiska.
+        Zaden blad tutaj nie konczy procesu — Dom 1 chodzi dalej."""
+        p = self.przeladowanie
+        if p is None or p.domy is None:
+            return
+        try:
+            lista = {int(d) for d in await asyncio.to_thread(p.domy) if d != DOM_1}
+        except Exception:
+            log.exception("domy: nie odczytano listy domow — sprobuje za %.0f s", p.okres)
+            return
+        for rt in [r for r in self.domy if r.dom_id != DOM_1 and r.dom_id not in lista]:
+            await self._wylacz_dom(rt.dom_id, rt)
+        for dom_id in [d for d in self._restarty if d != DOM_1 and d not in lista]:
+            await self._wylacz_dom(dom_id, None)
+        dzialajace = {rt.dom_id for rt in self.domy}
+        for dom_id in {*self._czeka, *self._nieudane} - lista - dzialajace - {DOM_1}:
+            self._zapomnij(dom_id)
+        for dom_id in sorted(lista - dzialajace - set(self._restarty)):
+            try:
+                await self._start_domu(dom_id)
+            except Exception:
+                log.exception("dom %d: blad nadzorcy przy starcie domu", dom_id)
+
+    async def _start_domu(self, dom_id: int) -> None:
+        """Dom z listy, ktory nie chodzi: start biezacej wersji, gdy jest
+        pora (nowa wersja albo ponowienie po bledzie przejsciowym)."""
+        p = self.przeladowanie
+        assert p is not None
+        try:
+            w = await asyncio.to_thread(p.wersja, dom_id)
+        except Exception:
+            log.exception("dom %d: nie odczytano wersji konfiguracji", dom_id)
+            return
+        if w is None or self._czeka.get(dom_id) == w:
+            return
+        if not self._czas_na_probe(dom_id, w):
+            await self._alarm_nie_dziala(dom_id)
+            return
+        try:
+            powod = await asyncio.to_thread(p.czeka, dom_id)
+        except Exception:
+            log.exception("dom %d: nie sprawdzono, czy dom jest skonfigurowany", dom_id)
+            powod = None
+        if powod is not None:
+            if dom_id not in self._czeka:
+                log.info("dom %d: czeka na konfiguracje (wersja %d) — %s; wystartuje sam po "
+                         "zapisaniu integracji w panelu", dom_id, w, powod)
+            self._czeka[dom_id] = w
+            self._nieudane.pop(dom_id, None)
+            self._ponow.pop(dom_id, None)
+            p.stany.ustaw(dom_id, StanDomu(None, ts=time.time(), czeka=powod))
+            return
+        self._czeka.pop(dom_id, None)
+        log.info("dom %d: start srodowiska domu (wersja %d)", dom_id, w)
+        try:
+            home = await asyncio.to_thread(p.konfiguracja, dom_id)
+            await asyncio.to_thread(p.materializuj, dom_id, home)
+            rt = p.runtime(dom_id, home)
+        except Exception as exc:
+            log.error("dom %d: konfiguracja z bazy (wersja %d) nie wystartowala — %s",
+                      dom_id, w, exc)
+            await self._nieudany_start(dom_id, w, exc)
+            return
+        rt.wersja = w
+        self._dolacz(rt)
+        # `_naprawiony` sam alarmuje „znow dziala” po awarii przeladowania.
+        bylo_przeladowanie = dom_id in self._alarmy
+        await self._naprawiony(dom_id, w)
+        self._alarmy_startu.pop(dom_id, None)
+        if dom_id in self._zaalarmowane:
+            self._zaalarmowane.discard(dom_id)
+            if bylo_przeladowanie:
+                return
+            await self._alarm(f"Dom {dom_id}: monitoring wystartowal",
+                              f"Dom dziala na konfiguracji w wersji {w}.")
+
+    async def _nieudany_start(self, dom_id: int, w: int, exc: BaseException) -> None:
+        """Biezaca wersja nie wstala: ostatnia dobra z kopii (jak `run` dla
+        Domu 1), a bez niej dom nie chodzi — stan, dziennik, alarm."""
+        p = self.przeladowanie
+        assert p is not None
+        blad, opis = str(exc) or type(exc).__name__, opis_bledu(exc)
+        przejsciowy = p.przejsciowy(exc)
+        rt = None
+        try:
+            kopia = await asyncio.to_thread(p.ostatnia_dobra, dom_id)
+            if kopia is not None:
+                await asyncio.to_thread(p.materializuj, dom_id, kopia[1])
+                rt = p.runtime(dom_id, kopia[1])
+                rt.wersja = kopia[0]
+        except Exception as exc2:
+            log.error("dom %d: ostatnia dobra konfiguracja tez nie wstaje — %s", dom_id, exc2)
+            rt = None
+        if rt is not None:
+            log.warning("dom %d: dziala na ostatniej dobrej konfiguracji (wersja %s) zamiast %d",
+                        dom_id, rt.wersja, w)
+            self._dolacz(rt)
+            await self._awaria_domu(dom_id, w, rt.wersja, blad, przejsciowy, opis)
+            return
+        await self._zapisz_awarie(dom_id, w, None, blad, przejsciowy, opis)
+        await self._alarm_nie_dziala(dom_id)
+
+    def _dolacz(self, rt: HomeRuntime) -> None:
+        p = self.przeladowanie
+        self._wersje[rt.dom_id] = rt.wersja
+        self.domy.append(rt)
+        self.domy.sort(key=lambda r: r.dom_id)
+        self._uruchom(rt)
+        if p is not None:
+            try:
+                p.po_zmianie(rt.dom_id, rt)
+            except Exception:
+                log.exception("dom %d: blad po starcie (panel)", rt.dom_id)
+
+    async def _alarm_nie_dziala(self, dom_id: int) -> None:
+        """Alarm instancji o domu, ktory nie chodzi: pierwszy od razu, kolejne
+        z rosnacym odstepem — z bramki w dzienniku (restart poda nie
+        powtarza alarmu), a bez niej z pamieci nadzorcy."""
+        p = self.przeladowanie
+        assert p is not None
+        stan = p.stany.get(dom_id)
+        if stan is None or stan.nieudana is None or dom_id in self._alarm_startu_w_toku:
+            return
+        pierwszy = dom_id not in self._zaalarmowane
+        tytul = (f"Dom {dom_id}: monitoring nie wystartowal" if pierwszy
+                 else f"Dom {dom_id}: monitoring nadal nie dziala")
+        tresc = (f"Konfiguracja domu (wersja {stan.nieudana}) nie wstaje: "
+                 f"{self._opisy_alarmu.get(dom_id, stan.opis_alarmu or BEZ_OPISU)}. "
+                 "Pozostale domy dzialaja. "
+                 + ("Kidwatch ponowi probe sam." if stan.ponowienie
+                    else "Popraw integracje w panelu (Ustawienia -> Integracje)."))
+        if p.bramka_alarmu is None:
+            nastepny = self._alarmy_startu.get(dom_id)
+            if nastepny is not None and p.zegar() < nastepny[0]:
+                return
+            odstep = (ALARM_PIERWSZY_ODSTEP if nastepny is None
+                      else min(nastepny[1] * 2, ALARM_MAX_ODSTEP))
+            self._alarmy_startu[dom_id] = (p.zegar() + odstep, odstep)
+            self._zaalarmowane.add(dom_id)
+            await self._alarm(tytul, tresc)
+            return
+        try:
+            odstep = await asyncio.to_thread(p.bramka_alarmu, dom_id)
+        except Exception:
+            log.exception("dom %d: bramka alarmu startu niedostepna — wysylam", dom_id)
+            odstep = ALARM_PIERWSZY_ODSTEP
+        if odstep is None:
+            return
+        self._zaalarmowane.add(dom_id)
+        self._alarm_startu_w_toku.add(dom_id)
+        log.error("alarm instancji: %s — %s", tytul, tresc)
+        kanal = self.alarm if self.alarm is not None else p.alarm
+
+        async def wyslij() -> None:
+            try:
+                if kanal is not None:
+                    await kanal(tytul, tresc)
+                # Wpis dopiero po wysylce: lezaca bramka nie blokuje alarmu na odstep.
+                await asyncio.to_thread(p.zapisz_alarm, dom_id, odstep, tytul)
+            except Exception:
+                log.exception("alarm instancji nie wyszedl: %s", tytul)
+            finally:
+                self._alarm_startu_w_toku.discard(dom_id)
+
+        zadanie = asyncio.create_task(wyslij(), name="alarm startu domu")
+        self._alarmy_w_tle.add(zadanie)
+        zadanie.add_done_callback(self._alarmy_w_tle.discard)
+
+    async def _wylacz_dom(self, dom_id: int, rt: HomeRuntime | None) -> None:
+        """Dom zniknal z listy (usuniety albo poza trybem `baza`): koniec
+        jego srodowiska z oproznieniem kolejki i zapomniany stan."""
+        log.warning("dom %d: nie ma go juz wsrod domow w trybie `baza` — zatrzymanie "
+                    "srodowiska domu", dom_id)
+        if rt is not None:
+            if rt in self.domy:
+                self.domy.remove(rt)
+            await self._zatrzymaj(rt)
+        self._restarty.pop(dom_id, None)
+        self._zapomnij(dom_id)
+
+    def _zapomnij(self, dom_id: int) -> None:
+        for slownik in (self._wersje, self._nieudane, self._ponow, self._alarmy, self._serie,
+                        self._starty, self._opisy_alarmu, self._czeka, self._alarmy_startu):
+            slownik.pop(dom_id, None)
+        self._zaalarmowane.discard(dom_id)
+        if self.przeladowanie is not None:
+            self.przeladowanie.stany.usun(dom_id)
+        self._po_zatrzymaniu(dom_id)
+
+    def _po_zatrzymaniu(self, dom_id: int) -> None:
+        p = self.przeladowanie
+        if p is None:
+            return
+        try:
+            p.po_zatrzymaniu(dom_id)
+        except Exception:
+            log.exception("dom %d: blad po zatrzymaniu (panel)", dom_id)
 
     async def zamknij(self, flush_seconds: float) -> None:
         for rt in self.domy:

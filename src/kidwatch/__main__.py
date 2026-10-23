@@ -166,14 +166,17 @@ OUTBOX_FLUSH_ON_STOP_SECONDS = 10.0
 
 
 def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
-                       classifier: Classifier, *, tetno_procesu: bool = False):
+                       classifier: Classifier, *, tetno_procesu: bool = False, alarm=None):
     """Srodowisko domu (domy.HomeRuntime): baza domu, silnik, kolejka z `dom_id`,
     zrodlo DNS i petle wlaczone w konfiguracji domu. Kolejnosc budowy jak
     przed domami — brak sekretu zrodla przerywa start, zanim ruszy panel.
 
     Tik dotyka tetna DOMU (`rt.dotknij_tetna`); plik tetna procesu (liveness)
     tylko z `tetno_procesu=True` — `run` z izolacja awarii (E3b) zostawia go
-    nadzorcy, zeby awaria jednego domu nie restartowala poda."""
+    nadzorcy, zeby awaria jednego domu nie restartowala poda.
+
+    `alarm` (alarm instancji): dom ≠ 1, ktorego kolejka przechodzi w stan
+    wstrzymania (bez trybu kont, §4.2), zglasza to administratorowi."""
     from .domy import (  # noqa: PLC0415
         DOM_1,
         HomeRuntime,
@@ -201,6 +204,8 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
         po_wysylce = zapis_wyslanych(auth_path, dom_id, home)
     dispatcher = build_outbox(home, store, bramka=inst.notifiers.bramka, auth_path=auth_path,
                               dom_id=dom_id, po_wysylce=po_wysylce)
+    if alarm is not None and dom_id != DOM_1 and hasattr(dispatcher, "na_wstrzymanie"):
+        dispatcher.na_wstrzymanie = alarm_wstrzymania(dom_id, alarm)
     source = build_source(home, store)
     rt = HomeRuntime(dom_id, home, store, engine, dispatcher, source)
     rt.dodaj_petle("source", lambda: source_loop(source, engine, dispatcher, store))
@@ -252,7 +257,7 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
         # Przeladowanie domu (domy.Nadzorca): aplikacja TV poprzedniego
         # srodowiska nie moze zostac w panelu, gdy nowa konfiguracja jej nie ma.
         tv_app.AKTYWNA = None
-    tv = build_tv_watcher(home, store, katalog) if home.tv.enabled else None
+    tv = build_tv_watcher(home, store, katalog, dom_id) if home.tv.enabled else None
     if tv is not None:
         log.info("czujnik TV wlaczony: %s (%s), co %.0f s",
                  home.tv.name, home.tv.host, home.tv.poll_seconds)
@@ -318,6 +323,39 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
     return rt
 
 
+#: Alarm wstrzymanej kolejki domu ≠ 1 najwyzej raz na tyle sekund na dom —
+#: kazde przeladowanie domu to nowa kolejka i nowe przejscie w wstrzymanie.
+ALARM_WSTRZYMANIA_ODSTEP = 6 * 3600.0
+_ALARMY_WSTRZYMANIA: dict[int, float] = {}
+_ZADANIA_ALARMOW: set[asyncio.Task] = set()
+
+
+def alarm_wstrzymania(dom_id: int, alarm):
+    """Outbox.na_wstrzymanie dla domu ≠ 1: alarm instancji w tle (kolejka nie
+    czeka na bramke), z odstepem ALARM_WSTRZYMANIA_ODSTEP."""
+
+    def na_wstrzymanie(powod: str) -> None:
+        teraz = time.monotonic()
+        ostatni = _ALARMY_WSTRZYMANIA.get(dom_id)
+        if ostatni is not None and teraz - ostatni < ALARM_WSTRZYMANIA_ODSTEP:
+            return
+        _ALARMY_WSTRZYMANIA[dom_id] = teraz
+
+        async def wyslij() -> None:
+            try:
+                await alarm(f"Dom {dom_id}: powiadomienia wstrzymane",
+                            f"{powod}. Notki czekaja w kolejce tego domu (nie ida trasami "
+                            "Domu 1). Potrzebny tryb kont i bramka z polem `odbiorca`.")
+            except Exception:
+                log.exception("Dom %d: alarm wstrzymanej kolejki nie wyszedl", dom_id)
+
+        zadanie = asyncio.get_running_loop().create_task(wyslij(), name="alarm wstrzymania")
+        _ZADANIA_ALARMOW.add(zadanie)
+        zadanie.add_done_callback(_ZADANIA_ALARMOW.discard)
+
+    return na_wstrzymanie
+
+
 #: Klucz Sekretu wymuszajacy config.yaml dla Domu 1
 #: (renacode-infra: docs/projekty/kidwatch/sejf-domow.md, §4).
 WYMUSZENIE_DOMU_1_ENV = "KIDWATCH_DOM_1_ZRODLO"
@@ -367,16 +405,29 @@ def alarm_instancji(inst: InstanceConfig):
 
 
 def przeladowanie_domow(rejestr, inst: InstanceConfig, konfiguracje: dict, stany,
-                        domy_panelu=None, *, alarm=None):
+                        domy_panelu=None, *, alarm=None, dom_1_z_bazy: bool = True,
+                        kolejne_domy: bool = False):
     """domy.Przeladowanie dla `run` (§5.1): wersja domu tylko, gdy nadal
     jest w trybie `baza` (powrot do `yaml` wymaga restartu — jak dotad);
     konfiguracja z sejfu jak przy starcie plus wymagane sekrety (brak klucza
     NextDNS ma zostawic stary dom, a nie zatrzymac go), pliki z sekretow
     dopiero po zatrzymaniu starego srodowiska; kopia ostatniej dobrej
     wersji, dziennik i alarm instancji; po zmianie panel bierze nowa
-    konfiguracje."""
-    from .domy import ZRODLO_BAZA, Przeladowanie, katalog_sekretow_domu  # noqa: PLC0415
+    konfiguracje.
+
+    `dom_1_z_bazy=False`: Dom 1 chodzi z config.yaml (takze wymuszony
+    KIDWATCH_DOM_1_ZRODLO) — nadzorca go nie przeladowuje, jak dotad.
+    `kolejne_domy`: nadzorca uruchamia domy ≠ 1 w trybie `baza` (takze
+    dodane w trakcie pracy), zatrzymuje te, ktore zniknely, a dom
+    nieskonfigurowany (`czego_brakuje`, bez kopii) czeka bez alarmu."""
+    from .domy import (  # noqa: PLC0415
+        DOM_1,
+        ZRODLO_BAZA,
+        Przeladowanie,
+        katalog_sekretow_domu,
+    )
     from .konfiguracja_domu import (  # noqa: PLC0415
+        czego_brakuje,
         materializuj_pliki,
         sprawdz_wymagane_sekrety,
         zbuduj_dom,
@@ -385,10 +436,23 @@ def przeladowanie_domow(rejestr, inst: InstanceConfig, konfiguracje: dict, stany
     from .sejf import Sejf  # noqa: PLC0415
 
     def wersja(dom_id: int) -> int | None:
+        if dom_id == DOM_1 and not dom_1_z_bazy:
+            return None
         dom = rejestr.dom(dom_id)
         if dom is None or dom.zrodlo_konfiguracji != ZRODLO_BAZA:
             return None
         return dom.wersja
+
+    def domy() -> list[int]:
+        return [d.id for d in rejestr.domy()
+                if d.id != DOM_1 and d.zrodlo_konfiguracji == ZRODLO_BAZA]
+
+    def czeka(dom_id: int) -> str | None:
+        # Dom, ktory juz kiedys wstal (kopia), nie jest „swiezy” — brak klucza
+        # to wtedy awaria z alarmem i start na kopii.
+        if rejestr.ma_kopie(dom_id):
+            return None
+        return czego_brakuje(rejestr.dane_domu(dom_id))
 
     def konfiguracja(dom_id: int) -> HomeConfig:
         home = zbuduj_dom(rejestr, dom_id, Sejf.z_srodowiska(), materializuj=False)
@@ -404,15 +468,27 @@ def przeladowanie_domow(rejestr, inst: InstanceConfig, konfiguracje: dict, stany
         if domy_panelu is not None:
             domy_panelu.zapomnij(dom_id)
 
+    def po_zatrzymaniu(dom_id: int) -> None:
+        from .mdm import ZAKRESY_CZUJEK  # noqa: PLC0415
+
+        # Panel i komendy przestaja widziec dom (BezKonfiguracji / None),
+        # a czujka MDM instancji nie liczy jego zakresu.
+        konfiguracje.pop(dom_id, None)
+        ZAKRESY_CZUJEK.pop(dom_id, None)
+        if domy_panelu is not None:
+            domy_panelu.zapomnij(dom_id)
+
     return Przeladowanie(
         wersja=wersja, konfiguracja=konfiguracja,
         runtime=lambda dom_id, home: build_home_runtime(
-            dom_id, inst, home, Classifier(inst.app_map_path)),
+            dom_id, inst, home, Classifier(inst.app_map_path), alarm=alarm),
         po_zmianie=po_zmianie, stany=stany, materializuj=materializuj,
         zapamietaj=rejestr.zapamietaj_dobra, zapisz_blad=rejestr.zapisz_blad_przeladowania,
         start_ok=rejestr.zapisz_start_ok,
         ostatnia_dobra=lambda dom_id: zbuduj_dom_z_kopii(rejestr, dom_id, Sejf.z_srodowiska()),
-        alarm=alarm)
+        alarm=alarm,
+        domy=domy if kolejne_domy else None, czeka=czeka, po_zatrzymaniu=po_zatrzymaniu,
+        bramka_alarmu=rejestr.alarm_startu, zapisz_alarm=rejestr.zapisz_alarm_startu)
 
 
 async def start_domu_z_bazy(rejestr, inst: InstanceConfig, stany, alarm, dom_id: int = 1):
@@ -608,6 +684,7 @@ async def cmd_run(args) -> int:
     # W trybie `yaml` monitoring od nich nie zalezy, wiec blad bazy panelu
     # go nie zatrzyma (jak w E1).
     w_bazie: list[int] = []
+    rejestr_ok = False
     try:
         raport = rejestr.migruj(strefa=home.timezone)
         if raport.zmiany:
@@ -615,6 +692,7 @@ async def cmd_run(args) -> int:
                      "zalozony" if raport.dom_1_zalozony else "bez zmian",
                      len(raport.uzgodnione), list(raport.kolumny) or "-")
         w_bazie = [d.id for d in rejestr.domy() if d.zrodlo_konfiguracji == ZRODLO_BAZA]
+        rejestr_ok = True
     except sqlite3.Error:
         log.exception("domy: migracja panel-auth.db nie powiodla sie")
     wymuszone = os.environ.get(WYMUSZENIE_DOMU_1_ENV, "")
@@ -630,10 +708,9 @@ async def cmd_run(args) -> int:
                     WYMUSZENIE_DOMU_1_ENV, wymuszone)
     inne = [d for d in w_bazie if d != DOM_1]
     if inne:
-        # Izolacja awarii jest od E3b, ale start kolejnych domow (z alarmem
-        # wstrzymanej kolejki) to osobny krok przed E6 — na razie tylko Dom 1.
-        log.warning("domy %s maja konfiguracje w bazie — ich uruchamianie to krok przed "
-                    "E6, na razie chodzi tylko Dom 1", inne)
+        # Kolejne domy startuje nadzorca PO Domu 1 (Nadzorca._sprawdz_domy):
+        # blad ktoregos z nich nie zatrzymuje Domu 1 ani procesu.
+        log.info("domy %s: konfiguracja w bazie — uruchamia je nadzorca obok Domu 1", inne)
     alarm = alarm_instancji(inst)
     stany = StanyDomow()
     if DOM_1 in w_bazie:
@@ -665,9 +742,10 @@ async def cmd_run(args) -> int:
     if cfg.panel.enabled:
         from .panel import start_panel  # noqa: PLC0415
 
-        # Panel Domu 1 z TEJ SAMEJ konfiguracji co jego srodowisko — przy
+        # Panel domu z TEJ SAMEJ konfiguracji co jego srodowisko — przy
         # `baza` (E2) nie z config.yaml, inaczej panel pokazalby pusty dom
-        # (przeglad E3a, B-1). Kolejne domy: E3b.
+        # (przeglad E3a, B-1). Kolejne domy dopisuje nadzorca po starcie
+        # (`po_zmianie`), a usuwa po zatrzymaniu (`po_zatrzymaniu`).
         panel = start_panel(cfg, konfiguracja_domu=lambda dom: konfiguracje.get(dom.id),
                             stany=stany)
 
@@ -678,13 +756,15 @@ async def cmd_run(args) -> int:
             loop.add_signal_handler(sig, stop.set)
 
     przeladowanie = None
-    if DOM_1 in w_bazie:
+    if rejestr_ok:
         # Zmiana integracji w panelu podnosi domy.wersja; nadzorca przebudowuje
-        # Dom 1 bez restartu poda. Dom 1 z config.yaml (takze wymuszony
-        # KIDWATCH_DOM_1_ZRODLO) — bez przeladowania, jak dotad.
+        # dom bez restartu poda. Dom 1 z config.yaml (takze wymuszony
+        # KIDWATCH_DOM_1_ZRODLO) — bez przeladowania, jak dotad. Kolejne domy
+        # (tryb `baza`) startuje i zatrzymuje nadzorca, takze dodane w trakcie.
         przeladowanie = przeladowanie_domow(
             rejestr, inst, konfiguracje, stany,
-            panel.domy_panelu if panel is not None else None, alarm=alarm)
+            panel.domy_panelu if panel is not None else None, alarm=alarm,
+            dom_1_z_bazy=DOM_1 in w_bazie, kolejne_domy=True)
     from .scheduler import touch_heartbeat  # noqa: PLC0415
 
     # Izolacja awarii (E3b, §5.1): koniec petli albo tik stojacy 3x okres
@@ -693,7 +773,7 @@ async def cmd_run(args) -> int:
     nadzorca = Nadzorca([runtime], przeladowanie=przeladowanie,
                         flush_seconds=OUTBOX_FLUSH_ON_STOP_SECONDS,
                         odbuduj=lambda dom_id, h: build_home_runtime(
-                            dom_id, inst, h, Classifier(inst.app_map_path)),
+                            dom_id, inst, h, Classifier(inst.app_map_path), alarm=alarm),
                         alarm=alarm, tetno_procesu=touch_heartbeat)
     komendy = start_komend(cfg, rejestr, konfiguracje, alarm)
     czujka_mdm = start_czujki_mdm_instancji(cfg, inst, konfiguracje, alarm)
@@ -929,7 +1009,7 @@ async def cmd_web(args) -> int:
 
 
 # ======================================================================= device
-def build_tv_watcher(cfg: HomeConfig, store: Store, katalog: Path):
+def build_tv_watcher(cfg: HomeConfig, store: Store, katalog: Path, dom_id: int = 1):
     """Obserwator telewizora albo None (z bledem w logu), gdy brak klucza ADB.
 
     Brak klucza nie zabija procesu — jak przy rekordach parowania iPadow:
@@ -952,7 +1032,7 @@ def build_tv_watcher(cfg: HomeConfig, store: Store, katalog: Path):
         # Aplikacja Kidwatch TV i zapasy dzialaja bez ADB.
         log.warning("%s: bez ADB — %s", cfg.tv.name, exc)
         shell = BrakAdb(str(exc))
-    aplikacja = build_tv_app(cfg, shell, katalog)
+    aplikacja = build_tv_app(cfg, shell, katalog, dom_id)
     probe = TvProbe(shell)
     hybryda = build_tv_traffic(cfg, store, probe, aplikacja)
     return TvWatcher(
@@ -968,7 +1048,7 @@ def build_tv_watcher(cfg: HomeConfig, store: Store, katalog: Path):
     )
 
 
-def build_tv_app(cfg: HomeConfig, shell, katalog_domu: Path):
+def build_tv_app(cfg: HomeConfig, shell, katalog_domu: Path, dom_id: int = 1):
     """Aplikacja Kidwatch TV (sources/tv_app.py) albo None (tv.aplikacja: false).
     Rejestrowana w `tv_app.AKTYWNA` dla panelu (instalacja, parowanie). Token
     w `tv-app/` w katalogu domu (domy.katalog_domu)."""
@@ -985,7 +1065,14 @@ def build_tv_app(cfg: HomeConfig, shell, katalog_domu: Path):
     if sekrety is not None and hasattr(sekrety, "zapisz"):
         # Tryb `baza`: plik tokenu jest w pamieci poda — trwala kopia w bazie.
         app.po_sparowaniu = lambda token: sekrety.zapisz("tv", "app_token", token)
-    tv_app.AKTYWNA = app
+    if dom_id == 1:
+        tv_app.AKTYWNA = app
+    else:
+        # Rejestr aplikacji TV jest jeden na proces i nalezy do Domu 1 (panel:
+        # aplikacja_tv). Telewizor innego domu nie moze go nadpisac — panel
+        # Domu 1 sterowalby cudzym telewizorem (TV w Domu 2: poza E6, §8 p. 4).
+        log.warning("dom %d: aplikacja Kidwatch TV bez panelu (rejestr TV tylko Domu 1)",
+                    dom_id)
     log.info("%s: aplikacja Kidwatch TV (%s:%d) - %s", cfg.tv.name, cfg.tv.host, tv_app.PORT,
              "sparowana" if app.sparowana else "do instalacji/parowania w panelu")
     return app

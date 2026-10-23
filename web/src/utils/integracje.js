@@ -105,6 +105,13 @@ export function reloadNotice(p) {
   if (!p.automatyczne) {
     return { kind: 'warn', text: p.komunikat || 'Zmiana zadziała po restarcie Kidwatcha.' };
   }
+  if (p.czeka) {
+    return {
+      kind: 'info',
+      text: `Dom czeka na konfigurację: ${p.czeka}. Monitoring wystartuje sam po jej `
+        + 'uzupełnieniu (w ciągu ok. 10 s od zapisu).',
+    };
+  }
   if (p.blad && p.nieudana === p.wersja) {
     return {
       kind: 'bad',
