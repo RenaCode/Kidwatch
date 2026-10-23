@@ -34,9 +34,11 @@ from . import config as cfgmod
 from .config import KONTEKST_Z_BAZY, SEKRETY_ZE_SRODOWISKA, HomeConfig
 from .devicekind import ALIASY
 from .domy import (
+    DOM_1,
     POLA_SEKRETOW,
     ZRODLO_BAZA,
     DaneDomu,
+    Integracja,
     PlanDomu,
     RejestrDomow,
     SekretyDomu,
@@ -141,15 +143,8 @@ def home_z_danych(dane: DaneDomu, sekrety: SekretyDomu, *,
                   katalog_plikow: Path | str) -> HomeConfig:
     """Wiersze domu + sekrety -> HomeConfig (bez siegania do env).
     `katalog_plikow`: tam srodowisko domu zapisuje klucz ADB."""
-    integ = {i.typ: i for i in dane.integracje}
     d: dict[str, Any] = json.loads(json.dumps(dane.dom.ustawienia))
     d["timezone"] = dane.dom.strefa
-    zrodla = [t for t in ("nextdns", "adguard") if t in integ and integ[t].wlaczona]
-    if len(zrodla) != 1:
-        raise ValueError(f"dom {dane.dom.id}: musi byc wlaczone dokladnie jedno zrodlo DNS "
-                         f"(nextdns albo adguard), jest: {zrodla or 'zadne'}")
-    d["source"] = {"kind": zrodla[0], **{t: dict(integ[t].ustawienia)
-                                         for t in ("nextdns", "adguard") if t in integ}}
     d["devices"] = []
     for u in dane.urzadzenia:
         if u["rodzaj"] == "tv":
@@ -158,6 +153,26 @@ def home_z_danych(dane: DaneDomu, sekrety: SekretyDomu, *,
         dev["kind"] = ALIASY.get(u["rodzaj"], u["rodzaj"])
         dev.update(u["ustawienia"])
         d["devices"].append(dev)
+    d.update(_sekcje_integracji(dane.dom.id, dane.integracje, sekrety, katalog_plikow))
+    try:
+        return HomeConfig.model_validate(d, context=KONTEKST_Z_BAZY)
+    except ValidationError as exc:
+        raise ValueError(f"dom {dane.dom.id}: konfiguracja w bazie niepoprawna: "
+                         f"{_bledy(exc)}") from exc
+
+
+def _sekcje_integracji(dom_id: int, integracje, sekrety: SekretyDomu,
+                       katalog_plikow: Path | str) -> dict[str, Any]:
+    """Sekcje HomeConfig niesione przez integracje: source, notifiers, tv,
+    unifi, mdm (wspolne dla `home_z_danych` i `importuj_strukture`)."""
+    integ = {i.typ: i for i in integracje}
+    d: dict[str, Any] = {}
+    zrodla = [t for t in ("nextdns", "adguard") if t in integ and integ[t].wlaczona]
+    if len(zrodla) != 1:
+        raise ValueError(f"dom {dom_id}: musi byc wlaczone dokladnie jedno zrodlo DNS "
+                         f"(nextdns albo adguard), jest: {zrodla or 'zadne'}")
+    d["source"] = {"kind": zrodla[0], **{t: dict(integ[t].ustawienia)
+                                         for t in ("nextdns", "adguard") if t in integ}}
     notifiers: dict[str, Any] = {}
     if "ntfy" in integ:
         notifiers["ntfy"] = {**integ["ntfy"].ustawienia, "enabled": integ["ntfy"].wlaczona,
@@ -171,11 +186,7 @@ def home_z_danych(dane: DaneDomu, sekrety: SekretyDomu, *,
             d[typ] = {**integ[typ].ustawienia, "enabled": integ[typ].wlaczona}
     # Zawsze katalog domu: domyslne /adb to klucz ADB Domu 1 z Sekretu k8s.
     d.setdefault("tv", {})["adb_key_dir"] = str(Path(katalog_plikow) / "adb")
-    try:
-        return HomeConfig.model_validate(d, context=KONTEKST_Z_BAZY)
-    except ValidationError as exc:
-        raise ValueError(f"dom {dane.dom.id}: konfiguracja w bazie niepoprawna: "
-                         f"{_bledy(exc)}") from exc
+    return d
 
 
 def _bledy(exc: ValidationError) -> str:
@@ -572,3 +583,83 @@ def importuj(rejestr: RejestrDomow, dom_id: int, home: HomeConfig, sekrety_yaml:
             raise
     return raport
 
+
+#: Sekcje HomeConfig, ktore sa integracjami domu — wpisuje je administrator
+#: instalacji w panelu (Ustawienia -> Integracje), nigdy plik struktury.
+SEKCJE_INTEGRACJI = ("source", "notifiers", "tv", "unifi", "mdm")
+#: Zrodlo DNS tylko do walidacji pliku struktury, gdy dom nie ma jeszcze
+#: wlaczonego zrodla (swiezy dom po `dom-dodaj`). Do bazy nie trafia.
+_ZRODLO_DO_WALIDACJI = Integracja(0, "nextdns", True, {"profile_id": "walidacja"})
+
+
+def importuj_strukture(rejestr: RejestrDomow, dom_id: int, surowy: Mapping[str, Any], *,
+                       sejf: Sejf, zapisz: bool, kto: str | None = None) -> RaportImportu:
+    """`dom-importuj N --plik` dla domu innego niz Dom 1: dzieci, urzadzenia,
+    strefa i ustawienia silnika z pliku YAML (ksztalt sekcji domu
+    z config.yaml, BEZ sekcji integracji). Integracje i sekrety wpisane
+    w panelu zostaja nietkniete, `dozwolone_sieci`/`dozwolone_hosty` tez —
+    adresy LAN dopuszcza sie tylko `dom-sieci`.
+
+    Walidacja tymi samymi walidatorami co config.yaml, razem z biezacymi
+    integracjami domu (np. `nextdns_profile` przy zrodle AdGuard). Potem jak
+    `importuj`: zapis -> odczyt -> porownanie w jednej transakcji, roznica
+    albo podglad = ROLLBACK."""
+    if dom_id == DOM_1:
+        raise ValueError("Dom 1 importuje sie z config.yaml (dom-importuj 1, bez --plik)")
+    obce = [k for k in SEKCJE_INTEGRACJI if k in surowy]
+    if obce:
+        raise ValueError(f"plik zawiera sekcje integracji {obce} — integracje i sekrety "
+                         "wpisuje sie w panelu (Ustawienia -> Integracje), nie w pliku")
+    dom = rejestr.dom(dom_id)
+    if dom is None:
+        raise LookupError(f"nie ma domu {dom_id}")
+    integracje = rejestr.dane_domu(dom_id).integracje
+    zrodla = [i for i in integracje if i.typ in ("nextdns", "adguard") and i.wlaczona]
+    do_walidacji = integracje if len(zrodla) == 1 else [
+        *(i for i in integracje if i.typ not in ("nextdns", "adguard")), _ZRODLO_DO_WALIDACJI]
+    bez_sekretow = SekretyDomu(dom_id)
+    d = json.loads(json.dumps(dict(surowy)))
+    d.update(_sekcje_integracji(dom_id, do_walidacji, bez_sekretow, _ADB))
+    try:
+        home = HomeConfig.model_validate(d, context=KONTEKST_Z_BAZY)
+    except ValidationError as exc:
+        raise ValueError(f"dom {dom_id}: plik niepoprawny: {_bledy(exc)}") from exc
+    plan = plan_z_home(home, {})
+    plan.dozwolone_sieci = list(dom.dozwolone_sieci)
+    plan.dozwolone_hosty = list(dom.dozwolone_hosty)
+    ostrzezenia = []
+    if len(zrodla) != 1:
+        ostrzezenia.append("dom nie ma jeszcze wlaczonego zrodla DNS — monitoring ruszy po "
+                           "wpisaniu integracji NextDNS w panelu")
+    raport = RaportImportu(
+        dom_id=dom_id, strefa=plan.strefa, dzieci=list(plan.dzieci),
+        urzadzenia=[u["nazwa"] for u in plan.urzadzenia],
+        integracje={i.typ: (i.wlaczona, {p: "(bez zmian)" for p in i.sekrety_pola})
+                    for i in integracje},
+        dozwolone_sieci=plan.dozwolone_sieci, dozwolone_hosty=plan.dozwolone_hosty,
+        ostrzezenia=ostrzezenia,
+    )
+    with rejestr._conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            zapisz_dane_domu_conn(conn, dom_id, plan, sejf=sejf, kto=kto, integracje=False)
+            dane = dane_domu_conn(conn, dom_id)
+            if [(i.typ, i.wlaczona, i.ustawienia) for i in dane.integracje] != \
+                    [(i.typ, i.wlaczona, i.ustawienia) for i in integracje]:
+                raport.roznice.append("integracje: zmienione przez import struktury")
+            try:
+                z_bazy = home_z_danych(
+                    DaneDomu(dane.dom, dane.dzieci, dane.urzadzenia, do_walidacji),
+                    bez_sekretow, katalog_plikow=_ADB)
+                raport.roznice += porownaj(home, z_bazy)
+            except ValueError as exc:
+                raport.roznice.append(str(exc))
+            if zapisz and not raport.roznice:
+                conn.execute("COMMIT")
+                raport.zapisano = True
+            else:
+                conn.execute("ROLLBACK")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return raport

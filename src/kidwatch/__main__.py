@@ -1931,11 +1931,15 @@ def _rejestr(cfg: Config):
 
 def kiedy_zadziala(dom_id: int, baza_przed: bool, baza_po: bool) -> str:
     """Kiedy zmiana konfiguracji domu z CLI zacznie dzialac (§5.1). Nadzorca
-    przeladowuje bez restartu tylko Dom 1, ktory JUZ chodzi w trybie `baza`
-    (i nie jest wymuszony na config.yaml): przelaczenie zrodla w ktoras
-    strone i kazdy inny dom (E3b) dalej wymagaja restartu poda."""
+    przeladowuje bez restartu Dom 1, ktory JUZ chodzi w trybie `baza` (i nie
+    jest wymuszony na config.yaml), oraz kazdy inny dom (zawsze `baza`,
+    start i przeladowanie przez nadzorce); przelaczenie zrodla Domu 1
+    w ktoras strone dalej wymaga restartu poda."""
     from .domy import DOM_1  # noqa: PLC0415
 
+    if dom_id != DOM_1 and baza_po:
+        return ("Zadziala w ciagu ok. 10 s, bez restartu poda — dom bez zrodla DNS "
+                "albo bez urzadzen czeka na konfiguracje.")
     wymuszony_yaml = os.environ.get(WYMUSZENIE_DOMU_1_ENV, "").strip().lower() == "yaml"
     if dom_id == DOM_1 and baza_przed and baza_po and not wymuszony_yaml:
         # Stan bazy, nie dzialajacego procesu: pod uruchomiony jeszcze w trybie
@@ -1945,23 +1949,7 @@ def kiedy_zadziala(dom_id: int, baza_przed: bool, baza_po: bool) -> str:
     return "Dziala po restarcie poda."
 
 
-async def cmd_dom_importuj(args) -> int:
-    """Dom 1: config.yaml + sekrety z env/plikow -> baza (§6 p. 4)."""
-    from .domy import DOM_1, ZRODLO_BAZA, katalog_domu  # noqa: PLC0415
-    from .konfiguracja_domu import importuj, sekrety_z_yaml  # noqa: PLC0415
-
-    if args.dom != DOM_1:
-        print("Konfiguracje w config.yaml ma tylko Dom 1.", file=sys.stderr)
-        return 2
-    cfg = Config.load(args.config)
-    inst, home = cfg.split()
-    rejestr = _rejestr(cfg)
-    przed = rejestr.dom(DOM_1)
-    baza_przed = przed is not None and przed.zrodlo_konfiguracji == ZRODLO_BAZA
-    sekrety = sekrety_z_yaml(home, katalog_domu(DOM_1, inst.store.path))
-    raport = importuj(rejestr, DOM_1, home, sekrety, sejf=_sejf(), zapisz=args.zapisz,
-                      kto="cli",
-                      plik_tokenu_tv=katalog_domu(DOM_1, inst.store.path) / "tv-app" / "token")
+def _wypisz_raport_importu(raport) -> None:
     print(f"Dom {raport.dom_id}: strefa {raport.strefa}")
     print(f"  dzieci: {', '.join(raport.dzieci)}")
     print(f"  urzadzenia: {', '.join(raport.urzadzenia)}")
@@ -1972,6 +1960,27 @@ async def cmd_dom_importuj(args) -> int:
     print(f"  dozwolone_hosty: {', '.join(raport.dozwolone_hosty) or '-'}")
     for o in raport.ostrzezenia:
         print(f"  UWAGA: {o}")
+
+
+async def cmd_dom_importuj(args) -> int:
+    """Dom 1: config.yaml + sekrety z env/plikow -> baza (§6 p. 4). Inny dom:
+    struktura z pliku `--plik` (dzieci, urzadzenia, ustawienia), integracje
+    zostaja z panelu."""
+    from .domy import DOM_1, ZRODLO_BAZA, katalog_domu  # noqa: PLC0415
+    from .konfiguracja_domu import importuj, sekrety_z_yaml  # noqa: PLC0415
+
+    if args.dom != DOM_1 or args.plik:
+        return _dom_importuj_strukture(args)
+    cfg = Config.load(args.config)
+    inst, home = cfg.split()
+    rejestr = _rejestr(cfg)
+    przed = rejestr.dom(DOM_1)
+    baza_przed = przed is not None and przed.zrodlo_konfiguracji == ZRODLO_BAZA
+    sekrety = sekrety_z_yaml(home, katalog_domu(DOM_1, inst.store.path))
+    raport = importuj(rejestr, DOM_1, home, sekrety, sejf=_sejf(), zapisz=args.zapisz,
+                      kto="cli",
+                      plik_tokenu_tv=katalog_domu(DOM_1, inst.store.path) / "tv-app" / "token")
+    _wypisz_raport_importu(raport)
     if raport.roznice:
         print("ROZNICE config.yaml <-> baza (nic nie zapisano):")
         for r in raport.roznice:
@@ -1984,6 +1993,49 @@ async def cmd_dom_importuj(args) -> int:
               "Powrot: kidwatch dom-zrodlo 1 yaml (+ restart).")
     else:
         print("Podglad — nic nie zapisano. Zapis: dom-importuj 1 --zapisz")
+    return 0
+
+
+def _dom_importuj_strukture(args) -> int:
+    import yaml  # noqa: PLC0415
+
+    from .domy import DOM_1  # noqa: PLC0415
+    from .konfiguracja_domu import importuj_strukture  # noqa: PLC0415
+
+    if args.dom == DOM_1:
+        print("Dom 1 importuje sie z config.yaml: dom-importuj 1 (bez --plik).", file=sys.stderr)
+        return 2
+    if not args.plik:
+        print(f"Dom {args.dom}: podaj plik struktury domu — dom-importuj {args.dom} "
+              "--plik dom.yaml (wzor: dom.example.yaml).", file=sys.stderr)
+        return 2
+    try:
+        surowy = yaml.safe_load(Path(args.plik).read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        print(f"odrzucone: plik {args.plik}: {exc}", file=sys.stderr)
+        return 1
+    if not isinstance(surowy, dict):
+        print(f"odrzucone: plik {args.plik} nie jest slownikiem YAML", file=sys.stderr)
+        return 1
+    cfg = Config.load(args.config)
+    try:
+        raport = importuj_strukture(_rejestr(cfg), args.dom, surowy, sejf=_sejf(),
+                                    zapisz=args.zapisz, kto="cli")
+    except (LookupError, ValueError) as exc:
+        print(f"odrzucone: {exc}", file=sys.stderr)
+        return 1
+    _wypisz_raport_importu(raport)
+    if raport.roznice:
+        print("ROZNICE plik <-> baza (nic nie zapisano):")
+        for r in raport.roznice:
+            print(f"  - {r}")
+        return 1
+    print("Porownanie: struktura w bazie identyczna z plikiem; integracje bez zmian.")
+    if raport.zapisano:
+        print(f"ZAPISANO. {kiedy_zadziala(args.dom, True, True)}")
+    else:
+        print(f"Podglad — nic nie zapisano. Zapis: dom-importuj {args.dom} --plik {args.plik} "
+              "--zapisz")
     return 0
 
 
@@ -2399,8 +2451,11 @@ def build_parser() -> argparse.ArgumentParser:
     # podzie —
     # to droga administratora instancji.
     imp = sub.add_parser("dom-importuj",
-                         help="Dom 1: config.yaml + sekrety -> baza (porownanie pole w pole)")
+                         help="Dom 1: config.yaml + sekrety -> baza (porownanie pole w pole); "
+                              "inny dom: struktura z --plik")
     imp.add_argument("dom", type=int)
+    imp.add_argument("--plik", help="dom inny niz 1: YAML z dziecmi, urzadzeniami "
+                                    "i ustawieniami (bez integracji; wzor dom.example.yaml)")
     tryb_imp = imp.add_mutually_exclusive_group(required=True)
     tryb_imp.add_argument("--podglad", action="store_true",
                           help="pokaz, co zostanie zapisane (sekrety zamaskowane)")
