@@ -1931,11 +1931,15 @@ def _rejestr(cfg: Config):
 
 def kiedy_zadziala(dom_id: int, baza_przed: bool, baza_po: bool) -> str:
     """Kiedy zmiana konfiguracji domu z CLI zacznie dzialac (§5.1). Nadzorca
-    przeladowuje bez restartu tylko Dom 1, ktory JUZ chodzi w trybie `baza`
-    (i nie jest wymuszony na config.yaml): przelaczenie zrodla w ktoras
-    strone i kazdy inny dom (E3b) dalej wymagaja restartu poda."""
+    przeladowuje bez restartu Dom 1, ktory JUZ chodzi w trybie `baza` (i nie
+    jest wymuszony na config.yaml), oraz kazdy inny dom (zawsze `baza`,
+    start i przeladowanie przez nadzorce); przelaczenie zrodla Domu 1
+    w ktoras strone dalej wymaga restartu poda."""
     from .domy import DOM_1  # noqa: PLC0415
 
+    if dom_id != DOM_1 and baza_po:
+        return ("Zadziala w ciagu ok. 10 s, bez restartu poda — dom bez zrodla DNS "
+                "albo bez urzadzen czeka na konfiguracje.")
     wymuszony_yaml = os.environ.get(WYMUSZENIE_DOMU_1_ENV, "").strip().lower() == "yaml"
     if dom_id == DOM_1 and baza_przed and baza_po and not wymuszony_yaml:
         # Stan bazy, nie dzialajacego procesu: pod uruchomiony jeszcze w trybie

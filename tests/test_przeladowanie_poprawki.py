@@ -270,7 +270,7 @@ def test_zapomnij_zamyka_klienta_mdm(tmp_path):
 
 
 # ===================================== komunikaty CLI: kiedy zmiana dziala
-def test_kiedy_zadziala_tylko_dom_1_w_bazie_bez_restartu(monkeypatch):
+def test_kiedy_zadziala_bez_restartu(monkeypatch):
     from kidwatch.__main__ import kiedy_zadziala  # noqa: PLC0415
 
     monkeypatch.delenv("KIDWATCH_DOM_1_ZRODLO", raising=False)
@@ -280,7 +280,8 @@ def test_kiedy_zadziala_tylko_dom_1_w_bazie_bez_restartu(monkeypatch):
     assert kiedy_zadziala(1, True, True) == szybko
     assert kiedy_zadziala(1, False, True) == restart   # yaml -> baza: pod chodzi na yaml
     assert kiedy_zadziala(1, True, False) == restart   # baza -> yaml
-    assert kiedy_zadziala(2, True, True) == restart    # kolejne domy: E3b
+    # Kolejne domy: start i przeladowanie przez nadzorce (#84), bez restartu.
+    assert kiedy_zadziala(2, True, True).startswith("Zadziala w ciagu ok. 10 s")
     monkeypatch.setenv("KIDWATCH_DOM_1_ZRODLO", "yaml")
     assert kiedy_zadziala(1, True, True) == restart    # wymuszony config.yaml
 
