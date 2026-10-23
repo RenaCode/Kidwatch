@@ -10,11 +10,17 @@ Projekt: renacode-infra: docs/projekty/kidwatch/architektura-domy.md §2.3,
 
 ZASADY
   - Rola domu zmienia tylko: nazwe, dziecko, rodzaj (ipad, iphone,
-    phone-android), `source_ids` i `nextdns_profile`. Pola sieciowe i MDM
-    (`udid`, `host`, `unifi_mac`, `unifi_ip`, `mdm`, `ustawienia` z
-    `known_apps`) ustawia administrator instalacji; zapis roli domu
-    PRZEPISUJE je z bazy bez zmian. Wiersze dopasowujemy po `urzadzenia.id`,
-    nie po nazwie — zmiana nazwy nie gubi UDID-u.
+    phone-android) i `source_ids`. Pola sieciowe i MDM (`udid`, `host`,
+    `unifi_mac`, `unifi_ip`, `mdm`, `ustawienia` z `known_apps`) oraz
+    `nextdns_profile` (przeglad #86: obcy profil = cudze logi czytane
+    kluczem domu) ustawia administrator instalacji; zapis roli domu
+    PRZEPISUJE je z bazy bez zmian, proba ich wyslania = 403 z wpisem
+    w audycie. Wiersze dopasowujemy po `urzadzenia.id`, nie po nazwie —
+    zmiana nazwy nie gubi UDID-u.
+  - Zmiana imienia dziecka (po id wiersza `dzieci`) przemapowuje imie
+    w zakresach powiadomien czlonkow domu, oczekujacych zadaniach czasu gry
+    i kodach komend z WhatsAppa — w tej samej transakcji
+    (`przemapuj_dzieci`).
   - UDID i adresy to dane techniczne: odpowiedz dla roli domu niesie tylko
     flagi („ustawione przez administratora”), wartosci widzi wylacznie
     aktywny administrator instalacji. Audyt — liczby i nazwy pol, bez
@@ -48,8 +54,10 @@ import re
 import sqlite3
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import domy as dm
+from . import straznik as straznik_mod
 from .konfiguracja_domu import (
     _ADB,
     _ZRODLO_DO_WALIDACJI,
@@ -61,7 +69,7 @@ from .konfiguracja_domu import (
 from .panel_auth import AuthError, Session
 from .panel_integracje import WSKAZOWKA_SIECI, PanelIntegracje, bez_sekretow
 from .sejf import Sejf, SejfError
-from .straznik import OdmowaSieci, Straznik
+from .straznik import OdmowaSieci, Straznik, adres_literalny
 
 log = logging.getLogger(__name__)
 
@@ -74,11 +82,16 @@ RODZAJE = (
 _RODZAJE = {r for r, _ in RODZAJE}
 #: Nazwa z konfiguracji (`phone`) przyjmowana jako alias.
 _ALIASY_RODZAJU = {"phone": "phone-android"}
+#: Dane techniczne urzadzenia: wartosci widzi tylko administrator instalacji.
+POLA_TECHNICZNE = ("udid", "host", "unifi_mac", "unifi_ip")
 #: Pola, ktore ustawia tylko administrator instalacji — wartosci, gdy
-#: przyszly od administratora; dla roli domu przepisane z bazy.
-POLA_ADMINA = ("udid", "host", "unifi_mac", "unifi_ip")
+#: przyszly od administratora; dla roli domu przepisane z bazy. Profil
+#: NextDNS tez: obcy profil czytalby kluczem API domu cudze logi, a czas gry
+#: blokowalby w nim gry (przeglad #86). Sam identyfikator nie jest tajny —
+#: rola domu widzi go tylko do odczytu.
+POLA_ADMINA = (*POLA_TECHNICZNE, "nextdns_profile")
 #: Pola edytowalne przez role domu.
-POLA_DOMU = ("nazwa", "dziecko", "rodzaj", "source_ids", "nextdns_profile")
+POLA_DOMU = ("nazwa", "dziecko", "rodzaj", "source_ids")
 MAX_DZIECI = 30
 MAX_URZADZEN = 60
 MAX_NAZWA = 64
@@ -90,6 +103,17 @@ NIE_DLA_YAML_URZADZENIA = (
     "Ten ekran działa tylko dla domów z konfiguracją w bazie (kidwatch dom-importuj)."
 )
 NIE_WYSTARTUJE = "Po tej zmianie dom nie wystartuje — zmiana nie została zapisana: "
+#: Klucze ustawien integracji z adresami (UniFi, HA, TV, MDM...) — wycinane
+#: z komunikatow dla roli domu.
+_KLUCZ_ADRESU = re.compile(r"url|host|server|mac|(^|_)ip($|_)")
+#: Ostatnia zapora w komunikatach dla roli domu i w logu: IPv4/CIDR, MAC,
+#: UDID-y (UUID, 8-16 hex, 40 hex).
+_WZORY_TECHNICZNE = re.compile(
+    r"\b\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?\b"
+    r"|\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}\b"
+    r"|\b[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}\b"
+    r"|\b[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\b"
+    r"|\b[0-9A-Fa-f]{40}\b")
 OSTATNIE = ("Dom musi mieć co najmniej jedno urządzenie dziecka. Dodaj nowe urządzenie w tym "
             "samym zapisie albo poproś administratora o zawieszenie domu.")
 
@@ -102,6 +126,21 @@ def _tekst(v: Any, pole: str, limit: int, *, wymagany: bool = True) -> str | Non
     if not isinstance(v, str) or len(v) > limit:
         raise AuthError(400, f"Niepoprawne pole „{pole}”")
     return v.strip()
+
+
+class OdmowaPol(AuthError):
+    """Rola domu wyslala pola administratora (403) — z nazwami pol do audytu."""
+
+    def __init__(self, pola: list[str]) -> None:
+        super().__init__(403, "UDID, adres, MAC i profil NextDNS urządzenia ustawia "
+                              "administrator instalacji.")
+        self.pola = pola
+
+
+def ukryj(tekst: str, wartosci) -> str:
+    """Komunikat bez wartosci technicznych domu (lista) i bez niczego, co
+    wyglada na adres IP, MAC albo UDID."""
+    return _WZORY_TECHNICZNE.sub("***", bez_sekretow(tekst, wartosci))
 
 
 def _id(v: Any) -> int | None:
@@ -147,7 +186,8 @@ class PanelUrzadzenia(PanelIntegracje):
 
     @staticmethod
     def _chronione(u: dict) -> bool:
-        return bool(any(u.get(p) for p in POLA_ADMINA) or u.get("mdm") or u.get("ustawienia"))
+        return bool(any(u.get(p) for p in POLA_TECHNICZNE) or u.get("mdm")
+                    or u.get("ustawienia"))
 
     @classmethod
     def _wiersz_ekranu(cls, u: dict, admin: bool) -> dict:
@@ -159,10 +199,11 @@ class PanelUrzadzenia(PanelIntegracje):
             "udid": bool(u["udid"]), "host": bool(u["host"]),
             "unifi_mac": bool(u["unifi_mac"]), "unifi_ip": bool(u["unifi_ip"]),
             "mdm": bool(u["mdm"]), "known_apps": bool(u["ustawienia"].get("known_apps")),
+            "nextdns_profile": bool(u["nextdns_profile"]),
         }
         out["chronione"] = cls._chronione(u)
         if admin:
-            out["techniczne"] = {p: u[p] for p in POLA_ADMINA}
+            out["techniczne"] = {p: u[p] for p in POLA_TECHNICZNE}
         return out
 
     def _profil(self, dom_id: int) -> tuple[str | None, str | None]:
@@ -178,9 +219,15 @@ class PanelUrzadzenia(PanelIntegracje):
         with self.rejestr._conn() as conn:
             dzieci, urzadzenia = self._wiersze(conn, dom.id)
             start = blad_startu_conn(conn, dom.id, sejf)
+            wrazliwe = self._wrazliwe(conn, dom.id)
         zrodlo, profil = self._profil(dom.id)
+        przeladowanie = self.przeladowanie(dom)
         if not admin:
-            start = start and self._bez_technicznych(start, urzadzenia)
+            # Blad startu i przeladowania potrafi powtorzyc UDID, host TV albo
+            # URL UniFi — rola domu dostaje go bez wartosci technicznych.
+            start = start and ukryj(start, wrazliwe)
+            if przeladowanie.get("blad"):
+                przeladowanie = {**przeladowanie, "blad": ukryj(przeladowanie["blad"], wrazliwe)}
         return {
             "dom": {"id": dom.id, "nazwa": dom.nazwa, "wersja": dom.wersja},
             "administrator": admin,
@@ -190,15 +237,27 @@ class PanelUrzadzenia(PanelIntegracje):
             "zrodlo": zrodlo,
             "profil_nextdns": profil,
             "start": start,
-            "przeladowanie": self.przeladowanie(dom),
+            "przeladowanie": przeladowanie,
         }
 
     @staticmethod
-    def _bez_technicznych(tekst: str, urzadzenia: list[dict]) -> str:
-        """Komunikat dla roli domu bez UDID-ow i adresow (walidator potrafi
-        powtorzyc wartosc, np. zdublowany UDID)."""
-        return bez_sekretow(tekst, [str(u[p]) for u in urzadzenia for p in POLA_ADMINA
-                                    if u.get(p)])
+    def _wrazliwe(conn, dom_id: int) -> list[str]:
+        """Wartosci techniczne domu: pola techniczne WSZYSTKICH urzadzen
+        (z telewizorem), adresy z ustawien integracji (z samymi nazwami
+        hostow z URL-i), sieci i hosty domu."""
+        out: list[str] = []
+        for r in conn.execute("SELECT udid, host, unifi_mac, unifi_ip FROM urzadzenia "
+                              "WHERE dom_id = ?", (dom_id,)):
+            out += [str(v) for v in r if v]
+        for r in conn.execute("SELECT ustawienia FROM integracje WHERE dom_id = ?", (dom_id,)):
+            for k, v in dm._json(r["ustawienia"], {}).items():
+                if _KLUCZ_ADRESU.search(str(k)) and isinstance(v, str) and v:
+                    out.append(v)
+                    if host := urlsplit(v).hostname:
+                        out.append(host)
+        wiersz = dm._wiersz_domu(conn, dom_id)
+        out += dm._json(wiersz["dozwolone_sieci"], []) + dm._json(wiersz["dozwolone_hosty"], [])
+        return out
 
     def lista(self, session: Session, ctx) -> dict:
         dom = self._dostep(session, ctx)
@@ -254,13 +313,10 @@ class PanelUrzadzenia(PanelIntegracje):
                 "id": _id(d.get("id")), "nazwa": nazwa,
                 "dziecko": _tekst(d.get("dziecko"), f"{nazwa}: dziecko", MAX_NAZWA),
                 "rodzaj": rodzaj, "source_ids": source_ids,
-                "nextdns_profile": _tekst(d.get("nextdns_profile"), "profil NextDNS", 64,
-                                          wymagany=False),
             }
             techniczne = [p for p in POLA_ADMINA if p in d]
             if techniczne and not admin:
-                raise AuthError(403, "UDID, adres i MAC urządzenia ustawia administrator "
-                                     "instalacji.")
+                raise OdmowaPol(techniczne)
             for p in techniczne:
                 u[p] = _tekst(d[p], p, MAX_POLE_ADMINA, wymagany=False)
             out.append(u)
@@ -272,22 +328,34 @@ class PanelUrzadzenia(PanelIntegracje):
         unifi_ip?)}], wersja, confirm}. Pelna lista: wiersza brak = usuniety."""
         dom = self._dostep(session, ctx)
         dzieci = self._dzieci(data)
-        urzadzenia = self._urzadzenia(data, ctx.admin)
+        try:
+            urzadzenia = self._urzadzenia(data, ctx.admin)
+        except OdmowaPol as exc:
+            log.warning("panel: %s — rola domu wyslala pola administratora (%s) dla domu %d",
+                        session.login, ", ".join(exc.pola), ctx.dom_id)
+            self._audyt(ctx.dom_id, session.login, "dom.urzadzenia.odmowa",
+                        f"pola administratora od roli domu: {', '.join(exc.pola)}")
+            raise
         wersja = self._wersja(data)
         if wersja is None:
             raise AuthError(400, "Brak pola „wersja” — odśwież ekran.")
         sejf = self._sejf_lub_503()
         self._potwierdz(session, data)
+        # DNS przed transakcja (BEGIN IMMEDIATE trzyma zapis bazy panelu):
+        # tu tylko rozwiazanie nazw, sprawdzenie sieci w transakcji.
+        adresy = self._rozwiaz(urzadzenia) if ctx.admin else {}
         try:
             opis = self._zapisz_w_transakcji(session, ctx, dom, dzieci, urzadzenia,
-                                             wersja, sejf)
+                                             wersja, sejf, adresy)
         except dm.ZmianaWersji as exc:
             raise AuthError(409, "Dom zmienił się od wczytania ekranu (ktoś inny zapisał "
                                  "zmianę) — odśwież i wpisz zmianę ponownie.") from exc
         except AuthError as exc:
             if exc.status == 400:
+                # Do logu bez UDID-ow i adresow (takze od administratora).
                 log.warning("panel: %s — dzieci i urzadzenia domu %d odrzucone: %s",
-                            session.login, ctx.dom_id, exc.message)
+                            session.login, ctx.dom_id,
+                            getattr(exc, "do_logu", None) or ukryj(exc.message, []))
                 self._audyt(ctx.dom_id, session.login, "dom.urzadzenia.odmowa",
                             "dzieci i urządzenia: zapis odrzucony (walidacja)")
             raise
@@ -336,6 +404,16 @@ class PanelUrzadzenia(PanelIntegracje):
             if ctx.admin:
                 wiersz.update({p: u[p] for p in POLA_ADMINA if p in u})
             plan.append(wiersz)
+        if not ctx.admin:
+            # Nowe urzadzenie roli domu dostaje profil NextDNS pozostalych
+            # urzadzen dziecka (ustawiony przez administratora), inaczej
+            # walidator odrzucilby dziecko na dwoch profilach.
+            for w in plan:
+                if w["id"] is None:
+                    profile = {x["nextdns_profile"] for x in plan
+                               if x["id"] is not None and x["dziecko"] == w["dziecko"]}
+                    if len(profile) == 1:
+                        w["nextdns_profile"] = profile.pop()
         # Kolejnosc jak w bazie (po id, nowe na koncu w kolejnosci z ekranu):
         # HomeConfig z planu i z odczytu maja wtedy te same `devices`.
         plan.sort(key=lambda u: (u["id"] is None, u["id"] or 0))
@@ -375,12 +453,14 @@ class PanelUrzadzenia(PanelIntegracje):
             raise AuthError(400, f"Niepoprawne dane: {tekst}") from exc
 
     def _zapisz_w_transakcji(self, session: Session, ctx, dom: dm.Dom, dzieci: list[dict],
-                             urzadzenia: list[dict], wersja: int, sejf: Sejf) -> str:
+                             urzadzenia: list[dict], wersja: int, sejf: Sejf,
+                             adresy: dict[tuple[str, int], list[str]]) -> str:
         teraz = time.time()
-        urz_stare: list[dict] = []
+        wrazliwe = [str(u[p]) for u in urzadzenia for p in POLA_TECHNICZNE if u.get(p)]
         with self.rejestr._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                wrazliwe += self._wrazliwe(conn, dom.id)
                 if dm._wiersz_domu(conn, dom.id)["wersja"] != wersja:
                     raise dm.ZmianaWersji("dom zmienil sie od wczytania")
                 przed_dom = self._wiersz_domu_bez_wersji(conn, dom.id)
@@ -397,9 +477,11 @@ class PanelUrzadzenia(PanelIntegracje):
                 home = self._waliduj(dane, plan, sekrety)
                 if home is not None:
                     self._normalizuj(plan, home, ctx.admin)
-                self._sprawdz_adresy(dom, plan, {u["id"]: u for u in urz_stare}, ctx.admin)
+                self._sprawdz_adresy(dom, plan, {u["id"]: u for u in urz_stare}, ctx.admin,
+                                     adresy)
                 opis = self._zapisz_wiersze(conn, dom.id, dzieci_stare, urz_stare, dzieci,
                                             plan, usuniete)
+                opis += przemapuj_dzieci(conn, dom.id, dzieci_stare, dzieci, teraz)
                 # Odczyt i porownanie: wiersze, model, reszta domu nietknieta.
                 _, po_urz = self._wiersze(conn, dom.id)
                 po_dzieci = [d["nazwa"] for d in self._wiersze(conn, dom.id)[0]]
@@ -427,12 +509,14 @@ class PanelUrzadzenia(PanelIntegracje):
                 if po is not None and przed is None:
                     if not po_urz:
                         raise AuthError(400, OSTATNIE)
-                    raise AuthError(400, NIE_WYSTARTUJE + self._dla_roli(po, urz_stare, ctx))
+                    raise AuthError(400, NIE_WYSTARTUJE + po)
                 dm._audyt(conn, teraz, dom.id, session.login, "dom.urzadzenia.zapis", opis)
                 conn.execute("COMMIT")
             except AuthError as exc:
                 conn.execute("ROLLBACK")
-                exc.message = self._dla_roli(exc.message, urz_stare, ctx)
+                exc.do_logu = ukryj(exc.message, wrazliwe)
+                if not ctx.admin:
+                    exc.message = exc.do_logu
                 raise
             except BaseException:
                 conn.execute("ROLLBACK")
@@ -446,9 +530,6 @@ class PanelUrzadzenia(PanelIntegracje):
         wiersz.pop("wersja")
         return wiersz
 
-    def _dla_roli(self, tekst: str, urz: list[dict], ctx) -> str:
-        return tekst if ctx.admin else self._bez_technicznych(tekst, urz)
-
     @staticmethod
     def _normalizuj(plan: list[dict], home, admin: bool) -> None:
         """Pola edytowane — w postaci po walidatorach (source_ids malymi
@@ -457,19 +538,41 @@ class PanelUrzadzenia(PanelIntegracje):
         w bajt."""
         for u, dev in zip(plan, home.devices, strict=True):
             u["source_ids"] = list(dev.source_ids)
-            u["nextdns_profile"] = dev.nextdns_profile
             if admin:
                 for p in POLA_ADMINA:
                     u[p] = getattr(dev, p)
 
+    def _rozwiaz(self, urzadzenia: list[dict]) -> dict[tuple[str, int], list[str]]:
+        """Nazwy z pola `host` (administrator) rozwiazane PRZED transakcja.
+        Literal IP nie potrzebuje DNS; nazwa, ktora sie nie rozwiazuje, nie
+        trafia do slownika — straznik w transakcji odmowi."""
+        # Przez modul: testy (i bez_sieci) podmieniaja straznik.rozwiaz_systemowo.
+        rozwiaz = self.resolver or straznik_mod.rozwiaz_systemowo
+        out = {}
+        for u in urzadzenia:
+            host = (u.get("host") or "").strip().strip("[]")
+            if host and adres_literalny(host) is None and (host, PORT_LOCKDOWN) not in out:
+                try:
+                    out[(host, PORT_LOCKDOWN)] = rozwiaz(host, PORT_LOCKDOWN)
+                except OSError:
+                    continue
+        return out
+
     def _sprawdz_adresy(self, dom: dm.Dom, plan: list[dict], stare: dict[int, dict],
-                        admin: bool) -> None:
+                        admin: bool, adresy: dict[tuple[str, int], list[str]]) -> None:
         """Adres iPada (`host`, odczyt wprost) wpisany przez administratora
-        przez straznika sieci domu (§3.6), jak adresy integracji."""
+        przez straznika sieci domu (§3.6), jak adresy integracji. Bez DNS:
+        nazwy rozwiazal `_rozwiaz` przed transakcja."""
         if not admin:
             return
+
+        def z_wynikow(host: str, port: int) -> list[str]:
+            if (host, port) not in adresy:
+                raise OSError(f"{host} nie rozwiazuje sie")
+            return adresy[(host, port)]
+
         straznik = Straznik(dom.id, dom.dozwolone_sieci, dom.dozwolone_hosty,
-                            resolver=self.resolver)
+                            resolver=z_wynikow)
         for u in plan:
             stary = stare.get(u["id"]) if u["id"] is not None else None
             if u["host"] and (stary is None or stary["host"] != u["host"]):
@@ -567,3 +670,103 @@ class PanelUrzadzenia(PanelIntegracje):
             if rozne:
                 out.append(f"urzadzenie {u['id']}: {', '.join(rozne)}")
         return out
+
+
+# ============================================ imiona dzieci poza `dzieci`
+#: Zadanie czasu gry dla dziecka usunietego z domu — zamkniete, nie zgubione.
+DZIECKO_USUNIETE = "dziecko usuniete z domu (panel)"
+
+
+def _lista(tekst: str | None) -> list[str] | None:
+    wynik = dm._json(tekst, None)
+    return wynik if isinstance(wynik, list) else None
+
+
+def _zakresy(conn, dom_id: int) -> list[tuple[str, list]]:
+    """(UPDATE, wiersze) zakresow powiadomien czlonkow domu."""
+    out = []
+    if dm._jest_tabela(conn, "czlonkostwa_powiadomienia"):
+        out.append((
+            "UPDATE czlonkostwa_powiadomienia SET dzieci = ? WHERE dom_id = "
+            f"{int(dom_id)} AND user_id = ?",
+            conn.execute("SELECT cp.user_id, cp.dzieci, u.login FROM czlonkostwa_powiadomienia "
+                         "cp JOIN users u ON u.id = cp.user_id WHERE cp.dom_id = ?",
+                         (dom_id,)).fetchall()))
+    if dom_id == dm.DOM_1 and dm._jest_tabela(conn, "user_powiadomienia"):
+        # Lustro preferencji Domu 1 (odbiorcy._upsert) — tylko czlonkowie Domu 1.
+        out.append((
+            "UPDATE user_powiadomienia SET dzieci = ? WHERE user_id = ?",
+            conn.execute("SELECT p.user_id, p.dzieci, u.login FROM user_powiadomienia p "
+                         "JOIN users u ON u.id = p.user_id JOIN czlonkostwa c "
+                         "ON c.user_id = p.user_id WHERE c.dom_id = ?", (dom_id,)).fetchall()))
+    return out
+
+
+def przemapuj_dzieci(conn, dom_id: int, dzieci_stare: list[dict], dzieci: list[dict],
+                     teraz: float) -> str:
+    """Imie dziecka zyje tez poza tabela `dzieci`: zakres powiadomien
+    czlonkow domu (`czlonkostwa_powiadomienia.dzieci`, w Domu 1 z lustrem
+    `user_powiadomienia.dzieci`), oczekujace zadania czasu gry
+    (`game_requests`) i kody potwierdzenia komend z WhatsAppa. Zmiana imienia
+    (po id wiersza) przemapowuje je w TEJ SAMEJ transakcji; usuniecie
+    zdejmuje imie z zakresow, zamyka zadania i kasuje kody. Zakres, w ktorym
+    zostaloby zero dzieci, to 400: pusty zakres nie moze po cichu znaczyc
+    „wszystkie” ani „zadne” — wlasciciel konta musi go zmienic sam.
+    Tylko wiersze TEGO domu. Zwraca dopisek do audytu (liczby)."""
+    nowe = {d["id"]: d["nazwa"] for d in dzieci if d["id"] is not None}
+    mapa: dict[str, str | None] = {}
+    for d in dzieci_stare:
+        if d["id"] not in nowe:
+            mapa[d["nazwa"]] = None
+        elif nowe[d["id"]] != d["nazwa"]:
+            mapa[d["nazwa"]] = nowe[d["id"]]
+    if not mapa:
+        return ""
+
+    def po_zmianie(x: str) -> str | None:
+        return mapa.get(x, x)
+
+    zakresy = 0
+    for update, wiersze in _zakresy(conn, dom_id):
+        for r in wiersze:
+            stara = _lista(r["dzieci"])
+            if not stara:
+                continue
+            nowa = list(dict.fromkeys(y for y in map(po_zmianie, stara) if y is not None))
+            if not nowa:
+                usuniete = [x for x in stara if po_zmianie(x) is None]
+                raise AuthError(400, f"Konto {r['login']} ma powiadomienia tylko o dziecku "
+                                     f"{', '.join(usuniete)} — zmień najpierw jego zakres "
+                                     "powiadomień (Ustawienia → Moje powiadomienia).")
+            if nowa != stara:
+                conn.execute(update, (json.dumps(nowa, ensure_ascii=False), r["user_id"]))
+                zakresy += 1
+    zadania = 0
+    if dm._jest_tabela(conn, "game_requests"):
+        for r in conn.execute("SELECT id, child FROM game_requests WHERE dom_id = ? "
+                              "AND done_at IS NULL", (dom_id,)).fetchall():
+            if r["child"] not in mapa:
+                continue
+            if mapa[r["child"]] is None:
+                conn.execute("UPDATE game_requests SET done_at = ?, ok = 0, error = ? "
+                             "WHERE id = ?", (teraz, DZIECKO_USUNIETE, r["id"]))
+            else:
+                conn.execute("UPDATE game_requests SET child = ? WHERE id = ?",
+                             (mapa[r["child"]], r["id"]))
+            zadania += 1
+    kody = 0
+    if dm._jest_tabela(conn, "whatsapp_komendy_kody"):
+        for r in conn.execute("SELECT numer, komenda FROM whatsapp_komendy_kody "
+                              "WHERE dom_id = ?", (dom_id,)).fetchall():
+            komenda = dm._json(r["komenda"], {})
+            if not isinstance(komenda, dict) or komenda.get("dziecko") not in mapa:
+                continue
+            if mapa[komenda["dziecko"]] is None:
+                conn.execute("DELETE FROM whatsapp_komendy_kody WHERE numer = ?", (r["numer"],))
+            else:
+                komenda["dziecko"] = mapa[komenda["dziecko"]]
+                conn.execute("UPDATE whatsapp_komendy_kody SET komenda = ? WHERE numer = ?",
+                             (json.dumps(komenda, ensure_ascii=False), r["numer"]))
+            kody += 1
+    return (f"; imiona dzieci: zakresy powiadomien {zakresy}, zadania czasu gry {zadania}, "
+            f"kody WhatsApp {kody}")

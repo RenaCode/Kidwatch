@@ -59,9 +59,14 @@ function Urzadzenie({ urz, dzieci, rodzaje, administrator, profilDomu, onChange,
           <input className="input-field" value={urz.nextdns} onChange={set('nextdns')} autoComplete="off" />
         </label>
         <label className="field">
-          <span className="field-label">Profil NextDNS <span className="dim">· puste = profil domu{profilDomu ? ` (${profilDomu})` : ''}</span></span>
+          <span className="field-label">
+            Profil NextDNS <span className="dim">· {administrator ? 'puste = profil domu' : 'ustawia administrator'}{profilDomu ? ` (dom: ${profilDomu})` : ''}</span>
+          </span>
+          {/* Rola domu: tylko odczyt - obcy profil czytalby kluczem API domu
+              cudze logi (serwer i tak odrzuca zmiane, 403). */}
           <input className="input-field" value={urz.nextdns_profile} onChange={set('nextdns_profile')}
-                 placeholder={profilDomu || ''} autoComplete="off" />
+                 placeholder={profilDomu || ''} autoComplete="off" readOnly={!administrator}
+                 disabled={!administrator} />
         </label>
       </div>
       {urz.rodzaj === RODZAJ_ANDROID && <HostAndroida urz={urz} profilDomu={profilDomu} />}

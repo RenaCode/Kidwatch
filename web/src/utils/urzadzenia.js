@@ -12,9 +12,11 @@ const NEXTDNS_SUFIKS = '.dns.nextdns.io';
 /* Etykieta DNS: najwyzej 63 znaki. */
 const MAX_ETYKIETA = 63;
 export const POLA_ADMINA = ['udid', 'host', 'unifi_mac', 'unifi_ip'];
+/* Profil NextDNS urzadzenia ustawia tylko administrator instalacji (obcy
+   profil czytalby kluczem domu cudze logi); rola domu widzi go do odczytu. */
 export const OPISY_ADMINA = {
   udid: 'UDID', host: 'adres w sieci domu', unifi_mac: 'MAC (UniFi)', unifi_ip: 'IP (UniFi)',
-  mdm: 'MDM', known_apps: 'lista aplikacji',
+  mdm: 'MDM', known_apps: 'lista aplikacji', nextdns_profile: 'profil NextDNS',
 };
 
 /* Host Prywatnego DNS Androida dla NextDNS: spacje -> `--`, na koncu
@@ -27,6 +29,12 @@ export function hostPrywatnegoDns(nazwa, profil) {
   if (!profil) return { error: 'Brak ID profilu NextDNS (integracja NextDNS albo pole „Profil NextDNS”).' };
   if (!/^[A-Za-z0-9 -]+$/.test(n)) {
     return { error: 'Do hosta Prywatnego DNS nazwa może mieć tylko litery bez polskich znaków, cyfry, spacje i „-”.' };
+  }
+  /* NextDNS czyta `--` jako spacje: nazwa z "--", z "-" na poczatku albo
+     na koncu (sklejona z separatorem spacji) wrocilaby w logach inna, niz
+     wpisana w "Nazwa w NextDNS", i nie trafilaby w source_ids. */
+  if (/--/.test(n) || /(^|\s)-|-($|\s)/.test(n)) {
+    return { error: 'Nazwa do Prywatnego DNS nie może zaczynać się ani kończyć „-” (także słowo) ani mieć „--” — NextDNS czyta „--” jako spację.' };
   }
   const etykieta = `${n.split(/\s+/).join('--')}-${profil}`;
   if (etykieta.length > MAX_ETYKIETA) return { error: 'Nazwa za długa do hosta Prywatnego DNS — skróć ją.' };
@@ -72,7 +80,7 @@ export const noweUrzadzenie = (kluczDziecka, rodzaj = RODZAJ_ANDROID) => ({
 
 /* Ustawione przez administratora pola urzadzenia (do opisu na ekranie). */
 export const ustawionePrzezAdmina = (u) => Object.entries(u.administrator || {})
-  .filter(([, v]) => v).map(([k]) => OPISY_ADMINA[k] || k);
+  .filter(([k, v]) => v && k !== 'nextdns_profile').map(([k]) => OPISY_ADMINA[k] || k);
 
 /* Pierwszy blad formularza albo null. Serwer sprawdza to samo (i wiecej:
    walidatory config.yaml), tu - zeby nie wysylac oczywistych pomylek. */
@@ -97,6 +105,12 @@ export function walidujFormularz(form, { rodzaje = [] } = {}) {
     if (u.nextdns_profile.trim() && !/^[0-9a-z]+$/.test(u.nextdns_profile.trim())) {
       return `${n}: ID profilu NextDNS to małe litery i cyfry (np. abc123).`;
     }
+    if (u.rodzaj === RODZAJ_ANDROID) {
+      const nazwa = nazwyNextdns(u.nextdns)[0];
+      if (/--/.test(nazwa) || /(^|\s)-|-($|\s)/.test(nazwa)) {
+        return `${n}: nazwa w NextDNS telefonu z Androidem nie może zaczynać się ani kończyć „-” ani mieć „--” (Prywatny DNS czyta „--” jako spację).`;
+      }
+    }
   }
   const bezUrzadzen = form.dzieci.filter((d) => !form.urzadzenia.some((u) => u.dziecko === d.klucz));
   if (bezUrzadzen.length) {
@@ -120,9 +134,9 @@ export function cialoZapisu(form, { wersja, administrator = false }) {
         dziecko: imie[u.dziecko] ?? '',
         rodzaj: u.rodzaj,
         source_ids: nazwyNextdns(u.nextdns),
-        nextdns_profile: u.nextdns_profile.trim() || null,
       };
       if (administrator) {
+        out.nextdns_profile = u.nextdns_profile.trim() || null;
         for (const p of POLA_ADMINA) out[p] = String(u.techniczne?.[p] ?? '').trim() || null;
       }
       return out;

@@ -32,6 +32,13 @@ test('host Prywatnego DNS: spacje jako --, profil na koncu', () => {
     { host: 'Telefon--A-abc123.dns.nextdns.io' });
 });
 
+test('host Prywatnego DNS: "-" na brzegu slowa albo "--" - blad (NextDNS: "--" = spacja)', () => {
+  for (const zla of ['-Telefon', 'Telefon-', 'Tele--fon', 'Telefon -A', 'Telefon A- B']) {
+    assert.match(hostPrywatnegoDns(zla, 'abc123').error, /„--”/, zla);
+  }
+  assert.deepEqual(hostPrywatnegoDns('Telefon-A B', 'abc123'), { host: 'Telefon-A--B-abc123.dns.nextdns.io' });
+});
+
 test('host Prywatnego DNS: polskie znaki, brak profilu, za dluga nazwa - blad', () => {
   assert.match(hostPrywatnegoDns('Telefon Zośki', 'abc123').error, /polskich/);
   assert.match(hostPrywatnegoDns('Telefon A', null).error, /profilu/);
@@ -58,7 +65,7 @@ test('formularz -> cialo: id wierszy, dziecko po imieniu, bez pol technicznych r
     dzieci: [{ id: 3, nazwa: 'Dziecko A2' }],
     urzadzenia: [{
       id: 10, nazwa: 'iPad A nowy', dziecko: 'Dziecko A2', rodzaj: 'ipad',
-      source_ids: ['ipad-a', 'ipad-a2'], nextdns_profile: null,
+      source_ids: ['ipad-a', 'ipad-a2'],
     }],
   });
   assert.equal(czyZmieniony(EKRAN, form), true);
@@ -74,6 +81,10 @@ test('administrator wysyla pola techniczne (puste = wyczysc)', () => {
   form.urzadzenia[0].techniczne.host = ' ';
   const u = cialoZapisu(form, { wersja: 7, administrator: true }).urzadzenia[0];
   assert.deepEqual([u.udid, u.host, u.unifi_mac, u.unifi_ip], ['U-1', null, null, null]);
+  assert.equal(u.nextdns_profile, null);
+  form.urzadzenia[0].nextdns_profile = 'dziecko1';
+  assert.equal(cialoZapisu(form, { wersja: 7, administrator: true }).urzadzenia[0].nextdns_profile, 'dziecko1');
+  assert.equal('nextdns_profile' in cialoZapisu(form, { wersja: 7 }).urzadzenia[0], false);
 });
 
 test('walidacja: imiona, nazwy, dziecko, NextDNS, profil, dziecko bez urzadzenia', () => {
@@ -92,6 +103,8 @@ test('walidacja: imiona, nazwy, dziecko, NextDNS, profil, dziecko bez urzadzenia
   assert.match(zle((f) => { f.urzadzenia[0].nextdns = ' , '; }), /NextDNS/);
   assert.match(zle((f) => { f.urzadzenia[0].nextdns_profile = 'ABC'; }), /małe litery/);
   assert.match(zle((f) => { f.dzieci.push({ ...noweDziecko(), nazwa: 'Dziecko B' }); }), /Dziecko B nie ma urządzenia/);
+  assert.match(zle((f) => { f.urzadzenia[0].rodzaj = 'phone-android'; f.urzadzenia[0].nextdns = 'Telefon--A'; }), /„--”/);
+  assert.equal(zle((f) => { f.urzadzenia[0].nextdns = 'ipad--a'; }), null);  // iPad: nazwa bez hosta
 });
 
 test('usuniecie urzadzenia z polami administratora - tylko administrator', () => {
