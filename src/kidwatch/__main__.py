@@ -313,6 +313,17 @@ def build_home_runtime(dom_id: int, inst: InstanceConfig, home: HomeConfig,
             mdm_api.close()
 
         rt.dodaj_sprzatanie(zamknij_mdm)
+        # Zapasowa lista aplikacji dla odczytu z iPadow (lockdown po sieci
+        # bywa bez installation_proxy). Osobny klient HTTP: czujka MDM pyta
+        # swoim w watku pomocniczym, katalog — swoim, wspolnego nie dzielimy.
+        katalog_api = build_api(mdm_cfg) if watchers else None
+        if katalog_api is not None:
+            from .mdm import AppCatalog  # noqa: PLC0415
+
+            katalog = AppCatalog(katalog_api)
+            for watcher in watchers:
+                watcher.catalog = katalog
+            rt.dodaj_sprzatanie(katalog.aclose)
 
     game = (build_game_time(home, store, dispatcher, auth_path, dom_id)
             if home.game_time.enabled else None)
