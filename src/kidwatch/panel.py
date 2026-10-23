@@ -94,12 +94,14 @@ from .panel_komendy import KomendyPanelu
 from .panel_konta import PanelKonta, WDomu
 from .panel_sso import SsoConfig, login_ok
 from .panel_sso import config_from_env as sso_from_env
+from .panel_urzadzenia import PanelUrzadzenia
 from .store import from_iso, to_iso
 from .tvpause import MAX_PAUSE_DAYS, TvPauseRequests, parse_until
 from .tvpause import TooManyRequests as TooManyPauseRequests
 from .uprawnienia import (
     CZAS_GRY,
     DOM_INTEGRACJE,
+    DOM_URZADZENIA,
     DOM_ZAPROSZENIA,
     KONTA,
     KONTO_WLASNE,
@@ -1042,6 +1044,9 @@ POST_TRASY: dict[str, tuple[str, str, str]] = {
     # w domu ORAZ aktywny administrator instalacji (decyzja 2026-10-12).
     f"{_D}/integracje/zapisz": (DOM_INTEGRACJE, "_integracje_post", DOM),
     f"{_D}/integracje/usun-sekret": (DOM_INTEGRACJE, "_integracje_post", DOM),
+    # Dzieci i urzadzenia domu (panel_urzadzenia.py): wlasciciel domu
+    # i zarzadca w swoim domu, administrator w kazdym (z wpisem admin.*).
+    f"{_D}/urzadzenia/zapisz": (DOM_URZADZENIA, "_urzadzenia_post", DOM),
     # Zaproszenia do domu (E4): tworzenie z potwierdzeniem haslem/2FA.
     f"{_D}/zaproszenia/utworz": (DOM_ZAPROSZENIA, "_zaproszenia_post", DOM),
     f"{_D}/zaproszenia/odwolaj": (DOM_ZAPROSZENIA, "_zaproszenia_post", DOM),
@@ -1078,6 +1083,8 @@ GET_TRASY: dict[str, tuple[str, str]] = {
     f"{_D}/integracje": (DOM_INTEGRACJE, DOM),
     # Odswiezanie ekranu po zapisie: tylko wersja i stan przeladowania.
     f"{_D}/integracje/stan": (DOM_INTEGRACJE, DOM),
+    # Dzieci i urzadzenia domu: UDID i adresy tylko dla administratora.
+    f"{_D}/urzadzenia": (DOM_URZADZENIA, DOM),
     # Dom -> Czlonkowie -> Zaproszenia (bez tokenow — te widac tylko raz).
     f"{_D}/zaproszenia": (DOM_ZAPROSZENIA, DOM),
 }
@@ -1160,13 +1167,15 @@ def make_handler(
     sso: SsoConfig | None = None,
     konta: PanelKonta | None = None,
     integracje: PanelIntegracje | None = None,
+    urzadzenia: PanelUrzadzenia | None = None,
     komendy: KomendyPanelu | None = None,
     zaproszenia: PanelZaproszenia | None = None,
 ):
     """`sso` = None: naglowki `Remote-*` ignorowane w calosci (panel_sso.py).
     `zaproszenia`: zaproszenia do domow (zaproszenia.py); None = 503.
     `domy`: domy panelu z `PanelQueries` kazdego domu (panel_domy.py).
-    `integracje`: ekran integracji domu (panel_integracje.py); None = 503."""
+    `integracje`: ekran integracji domu (panel_integracje.py); None = 503.
+    `urzadzenia`: dzieci i urzadzenia domu (panel_urzadzenia.py); None = 503."""
     static_root = static_dir.resolve()
 
     def session_cookies(token: str, session: Session, max_age: int) -> list[str]:
@@ -1650,6 +1659,26 @@ def make_handler(
                 raise AuthError(500, "blad serwera") from None
             self._json(200, wynik)
 
+        # ------------------------------------------------- dzieci i urzadzenia
+        def _urzadzenia(self) -> PanelUrzadzenia:
+            if urzadzenia is None:
+                raise AuthError(503, "Ekran dzieci i urządzeń jest niedostępny")
+            return urzadzenia
+
+        def _urzadzenia_post(self, path: str, session: Session, ctx: KontekstDomu) -> None:
+            p = self._urzadzenia()
+            data = self._read_json(MAX_BODY_INTEGRACJI)
+            try:
+                wynik = p.zapisz(session, data, ctx)
+            except AuthError:
+                raise
+            except Exception as exc:
+                # Bez log.exception: tresc wyjatku moglaby powtorzyc UDID albo adres.
+                log.error("panel: blad zapisu dzieci i urzadzen domu %d: %s", ctx.dom_id,
+                          type(exc).__name__)
+                raise AuthError(500, "blad serwera") from None
+            self._json(200, wynik)
+
         # -------------------------------------------------- zaproszenia (E4)
         def _zaproszenia(self) -> PanelZaproszenia:
             if zaproszenia is None:
@@ -2040,6 +2069,12 @@ def make_handler(
                 except AuthError as exc:
                     self._json(exc.status, {"error": exc.message})
                 return
+            if rest == "/urzadzenia":
+                try:
+                    self._json(200, self._urzadzenia().lista(session, ctx))
+                except AuthError as exc:
+                    self._json(exc.status, {"error": exc.message})
+                return
             if rest == "/tv/aplikacja":
                 self._json(200, stan_aplikacji(ctx.dom_id))
                 return
@@ -2286,6 +2321,7 @@ def start_panel(cfg: Config, *, konfiguracja_domu: KonfiguracjaDomu | None = Non
             bramka=_bramka_admin(cfg), mdm=build_api(cfg.mdm), sso=sso,
             konta=PanelKonta(auth, ProfilePowiadomien(cfg.panel_auth_path)),
             integracje=PanelIntegracje(auth, _sejf_procesu, stany=stany),
+            urzadzenia=PanelUrzadzenia(auth, _sejf_procesu, stany=stany),
             komendy=KomendyPanelu(cfg.panel_auth_path, cfg.whatsapp_komendy),
             zaproszenia=PanelZaproszenia(auth, Zaproszenia(cfg.panel_auth_path),
                                          sso_wlaczone=sso is not None,

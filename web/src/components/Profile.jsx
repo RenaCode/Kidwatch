@@ -15,6 +15,7 @@ import {
 import TwoFactor from './TwoFactor';
 import { Accounts, AuditLog, Invitations, MyNotifications } from './Konta';
 import Integrations from './Integracje';
+import DzieciUrzadzenia from './DzieciUrzadzenia';
 import { KomendyAdmin, KomendyDomu } from './Komendy';
 import { canEditIntegrations } from '../utils/integracje';
 
@@ -461,6 +462,14 @@ export default function Profile({ user, onChanged, onClose, tvPause, onTvPauseCh
         <>
           <div className="stat-label">Zaproszenia{user?.dom ? ` — ${user.dom.nazwa}` : ''}</div>
           <Invitations />
+        </>
+      )}
+      {/* Dzieci i urzadzenia domu: wlasciciel domu i zarzadca (dom.urzadzenia);
+          UDID-y i adresy ustawia i widzi tylko administrator instalacji. */}
+      {can(user, 'dom.urzadzenia') && (
+        <>
+          <div className="stat-label">Dzieci i urządzenia{user?.dom ? ` — ${user.dom.nazwa}` : ''}</div>
+          <DzieciUrzadzenia />
         </>
       )}
       {/* Integracje domu i ich sekrety: tylko aktywny administrator instalacji

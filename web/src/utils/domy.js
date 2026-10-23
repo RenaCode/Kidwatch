@@ -15,7 +15,7 @@ export const TRASY_DOMU = [
   'konto/powiadomienia', 'konta', 'konta/dodaj', 'konta/usun', 'konta/rola',
   'konta/uprawnienia', 'konta/powiadomienia', 'konta/kanaly', 'konta/tryb', 'dziennik',
   'integracje', 'integracje/stan', 'integracje/zapisz', 'integracje/usun-sekret', 'komendy',
-  'zaproszenia', 'zaproszenia/utworz', 'zaproszenia/odwolaj',
+  'zaproszenia', 'zaproszenia/utworz', 'zaproszenia/odwolaj', 'urzadzenia', 'urzadzenia/zapisz',
 ];
 
 function isHomeRoute(rest) {
