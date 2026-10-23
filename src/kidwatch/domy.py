@@ -2092,6 +2092,13 @@ class Nadzorca:
         p = self.przeladowanie
         assert p is not None
         await self._zapisz_awarie(dom_id, w, stara, blad, przejsciowy, opis_alarmu)
+        await self._alarm_awarii(dom_id, w, stara, przejsciowy)
+
+    async def _alarm_awarii(self, dom_id: int, w: int, stara: int | None,
+                            przejsciowy: bool) -> None:
+        """Alarm „nowa konfiguracja nie wystartowala” — dom chodzi na `stara`."""
+        p = self.przeladowanie
+        assert p is not None
         if dom_id not in self._alarmy:
             self._alarmy[dom_id] = (p.zegar() + ALARM_PIERWSZY_ODSTEP, ALARM_PIERWSZY_ODSTEP)
             await self._alarm(
@@ -2183,13 +2190,23 @@ class Nadzorca:
         except Exception as exc:
             log.error("dom %d: srodowisko z wersji %d nie wystartowalo — %s; powrot do "
                       "poprzedniej konfiguracji", dom_id, w, exc)
-            await self._awaria_domu(dom_id, w, stara, str(exc), p.przejsciowy(exc),
-                                    opis_bledu(exc))
-            # Inny dom (gdy chodzi jakis jeszcze) nie konczy procesu: przestaje
-            # dzialac do nastepnej zmiany konfiguracji (kolejne domy, przed E6).
-            koniec = not (p.domy is not None and dom_id != DOM_1
-                          and any(r.dom_id != dom_id for r in self.domy))
+            # Dom ≠ 1 przy kolejnych domach nigdy nie konczy procesu: przestaje
+            # dzialac do nastepnej zmiany konfiguracji. Restart poda niczego
+            # tu nie naprawi, a przerwalby Dom 1 i panel — takze wtedy, gdy
+            # Dom 1 akurat czeka na restart po awarii petli (_restarty).
+            koniec = not (p.domy is not None and dom_id != DOM_1)
+            przejsciowy = p.przejsciowy(exc)
+            if koniec:
+                await self._awaria_domu(dom_id, w, stara, str(exc), przejsciowy,
+                                        opis_bledu(exc))
+            else:
+                # Alarm dopiero, gdy wiadomo, czy dom w ogole chodzi (jeden alarm,
+                # bez „dziala dalej” o domu, ktory nie dziala).
+                await self._zapisz_awarie(dom_id, w, stara, str(exc), przejsciowy,
+                                          opis_bledu(exc))
             nowy = await self._odtworz(dom_id, rt.home, stara, koniec=koniec)
+            if nowy is not None and not koniec:
+                await self._alarm_awarii(dom_id, w, nowy.wersja, przejsciowy)
             if nowy is None:
                 self.domy.remove(rt)
                 if koniec:
@@ -2357,8 +2374,11 @@ class Nadzorca:
     async def _zaplanuj_restart(self, dom_id: int, home: HomeConfig, wersja: int | None,
                                 powod: str, alarm: float | None) -> None:
         seria = self._serie.get(dom_id)
+        # Dom czekajacy na restart (_restarty) tez istnieje: inny dom nie
+        # eskaluje tylko dlatego, ze Dom 1 jest akurat miedzy restartami.
+        inne = {rt.dom_id for rt in self.domy} | set(self._restarty)
         if (seria is not None and seria.proba > RESTART_ESKALACJA
-                and (dom_id == DOM_1 or not self.domy)):
+                and (dom_id == DOM_1 or not inne - {dom_id})):
             log.error("dom %d: %d awarii z rzedu (%s) — restarty w procesie nie pomagaja, "
                       "koniec procesu (k8s zrestartuje poda)", dom_id, seria.proba - 1, powod)
             await self._alarm(f"Dom {dom_id}: monitoring zatrzymany — restart poda",
@@ -2540,36 +2560,42 @@ class Nadzorca:
                  "Pozostale domy dzialaja. "
                  + ("Kidwatch ponowi probe sam." if stan.ponowienie
                     else "Popraw integracje w panelu (Ustawienia -> Integracje)."))
-        if p.bramka_alarmu is None:
-            nastepny = self._alarmy_startu.get(dom_id)
-            if nastepny is not None and p.zegar() < nastepny[0]:
+        # Odstep w pamieci procesu dziala ZAWSZE, takze z bramka z dziennika:
+        # bramka to odczyt, a gdy zapis wpisu padnie (pelny dysk, baza tylko
+        # do odczytu) albo kanal rzuci po faktycznym doreczeniu, bez tego
+        # alarm szedlby co obieg nadzorcy (co 10 s).
+        nastepny = self._alarmy_startu.get(dom_id)
+        if nastepny is not None and p.zegar() < nastepny[0]:
+            return
+        odstep_pamieci = (ALARM_PIERWSZY_ODSTEP if nastepny is None
+                          else min(nastepny[1] * 2, ALARM_MAX_ODSTEP))
+        odstep = odstep_pamieci
+        if p.bramka_alarmu is not None:
+            try:
+                odstep = await asyncio.to_thread(p.bramka_alarmu, dom_id)
+            except Exception:
+                log.exception("dom %d: bramka alarmu startu niedostepna — wysylam", dom_id)
+                odstep = ALARM_PIERWSZY_ODSTEP
+            if odstep is None:
                 return
-            odstep = (ALARM_PIERWSZY_ODSTEP if nastepny is None
-                      else min(nastepny[1] * 2, ALARM_MAX_ODSTEP))
-            self._alarmy_startu[dom_id] = (p.zegar() + odstep, odstep)
-            self._zaalarmowane.add(dom_id)
+        self._alarmy_startu[dom_id] = (p.zegar() + odstep_pamieci, odstep_pamieci)
+        self._zaalarmowane.add(dom_id)
+        if p.bramka_alarmu is None:
             await self._alarm(tytul, tresc)
             return
-        try:
-            odstep = await asyncio.to_thread(p.bramka_alarmu, dom_id)
-        except Exception:
-            log.exception("dom %d: bramka alarmu startu niedostepna — wysylam", dom_id)
-            odstep = ALARM_PIERWSZY_ODSTEP
-        if odstep is None:
-            return
-        self._zaalarmowane.add(dom_id)
         self._alarm_startu_w_toku.add(dom_id)
         log.error("alarm instancji: %s — %s", tytul, tresc)
         kanal = self.alarm if self.alarm is not None else p.alarm
 
         async def wyslij() -> None:
             try:
-                if kanal is not None:
-                    await kanal(tytul, tresc)
+                if kanal is None:
+                    return  # sam log; bez wpisu — alarm, ktory nie wyszedl
+                await kanal(tytul, tresc)
                 # Wpis dopiero po wysylce: lezaca bramka nie blokuje alarmu na odstep.
                 await asyncio.to_thread(p.zapisz_alarm, dom_id, odstep, tytul)
             except Exception:
-                log.exception("alarm instancji nie wyszedl: %s", tytul)
+                log.exception("alarm instancji nie wyszedl albo nie zapisany: %s", tytul)
             finally:
                 self._alarm_startu_w_toku.discard(dom_id)
 

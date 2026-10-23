@@ -122,6 +122,8 @@ class Swiat:
         self.kolektory = {PROFIL_1: Kolektor(), PROFIL_2: Kolektor()}
         self.zrodla: dict[Path, ZrodloZPliku] = {}
         self.alarmy: list[tuple[str, str]] = []
+        #: Profil, ktorego tik ma rzucic (awaria petli domu -> _restarty).
+        self.pad: set[str] = set()
         monkeypatch.setattr(cli, "build_source", self.build_source)
         monkeypatch.setattr(cli, "build_notifiers", self.build_notifiers)
         monkeypatch.setattr(scheduler, "tick_loop", self.tick_loop)
@@ -140,6 +142,8 @@ class Swiat:
         idle = engine.cfg.engine.idle_minutes
         await dispatcher.send_all(engine.tick(zrodlo.ostatni + timedelta(minutes=idle + 1)))
         while True:
+            if engine.cfg.source.nextdns.profile_id in self.pad:
+                raise RuntimeError("awaria-testowa petli tiku")
             if tetno is not None:
                 tetno()
             await asyncio.sleep(0.02)
@@ -316,8 +320,10 @@ async def test_dom_rzucajacy_przy_starcie_nie_przerywa_domu_1(uklad):
     u, swiat = uklad, uklad["swiat"]
     _dom_2(u)
     psuj = {"tak": True}
+    budowy: list[int] = []
 
     def runtime(dom_id, home):
+        budowy.append(dom_id)
         if dom_id == DOM_2 and psuj["tak"]:
             raise RuntimeError("awaria-testowa przy budowie domu")
         return cli.build_home_runtime(dom_id, u["inst"], home, Classifier(str(APP_MAP)))
@@ -339,9 +345,10 @@ async def test_dom_rzucajacy_przy_starcie_nie_przerywa_domu_1(uklad):
     assert swiat.tytuly() == ["Dom 2: monitoring nie wystartowal"]
     assert "awaria-testowa" not in swiat.alarmy[0][1]
     assert _audyt(u["rejestr"], DOM_2).count("dom.przeladowanie.blad") == 1
-    # Blad konfiguracji czeka na zmiane wersji — nie co obieg.
-    proc.p.okres = 0.02
-    await asyncio.sleep(0.2)
+    # Blad konfiguracji czeka na zmiane wersji — nie co obieg (okres 0,02 s):
+    # jedna proba budowy biezacej wersji, bez kopii (dom nigdy nie wstal).
+    await asyncio.sleep(0.3)
+    assert budowy.count(DOM_2) == 1
     assert swiat.tytuly() == ["Dom 2: monitoring nie wystartowal"]
 
     # Poprawka w panelu (nowa wersja): dom wstaje bez restartu poda.
@@ -376,9 +383,80 @@ async def test_przeladowanie_domu_2_bez_zadnej_konfiguracji_nie_konczy_procesu(u
     assert proc.dzialajace() == [1]
     assert DOM_2 not in proc.konfiguracje
     assert proc.stany.get(DOM_2).wersja is None
+    # Jeden alarm i bez nieprawdy, ze dom „dziala dalej”.
+    assert swiat.tytuly() == ["Dom 2: monitoring nie wystartowal"]
+    assert "dziala dalej" not in swiat.alarmy[0][1]
     psuj["tak"] = False
     _nextdns(u["rejestr"], DOM_2, u["sejf"])
     await _czekaj(lambda: DOM_2 in proc.dzialajace())
+    assert await proc.koniec() == 0
+
+
+async def test_dom_1_w_restarcie_a_przeladowanie_domu_2_nie_restartuje_poda(uklad):
+    """Dom 1 czeka na restart po awarii petli (poza `domy`), a przeladowanie
+    Domu 2 nie wstaje nigdzie: dawniej `koniec` (zaden inny nie chodzi) =
+    kod 1 i restart poda z Domem 1 i panelem. Restart niczego tu nie naprawia."""
+    u, swiat = uklad, uklad["swiat"]
+    _dom_2(u)
+    psuj = {"tak": False}
+
+    def runtime(dom_id, home):
+        if dom_id == DOM_2 and psuj["tak"]:
+            raise RuntimeError("awaria-testowa")
+        return cli.build_home_runtime(dom_id, u["inst"], home, Classifier(str(APP_MAP)))
+
+    proc = Proces(u, runtime=runtime)
+    proc.start()
+    await _czekaj(lambda: DOM_2 in proc.dzialajace())
+    swiat.pad.add(PROFIL_1)  # petla Domu 1 pada -> restart za 1 min
+    await _czekaj(lambda: dm.DOM_1 in proc.nadzorca._restarty)
+    psuj["tak"] = True
+    _nextdns(u["rejestr"], DOM_2, u["sejf"])
+    await _czekaj(lambda: "Dom 2: monitoring nie wystartowal" in swiat.tytuly())
+    await asyncio.sleep(0.2)
+    assert not proc.zadanie.done(), "proces zakonczony przez Dom 2"
+    assert dm.DOM_1 in proc.nadzorca._restarty and proc.dzialajace() == []
+    assert await proc.koniec() == 0
+
+
+@pytest.mark.parametrize("awaria", ["zapis_dziennika", "kanal_po_doreczeniu"])
+async def test_alarm_domu_ktory_nie_wstaje_nie_co_obieg(uklad, awaria):
+    """Bramka z dziennika to odczyt: gdy wpis `dom.start.alarm` sie nie zapisze
+    (pelny dysk, baza tylko do odczytu) albo kanal rzuci po doreczeniu, alarm
+    nie moze isc co obieg nadzorcy — zapasowy odstep w pamieci procesu."""
+    u = uklad
+    _dom_2(u)
+    proby: list[str] = []
+
+    def runtime(dom_id, home):
+        if dom_id == DOM_2:
+            raise ConnectionError("siec-testowa")  # przejsciowy: ponowienia
+        return cli.build_home_runtime(dom_id, u["inst"], home, Classifier(str(APP_MAP)))
+
+    proc = Proces(u, runtime=runtime)
+
+    async def alarm(tytul, tresc):
+        proby.append(tytul)
+        if awaria == "kanal_po_doreczeniu":
+            raise TimeoutError("doreczone, ale bez odpowiedzi")
+
+    proc.nadzorca.alarm = alarm
+    if awaria == "zapis_dziennika":
+        def zapisz(*_a):
+            raise sqlite3.OperationalError("attempt to write a readonly database")
+
+        proc.p.zapisz_alarm = zapisz
+    # Ponowienia po bledzie przejsciowym od razu, zeby obiegow bylo wiele.
+    zegar = {"t": 0.0}
+    proc.p.zegar = lambda: zegar["t"]
+    proc.start()
+    for _ in range(40):  # 40 obiegow, ponowienie budowy co obieg
+        zegar["t"] += 400.0
+        await asyncio.sleep(0.03)
+    assert proby[:1] == ["Dom 2: monitoring nie wystartowal"]
+    # 40 obiegow po 400 s = ~4,4 h: odstep 1 h, 2 h -> najwyzej 3 alarmy, nie 40.
+    assert 1 <= len(proby) <= 3, proby
+    assert "dom.start.alarm" not in _audyt(u["rejestr"], DOM_2)
     assert await proc.koniec() == 0
 
 
@@ -457,24 +535,35 @@ def test_nieskonfigurowany_a_blad_konfiguracji(uklad):
 async def test_dom_znikajacy_z_listy_zatrzymany_z_oproznieniem_kolejki(uklad):
     u, swiat = uklad, uklad["swiat"]
     _dom_2(u)
-    proc = Proces(u)
+
+    def runtime(dom_id, home):
+        # Dom 2 bez petli wysylki: kolejke oproznia WYLACZNIE zatrzymanie domu.
+        rt = cli.build_home_runtime(dom_id, u["inst"], home, Classifier(str(APP_MAP)))
+        rt.petle = [(n, (lambda: asyncio.sleep(1e9)) if n == "outbox" else f)
+                    for n, f in rt.petle]
+        return rt
+
+    proc = Proces(u, runtime=runtime)
     lista = proc.p.domy
     ukryj = {"tak": False}
     proc.p.domy = lambda: [] if ukryj["tak"] else lista()
     proc.start()
     await _czekaj(lambda: DOM_2 in proc.dzialajace())
     rt = next(r for r in proc.nadzorca.domy if r.dom_id == DOM_2)
-    oprozniona = []
-    flush = rt.outbox.flush
+    from kidwatch.models import Notification, NotifyKind  # noqa: PLC0415
 
-    async def flush_i_zapisz():
-        oprozniona.append(True)
-        return await flush()
-
-    rt.outbox.flush = flush_i_zapisz
+    # Notka w kolejce tuz przed zniknieciem domu: ma wyjsc, nie zostac.
+    note = Notification(kind=NotifyKind.SESSION_START, title="ostatnia", text="x",
+                        dedup_key="ostatnia-przed-zatrzymaniem",
+                        ts=datetime.now().astimezone())
+    await rt.outbox.send_all([note])
     ukryj["tak"] = True
     await _czekaj(lambda: DOM_2 not in proc.dzialajace())
-    assert oprozniona, "kolejka domu oprozniona przy zatrzymaniu"
+    assert "ostatnia-przed-zatrzymaniem" in [
+        n.dedup_key for n in swiat.kolektory[PROFIL_2].notes]
+    with Store(str(rt.store.path)) as store:
+        assert store.outbox_pending(odbiorca=None, limit=10) == []
+        assert list(store.outbox_queues()) == []
     assert swiat.zrodla[Path(rt.store.path)].zamkniete
     assert DOM_2 not in proc.konfiguracje
     assert proc.stany.get(DOM_2) is None
@@ -483,7 +572,26 @@ async def test_dom_znikajacy_z_listy_zatrzymany_z_oproznieniem_kolejki(uklad):
 
 
 # ===================================================================== run
-@pytest.mark.parametrize("wariant", ["dziala", "rzuca", "nieskonfigurowany"])
+def _dom_1_w_bazie(u) -> None:
+    """Dom 1 przeniesiony do bazy (jak po `dom-importuj`): iPady z config.yaml
+    testu, NextDNS z kluczem, tryb `baza`."""
+    rejestr = u["rejestr"]
+    with rejestr._conn() as conn, dm._transakcja(conn):
+        for dziecko, urz, zrodlo in (("Kuba", "iPad Kuby", "iPad-Kuby"),
+                                     ("Zosia", "iPad Zosi", "iPad-Zosi")):
+            cur = conn.execute("INSERT INTO dzieci (dom_id, nazwa) VALUES (1, ?)", (dziecko,))
+            conn.execute("INSERT INTO urzadzenia (dom_id, dziecko_id, rodzaj, nazwa, "
+                         "source_ids) VALUES (1, ?, 'ipad', ?, ?)",
+                         (cur.lastrowid, urz, json.dumps([zrodlo])))
+    rejestr.zapisz_integracje(dm.DOM_1, "nextdns", sejf=u["sejf"], wlaczona=True,
+                              ustawienia={"profile_id": PROFIL_1},
+                              sekrety={"api_key": f"KLUCZ-{secrets.token_urlsafe(12)}"},
+                              resolver=_rozwiaz)
+    rejestr.ustaw_zrodlo(dm.DOM_1, dm.ZRODLO_BAZA)
+
+
+@pytest.mark.parametrize("wariant", ["dziala", "rzuca", "nieskonfigurowany", "dom1_baza",
+                                     "dom1_wymuszony_yaml"])
 def test_run_startuje_dom_2_obok_domu_1(uklad, monkeypatch, wariant):
     """`kidwatch run`: Dom 1 z config.yaml jak dotad, Dom 2 z bazy przez
     nadzorce. Blad Domu 2 nie zmienia kodu wyjscia ani nie zatrzymuje Domu 1."""
@@ -491,6 +599,10 @@ def test_run_startuje_dom_2_obok_domu_1(uklad, monkeypatch, wariant):
     _dom_2(u, skonfigurowany=wariant != "nieskonfigurowany")
     monkeypatch.setenv("KIDWATCH_HEARTBEAT", str(u["tmp"] / "hb"))
     monkeypatch.delenv(cli.WYMUSZENIE_DOMU_1_ENV, raising=False)
+    if wariant.startswith("dom1_"):
+        _dom_1_w_bazie(u)
+    if wariant == "dom1_wymuszony_yaml":
+        monkeypatch.setenv(cli.WYMUSZENIE_DOMU_1_ENV, "yaml")
     if wariant == "rzuca":
         prawdziwy = cli.build_home_runtime
 
@@ -522,15 +634,23 @@ def test_run_startuje_dom_2_obok_domu_1(uklad, monkeypatch, wariant):
     assert cli.main(["--config", str(u["cfg_path"]), "run"]) == 0
     stan = widziane["stan"]
     assert stan is not None, "nadzorca nie zajal sie Domem 2"
-    # Dom 1 z config.yaml: bez przeladowania (wersja nieznana), jak dotad.
-    assert widziane["wersja_1"] is None
-    if wariant == "dziala":
+    if wariant == "dom1_baza":
+        # Dom 1 z bazy: przeladowywany (znana wersja), Dom 2 obok.
+        assert widziane["wersja_1"] == u["rejestr"].dom(dm.DOM_1).wersja
+    else:
+        # Dom 1 z config.yaml (takze wymuszony z Sekretu): bez przeladowania.
+        assert widziane["wersja_1"] is None
+    if wariant.startswith("dom1_"):
+        assert widziane["dzialajace"] == [1, DOM_2] and stan.czeka is None
+    elif wariant == "dziala":
         assert widziane["dzialajace"] == [1, DOM_2] and stan.czeka is None
         assert stan.wersja == u["rejestr"].dom(DOM_2).wersja
     elif wariant == "rzuca":
         assert widziane["dzialajace"] == [1] and stan.nieudana is not None
-        # Bez bramki alarm idzie do logu, ale bramka odstepu i tak go zapisuje.
-        assert "dom.start.alarm" in _audyt(u["rejestr"], DOM_2)
+        assert "dom.przeladowanie.blad" in _audyt(u["rejestr"], DOM_2)
+        # Bez bramki alarm jest tylko w logu — wpis „alarm wyslany” byloby
+        # nieprawda i wstrzymalby pierwszy prawdziwy alarm o odstep.
+        assert "dom.start.alarm" not in _audyt(u["rejestr"], DOM_2)
     else:
         assert widziane["dzialajace"] == [1] and stan.czeka is not None
         assert "dom.start.alarm" not in _audyt(u["rejestr"], DOM_2)
